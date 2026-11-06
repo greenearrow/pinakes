@@ -4,7 +4,8 @@ Every `pinakes` command (DESIGN.md "Queries") is one SQL statement over the cata
 They run as the signed-in person, so row-level security (SECURITY.md) already limits them to what that person may
 see: no owner filters appear below.
 
-Status: written against the schema sketch below, **not yet run**. They become tests once the schema exists.
+Status: every block below runs in `tests/test_queries.py`, as a person under row-level security, on a catalog built by
+real scans (PostgreSQL 16). The sketch matches `pinakes/schema.sql` for the columns used; the schema has more.
 
 ## The schema, as these queries assume it
 

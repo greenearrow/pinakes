@@ -67,3 +67,6 @@ were made while building, to keep going, and are open to change.
 - **A name match** links to the most recent earlier file with the same normalized name and extension: the likeliest
   immediate parent.
 - **pg_trgm** is installed in `public`: the database is the catalog's own.
+- **Past versions stay visible to their owner.** Running QUERIES.md as a test found that `versions` lost every version
+  no file holds any more: the contents policy only allowed content a visible file holds now. Contents referenced by a
+  visible file's history are now visible too (still nobody else's).

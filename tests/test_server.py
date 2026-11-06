@@ -355,6 +355,15 @@ class TestRowLevelSecurity(ServerCase):
         with self.as_person("user-2") as c:
             self.assertEqual([r[0] for r in c.execute("SELECT action FROM pinakes.audit")], ["view"])
 
+    def test_past_versions_visible_only_to_their_owner(self):
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers, edited")
+        self.scan("server-1", "store")
+        old = self.q("SELECT encode(sha256, 'hex') FROM pinakes.contents WHERE sha256 = sha256('hers')")[0][0]
+        for person, sees in (("user-2", True), ("user-1", False)):
+            with self.as_person(person) as c:
+                n = c.execute("SELECT count(*) FROM pinakes.contents WHERE sha256 = decode(%s, 'hex')", (old,)).fetchone()[0]
+                self.assertEqual(n, 1 if sees else 0, person)
+
     def test_app_cannot_write_or_read_acl_tables(self):
         with self.as_person("user-1") as c:
             for sql in ("INSERT INTO pinakes.people (name, display) VALUES ('x', 'x')",

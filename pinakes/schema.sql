@@ -205,6 +205,8 @@ CREATE TABLE history (
 );
 CREATE INDEX history_file ON history (file_id);
 CREATE INDEX history_seen ON history (seen_on);
+CREATE INDEX history_old_content ON history (old_content_id);
+CREATE INDEX history_new_content ON history (new_content_id);
 
 CREATE TABLE lineage (
     from_file_id bigint REFERENCES files ON DELETE CASCADE,
@@ -299,9 +301,13 @@ ALTER TABLE files ENABLE ROW LEVEL SECURITY;
 CREATE POLICY files_visible ON files FOR SELECT USING (acl_id = ANY (visible_acls()));
 
 ALTER TABLE contents ENABLE ROW LEVEL SECURITY;
+-- a content is visible through a file that holds it now, an archive member, or the history of a visible file
+-- (a past version nobody holds any more is still the owner's to see)
 CREATE POLICY contents_visible ON contents FOR SELECT USING (
     EXISTS (SELECT 1 FROM files f WHERE f.content_id = contents.content_id)
-    OR EXISTS (SELECT 1 FROM members m WHERE m.content_id = contents.content_id));
+    OR EXISTS (SELECT 1 FROM members m WHERE m.content_id = contents.content_id)
+    OR EXISTS (SELECT 1 FROM history h WHERE h.old_content_id = contents.content_id)
+    OR EXISTS (SELECT 1 FROM history h WHERE h.new_content_id = contents.content_id));
 
 ALTER TABLE content_chunks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY chunks_visible ON content_chunks FOR SELECT USING (
