@@ -121,6 +121,23 @@ class TestWeb(ServerCase):
         self.assertIn("A second factor is set up", c2.get("/account").get_data(as_text=True))
 
 
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestBehindProxy(TestWeb):
+    SERVER_WEB = '[web]\nsecure_cookies = false\nsession_key = "test-key"\nbehind_proxy = true\n'
+
+    def test_limit_is_per_visitor_not_per_proxy(self):
+        def fail(addr, n):
+            c = self.client()
+            for _ in range(n):
+                tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").get_data(as_text=True)).group(1)
+                r = c.post("/login", data={"csrf": tok, "name": "user-1", "password": "wrong"},
+                           headers={"X-Forwarded-For": addr}, environ_base={"REMOTE_ADDR": "127.0.0.1"})
+            return r.status_code
+        self.assertEqual(fail("192.0.2.10", 5), 200)     # five failures from one visitor: still answered
+        self.assertEqual(fail("192.0.2.10", 1), 429)     # the sixth is refused
+        self.assertEqual(fail("192.0.2.11", 1), 200)     # another visitor behind the same proxy is not
+
+
 class TestAuth(unittest.TestCase):
     def test_password_and_totp(self):
         from pinakes import auth

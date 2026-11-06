@@ -24,6 +24,11 @@ LOGIN_WINDOW = 15 * 60   # seconds
 def create_app(cfg, connect=None):
     app = Flask(__name__)
     web = cfg.web
+    if web.get("behind_proxy"):
+        # One reverse proxy in front (it sets X-Forwarded-For and -Proto): without this every visitor is the proxy's
+        # address, and the per-address sign-in limit becomes one limit for everybody. Trust exactly one hop.
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     key_file = web.get("session_key_file")
     if key_file and os.path.exists(key_file):
         with open(key_file, "rb") as f:
