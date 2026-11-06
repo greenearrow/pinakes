@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pinakes"
+version = "0.1.0.dev0"
+description = "A catalog of every file on every machine in a home lab, and of who owns it"
+readme = "README.md"
+license = { text = "GPL-3.0-only" }
+requires-python = ">=3.10"
+dependencies = []                      # the agent is standard library only (plus tomli on 3.10)
+
+[project.optional-dependencies]
+agent310 = ["tomli>=1.2"]
+server = ["psycopg[binary]>=3.1", "flask>=3.0", "waitress>=3.0"]
+mcp = ["mcp>=1.0"]
+
+[project.scripts]
+pinakes-agent = "pinakes.agent:main"
+pinakes-ingest = "pinakes.ingest:main"
+pinakes = "pinakes.cli:main"
+pinakes-web = "pinakes.web:main"
+
+[tool.setuptools]
+packages = ["pinakes"]
+
+[tool.setuptools.package-data]
+pinakes = ["schema.sql", "templates/*.html", "static/*"]

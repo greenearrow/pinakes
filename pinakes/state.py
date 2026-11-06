@@ -1,0 +1,94 @@
+"""The agent's local state (SQLite): what it last saw of every file, and its scans."""
+
+import sqlite3
+import time
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS files (
+    root TEXT NOT NULL, relpath TEXT NOT NULL,
+    size INTEGER, mtime_ns INTEGER, ctime_ns INTEGER, btime_ns INTEGER,
+    dev INTEGER, ino INTEGER, nlink INTEGER, uid INTEGER,
+    sha256 TEXT, chunk_params TEXT, seen_scan INTEGER,
+    PRIMARY KEY (root, relpath));
+CREATE INDEX IF NOT EXISTS files_inode ON files (dev, ino);
+CREATE TABLE IF NOT EXISTS scans (
+    scan_id INTEGER PRIMARY KEY, root TEXT NOT NULL, started REAL NOT NULL, finished REAL);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+"""
+
+COLUMNS = ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256", "chunk_params")
+
+
+class State:
+    def __init__(self, path):
+        self.db = sqlite3.connect(path, isolation_level=None)  # transactions managed explicitly
+        self.db.row_factory = sqlite3.Row
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.executescript(SCHEMA)
+
+    def close(self):
+        self.db.close()
+
+    # transactions: one per batch, committed after the batch file is safely written
+    def begin(self):
+        self.db.execute("BEGIN IMMEDIATE")
+
+    def commit(self):
+        self.db.execute("COMMIT")
+
+    def rollback(self):
+        if self.db.in_transaction:
+            self.db.execute("ROLLBACK")
+
+    def reserve_seq(self):
+        """Reserve the next batch sequence number, committed at once (outside any batch transaction).
+
+        A crash after reserving leaves a gap, never a reused number: the ingester applies batches in increasing
+        order and ignores a number it has already seen, so a reused number could lose a batch; a gap loses nothing.
+        """
+        assert not self.db.in_transaction
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'next_seq'").fetchone()
+        seq = int(row["value"]) if row else 1
+        self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('next_seq', ?)", (str(seq + 1),))
+        return seq
+
+    def open_scan(self, root):
+        """The unfinished scan of this root to resume, or a new one."""
+        row = self.db.execute("SELECT scan_id, started FROM scans WHERE root = ? AND finished IS NULL "
+                              "ORDER BY scan_id DESC LIMIT 1", (root,)).fetchone()
+        if row:
+            return row["scan_id"], row["started"], True
+        now = time.time()
+        cur = self.db.execute("INSERT INTO scans (root, started) VALUES (?, ?)", (root, now))
+        return cur.lastrowid, now, False
+
+    def finish_scan(self, scan_id):
+        self.db.execute("UPDATE scans SET finished = ? WHERE scan_id = ?", (time.time(), scan_id))
+
+    def get(self, root, relpath):
+        return self.db.execute("SELECT * FROM files WHERE root = ? AND relpath = ?", (root, relpath)).fetchone()
+
+    def by_inode(self, dev, ino, size, mtime_ns):
+        """A hashed record of the same inode, unchanged in size and mtime (another link to it)."""
+        return self.db.execute(
+            "SELECT * FROM files WHERE dev = ? AND ino = ? AND size = ? AND mtime_ns = ? AND sha256 IS NOT NULL "
+            "LIMIT 1", (dev, ino, size, mtime_ns)).fetchone()
+
+    def put(self, root, relpath, rec, scan_id):
+        self.db.execute(
+            "INSERT OR REPLACE INTO files (root, relpath, %s, seen_scan) VALUES (?, ?, %s, ?)"
+            % (", ".join(COLUMNS), ", ".join("?" * len(COLUMNS))),
+            (root, relpath) + tuple(rec.get(c) for c in COLUMNS) + (scan_id,))
+
+    def mark_seen(self, root, relpath, scan_id):
+        self.db.execute("UPDATE files SET seen_scan = ? WHERE root = ? AND relpath = ?", (scan_id, root, relpath))
+
+    def unseen(self, root, scan_id):
+        return [r["relpath"] for r in self.db.execute(
+            "SELECT relpath FROM files WHERE root = ? AND seen_scan IS NOT ? ORDER BY relpath", (root, scan_id))]
+
+    def delete(self, root, relpath):
+        self.db.execute("DELETE FROM files WHERE root = ? AND relpath = ?", (root, relpath))
+
+    def all_files(self, root):
+        return self.db.execute("SELECT * FROM files WHERE root = ? ORDER BY relpath", (root,))
