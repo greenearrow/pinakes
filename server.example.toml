@@ -3,8 +3,8 @@
 # each line names a file readable only by the service.
 
 [database]
-dsn = "postgresql://pinakes@localhost/pinakes"
-password_file = "/etc/pinakes/secrets/db-password"
+dsn = "postgresql://pinakes_ingest@localhost/pinakes"   # the ingester: bypasses row-level security
+password_file = "/etc/pinakes/secrets/ingest-db-password"
 
 [web]
 dsn = "postgresql://pinakes_app@localhost/pinakes"   # the web UI and CLI's role: row-level security applies

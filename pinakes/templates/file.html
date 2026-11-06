@@ -8,9 +8,9 @@
   <dt>Owner</dt><dd>{{ f.owner or 'a group' }}</dd>
   <dt>Size</dt><dd>{{ fmt_size(f.size) }}</dd>
   <dt>SHA-256</dt><dd class="mono">{{ f.sha256 or 'not hashed' }}</dd>
-  <dt>Modified</dt><dd>{{ f.mtime }}</dd>
-  <dt>Changed (ctime)</dt><dd>{{ f.ctime }}</dd>
-  <dt>Created (birth)</dt><dd>{{ f.btime or 'not recorded by this filesystem' }}</dd>
+  <dt>Modified</dt><dd>{{ f.mtime.strftime('%Y-%m-%d %H:%M') if f.mtime else '' }}</dd>
+  <dt>Changed (ctime)</dt><dd>{{ f.ctime.strftime('%Y-%m-%d %H:%M') if f.ctime else '' }}</dd>
+  <dt>Created (birth)</dt><dd>{{ f.btime.strftime('%Y-%m-%d %H:%M') if f.btime else 'not recorded by this filesystem' }}</dd>
   <dt>In the catalog</dt><dd>{{ f.first_seen.date() }} to {{ f.last_seen.date() }}</dd>
 </dl>
 
