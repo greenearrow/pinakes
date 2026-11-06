@@ -125,7 +125,9 @@ class Scanner:
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
-                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started))}
+                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+                "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
+                             "mirrors": root.mirrors}}
 
     def _record(self, root, relpath, abspath, prev, seen_inodes):
         """The record to send for one path, and the state row to keep; (None, None) if unchanged."""

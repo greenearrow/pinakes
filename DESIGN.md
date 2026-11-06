@@ -203,7 +203,7 @@ can follow it. Lineage is a graph of file ids, built from four kinds of evidence
    (likely, with the overlap recorded).
 4. **Names**, normalized by a list of patterns before comparing: copy markers (` - Copy`, ` copy`, ` (1)`,
    `Copy of `), dates in common formats, version marks (`v2`, `_final`, ` - new`, ` - old`), case and separators.
-   The project ships the list (`patterns/names.toml`) with defaults for common systems and programs; a site adds its
+   The project ships the list (`pinakes/patterns/names.toml`) with defaults for common systems and programs; a site adds its
    own in config. A normalized-name match with the same extension is weak alone (possible); with chunk overlap, or
    appearing in the window the original changed, it is likely.
 

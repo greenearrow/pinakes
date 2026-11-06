@@ -37,17 +37,17 @@ default_owner = "user-1"               # owns everything no rule claims
 
 [[ownership.rule]]
 root = "store"
-path = "people/user-2/**"
+folder = "people/user-2"            # a folder and everything below it
 owner = "user-2"
 
 [[ownership.rule]]
 root = "store"
-path = "shared/**"
+folder = "shared"
 owner = "household"
 
 [[ownership.enrollment]]
 root = "store"
-path = "people/user-1/projects/**"
+folder = "people/user-1/projects"
 person = "user-2"
 as = "reader"                          # co-owner, reader or annotator
 

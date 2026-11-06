@@ -1,0 +1,19 @@
+# Name patterns for lineage (DESIGN.md "Lineage across machines"). Before two names are compared, each pattern is
+# removed from the name's stem (the part before the extension), in order, then case and separators are folded.
+# A site adds its own in the file named by [lineage] name_patterns in server.toml, in the same form.
+# Python regular expressions, matched case-insensitively.
+
+patterns = [
+  # copy markers from file managers and browsers
+  '^copy of\s+',
+  '\s*-\s*copy(\s*\(\d+\))?$',
+  '\s+copy(\s+\d+)?$',
+  '\s*\(\d+\)$',
+  '\s*\[\d+\]$',
+  # dates and times: 2026-11-06, 2026_11_06, 20261106, 11-06-2026, 06.11.2026, with an optional time
+  '[\s_-]*\d{4}[-_.]?\d{2}[-_.]?\d{2}([T\s_-]*\d{2}[-_.:]?\d{2}([-_.:]?\d{2})?)?$',
+  '[\s_-]*\d{1,2}[-_.]\d{1,2}[-_.]\d{2,4}$',
+  # version and state marks
+  '[\s_-]*v(er(sion)?)?\s*\d+(\.\d+)*$',
+  '[\s_-]*(final|draft|new|old|edited|edit|revised|rev\d*|backup|bak|orig(inal)?|latest|updated?)(\s*\d+)?$',
+]

@@ -49,3 +49,21 @@ were made while building, to keep going, and are open to change.
 - **Chunk digests** are the first 128 bits of SHA-256: enough to tell chunks apart, half the space.
 - **Chunking speed:** pure Python, about 16 MB/s on a 12th-gen desktop core (measured). Fine for drop folders and
   documents; a media root should leave chunks off.
+- **Owner rules are folders**, not globs: a rule covers a folder and everything below it, and the longest matching
+  folder wins. That is what "change it per folder" needs, and it keeps the most-specific rule obvious.
+- **Visibility through ACLs.** Each distinct combination of owner and enrollments is one ACL; a file points at one,
+  and `acl_members` is it expanded to people (groups included). Row-level security is then one array test per row
+  (`acl_id = ANY (visible_acls())`), computed once per statement. Changing a rule recomputes the root's files
+  (`recompute_root`), with no rescan.
+- **The `present` view is `security_invoker`.** A plain view reads its table as the view's owner, so row-level
+  security wouldn't apply through it. Found while writing the schema; a test checks the view shows exactly what the
+  table does.
+- **Moves are matched only within one root and one scan:** a gone path and a new path in the same completed scan.
+  A move between two roots of the same machine shows as a copy (a certain lineage edge) and a gone file.
+- **Direction of a copy** comes from the files' mtimes: the earlier holder of the content is the source. A plain copy
+  gets a new mtime; an edit's mtime is when it was written. So a laptop reporting late still links the right way.
+- **Weaker lineage evidence** (chunks, names) is used only for a file with no line yet: a changed file keeps its own,
+  and a certain edge isn't joined by a guess.
+- **A name match** links to the most recent earlier file with the same normalized name and extension: the likeliest
+  immediate parent.
+- **pg_trgm** is installed in `public`: the database is the catalog's own.
