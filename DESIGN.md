@@ -80,9 +80,9 @@ is possible later.
 | `roots` | A scanned folder: host, path, label, kind (`primary`, `drop`, `backup`), policies (below). |
 | `owner_rules`, `enrollments` | Who owns which folder, and who else is enrolled in it ("Ownership and enrollments"). |
 | `contents` | One row per distinct content: SHA-256, size, MIME type, extracted metadata. Copies share it. |
-| `files` | One row per path present now: root, relative path, content, mtime (ns), device and inode, owner, first seen, last seen, hashed at. A stable `file_id` follows the file through moves and edits. |
+| `files` | One row per path present now: root, relative path, content, mtime, ctime and birth time (ns; birth time where the filesystem has it, through `statx`), device and inode, owner, first seen, last seen, hashed at. A stable `file_id` follows the file through moves and edits. |
 | `links` | For hard-linked trees (snapshot backups): one inode, many paths. The inode is hashed once. |
-| `history` | Every change: new, changed, moved, moved and changed, gone; old and new path and hash; evidence; confidence; when. |
+| `history` | Every change: new, changed, moved, moved and changed, gone; old and new path and hash; the file's mtime, ctime and birth time before and after; the window it happened in (the dates of the scan before and the scan that saw it); evidence; confidence. |
 | `members` | Files inside archives (zip, tar), when a root asks for it: archive content, entry path, size, SHA-256. |
 | `chunks` | Optional, per root: content-defined chunk hashes (FastCDC). Used only to recognise an edited and renamed file. |
 | `metadata` | Typed metadata on a content or on one file, by schema (METADATA.md): extracted, imported from a sidecar, or entered by a person. |
@@ -162,6 +162,26 @@ Per root, on each scan, for every path:
 
 A move keeps the `file_id`, so metadata entered by a person, shares and history follow the file.
 
+### When a change happened
+
+History exists to answer "which backup holds the version I want", not to track what people do, so its unit is the
+**date**. Each change carries:
+
+- the **window**: the date of the last scan that saw the old state and of the scan that saw the new one. A nightly
+  scan gives one day; a laptop that is often off, a wider window;
+- the file's own times, before and after: **mtime** (content last written), **ctime** (last rename or change of
+  permissions; on Linux a rename updates it, so a move can usually be dated, not only bracketed), **birth time**
+  (created on this filesystem, where the filesystem records it). Python's `os.stat` has no birth time on Linux
+  (no `st_birthtime`, no `os.statx` in 3.12), so the agent calls `statx(2)` through `ctypes`, still standard library.
+  Its result struct is 256 bytes and must be declared in full: a short one is overrun by the kernel. A probe on ext4
+  (Python 3.12, kernel 7.0) matched `stat %W`, and its mtime and inode matched `os.stat`.
+
+Edits between two scans collapse into one change: the catalog sees the hash before and the hash after, never the
+versions in between, and it never holds old content. Finding an old version is a matter of matching its hash and
+dates against backup roots, which the catalog does (`versions` below); restoring it is the backup tool's job.
+
+History starts when a root is first scanned. Earlier states are not reconstructed.
+
 Not covered: content changed so much that no chunks survive, and inode reuse by an unrelated file (hence the size
 check). A live watcher (fanotify/inotify) could be added later on a busy server; the nightly scan stays the source of
 truth because a watcher misses whatever happens while it isn't running.
@@ -207,6 +227,7 @@ pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or bac
 pinakes backed-up HOST:PATH            per file: backup copies, newest age
 pinakes dupes [HOST:PATH]              duplicates, largest first
 pinakes history HOST:PATH              what happened to a file or folder
+pinakes versions HOST:PATH             each known version (hash, dates) and which backup copies hold it
 pinakes changes --since DATE [--host]  what changed
 pinakes meta SCHEMA.FIELD=VALUE        files by metadata
 pinakes stale                          hosts whose last scan is older than their schedule allows
