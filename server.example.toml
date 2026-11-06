@@ -30,6 +30,27 @@ roles = ["person"]
 [groups.household]
 members = ["user-1", "user-2"]
 
+# Ownership: seeds the database on first start. After that, rules and enrollments are changed in the web UI
+# (per folder, by its owner or by an administrator in step-up) and this section is only read for new roots.
+[ownership]
+default_owner = "user-1"               # owns everything no rule claims
+
+[[ownership.rule]]
+root = "store"
+path = "people/user-2/**"
+owner = "user-2"
+
+[[ownership.rule]]
+root = "store"
+path = "shared/**"
+owner = "household"
+
+[[ownership.enrollment]]
+root = "store"
+path = "people/user-1/projects/**"
+person = "user-2"
+as = "reader"                          # co-owner, reader or annotator
+
 # Hosts allowed to send batches, each with the public key its agent uses and the roots it may report.
 [hosts.server-1]
 key = "/etc/library-of-alexandria/agents/server-1.pub"
@@ -42,6 +63,7 @@ roots = ["store-snapshots"]
 [hosts.laptop-1]
 key = "/etc/library-of-alexandria/agents/laptop-1.pub"
 roots = ["downloads", "pictures"]
+uid_map = { 1000 = "user-1" }          # for rules by uid on this host
 expected_every = "never"               # often off: shown as stale, never alerted
 
 [audit]

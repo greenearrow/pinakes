@@ -1,6 +1,6 @@
 # alexandria-agent configuration: one file per machine. Copy to /etc/library-of-alexandria/agent.toml (or
 # ~/.config/library-of-alexandria/agent.toml for a per-user agent) and edit. Nothing site-specific lives in the code.
-# The server's own configuration is server.example.toml.
+# Owners are not set here: the server decides them (server.example.toml, [ownership]).
 
 [agent]
 host = "server-1"                      # this machine's name in the catalog
@@ -23,7 +23,7 @@ identity = "/var/lib/library-of-alexandria/id_ed25519"
 # kind = "directory"
 # path = "/srv/library-of-alexandria/inbox"
 
-# One [[root]] per scanned folder. Owners are names from the server's [people] and [groups].
+# One [[root]] per scanned folder.
 # This example shows one root of every kind; a real machine lists only its own, and the server's [hosts] says
 # which host may report which root (server.example.toml).
 
@@ -31,11 +31,6 @@ identity = "/var/lib/library-of-alexandria/id_ed25519"
 label = "store"
 path = "/mnt/store"
 kind = "primary"
-owner = { default = "user-1", rules = [
-  { path = "people/user-1/**", owner = "user-1" },
-  { path = "people/user-2/**", owner = "user-2" },
-  { path = "shared/**", owner = "household" },
-] }
 archives = true                        # list zip and tar members
 exclude = ["**/lost+found", "**/.Trash-*"]
 managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operations may do here; [] for none
@@ -44,20 +39,17 @@ managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operati
 label = "store-writing"
 path = "/mnt/store/people/user-1/writing"
 kind = "primary"
-owner = "user-1"
 protected = true                       # hash only: no chunks, no archives, no metadata, no previews
 
 [[root]]
 label = "store-snapshots"
 path = "/mnt/backup/snapshots"
 kind = "backup"
-mirrors = { root = "server-1:store", layout = "*/{relpath}" }   # each snapshot folder holds the source's tree
-owner = "inherit"                      # each copy belongs to its source file's owner
+mirrors = { root = "store", layout = "*/{relpath}" }   # each snapshot folder holds the source's tree
 
 [[root]]
 label = "downloads"
 path = "/home/user/Downloads"
 kind = "drop"
-owner = { uid_map = { 1000 = "user-1" } }
 chunks = { enabled = true, min_size = "64KiB", max_size = "2GiB", average = "256KiB" }
 exclude = ["**/*.part", "**/*.crdownload"]

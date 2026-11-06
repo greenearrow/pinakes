@@ -36,17 +36,21 @@ database superuser could change it.
 
 ## Ownership
 
-Every file row has an owner, set by the ingester from the root's owner rule (DESIGN.md "Roots and their policies"):
+Every file row has one owner, set by the ingester from the site default owner and the folder rules (DESIGN.md
+"Ownership and enrollments"). Backup copies inherit the owner of the source file they mirror. A file no rule claims
+goes to the site default owner, never to "everyone".
 
-- a fixed person for the root, or
-- path rules (`people/<name>/...` belongs to that person), or
-- the file's owner id on the host, through a uid map per host.
+Owners can share a file, folder or bundle with a person or a group (read, or read and annotate), and enroll people in
+a folder as co-owners, readers or annotators. A household can have folders owned by a group.
 
-Backup copies inherit the owner of the source file they mirror. Files with no matching rule go to the root's default
-owner, never to "everyone".
+Who may change ownership:
 
-Owners can share a file, folder or bundle with a person or a group (read, or read and annotate). A household can have
-shared roots (a family photo folder) owned by a group.
+- A folder's owner (or co-owner) may give it to someone else and enroll or remove others.
+- Nobody takes ownership of someone else's folder as a person. An administrator can, in a step-up session, with a
+  reason; the previous owner is told.
+- Every change of a rule or an enrollment is in the audit log, shown to the people it affects.
+- A new rule applies at once to every file it covers, with no rescan, so its effect is previewed first ("this moves
+  1,204 files from user-1 to user-2") before it is saved.
 
 ## Enforcement: row-level security
 
@@ -100,6 +104,17 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - No file content is served unless a root enables previews; never for a protected root.
 - Rate limits on sign-in and search.
 
+## The MCP server (a wish)
+
+DESIGN.md "Wish: an MCP server". Its rules:
+
+- One token per person and client, created and revoked in the web UI, optionally limited to some roots; stored
+  hashed on the server.
+- The token acts as that person under row-level security. It can never open a step-up session, request operations
+  or edit metadata.
+- Every MCP query is logged with its token, so a person can see what their assistants asked.
+- A hosted assistant receives the names and metadata its answers contain. The UI says so when the token is made.
+
 ## The database and its backups
 
 - Its dumps hold everything: back them up like the most private data in the catalog (encrypted at rest offsite).
@@ -119,4 +134,6 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 | A forged batch claims another host's files | Host from the SSH key; paths checked against enrolled roots. |
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
+| A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
+| An assistant with an MCP token oversteps | Read-only, the person's own view, no step-up, revocable, logged. |
 | Photo locations or people's names leak through sharing | Metadata fields marked sensitive stay with the owner unless shared explicitly (METADATA.md). |

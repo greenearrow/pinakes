@@ -65,9 +65,11 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
   set for the database, so row-level security, not the application code, decides what they can see.
 - **`alexandria`**: the command-line client, using the same API as the web UI.
 
-Python 3.11+ (standard library only for the agent's core: `hashlib`, `sqlite3`, `tomllib`; metadata extractors may
-need packages, and are optional per type). On 3.8-3.10 the agent needs `tomli`. The server needs PostgreSQL 15+ and
-`psycopg`. A single-machine mode with SQLite (no users, no row-level security) is possible later.
+Python 3.11+ throughout. The standard library first; where a dependency earns its place, the preferred ones are
+**Flask** (web) and **waitress** (its WSGI server). The agent's core is standard library only (`hashlib`, `sqlite3`,
+`tomllib`); metadata extractors may need packages and are optional per type. On 3.8-3.10 the agent needs `tomli`.
+The server needs PostgreSQL 15+ and `psycopg`. A single-machine mode with SQLite (no users, no row-level security)
+is possible later.
 
 ## What is recorded
 
@@ -75,7 +77,8 @@ need packages, and are optional per type). On 3.8-3.10 the agent needs `tomli`. 
 |---|---|
 | `people`, `groups` | Who can sign in, and groups for sharing (a household). |
 | `hosts` | One row per agent: name, enrolled roots, last batch, last full scan, schedule. |
-| `roots` | A scanned folder: host, path, label, kind (`primary`, `drop`, `backup`), owner rule, policies (below). |
+| `roots` | A scanned folder: host, path, label, kind (`primary`, `drop`, `backup`), policies (below). |
+| `owner_rules`, `enrollments` | Who owns which folder, and who else is enrolled in it ("Ownership and enrollments"). |
 | `contents` | One row per distinct content: SHA-256, size, MIME type, extracted metadata. Copies share it. |
 | `files` | One row per path present now: root, relative path, content, mtime (ns), device and inode, owner, first seen, last seen, hashed at. A stable `file_id` follows the file through moves and edits. |
 | `links` | For hard-linked trees (snapshot backups): one inode, many paths. The inode is hashed once. |
@@ -101,9 +104,8 @@ Set in config, per root:
   - `backup`: a copy of another root. Needs `mirrors`: which root it copies, and how a backup path maps back to a
     source path (for example `snapshots/*/`, then the source's relative path). That answers "is this backed up, how
     many times, how old is the newest copy" for a source file, and gives backup copies their source's owner.
-- `owner`: who owns what's in it. A person; or rules by path (`people/<name>/` owned by that person); or by the
-  file's owner id on the host (a uid map per host). Servers that map every client to one account, as NFS exports
-  often do, need path rules: the uid says nothing there.
+- Owners are not set here: see "Ownership and enrollments" below. The agent reports paths and uids; the server
+  decides who owns them.
 - `hash`: `sha256` (default) or `none` (names and sizes only).
 - `chunks`: off (default) or on, with a size range.
 - `archives`: list members of zip and tar files.
@@ -112,6 +114,24 @@ Set in config, per root:
 - `protected`: hash only. No chunks, no archive listing, no metadata extraction, no previews, nothing derived from
   content; the UI never shows more than path, size and hash.
 - `managed`: off (default) or the operations allowed here (`move`, `rename`, `write-sidecar`, `trash`).
+
+### Ownership and enrollments
+
+Every file has exactly one owner, worked out on the server, so a change of ownership never needs a rescan or a change
+on the machine:
+
+1. **A site default owner** owns everything no rule claims.
+2. **Folder rules** give a folder and everything below it to a person or a group (`people/user-2/**` to `user-2`).
+   The most specific rule wins. A rule can also use the file's uid on one host, through that host's uid map; servers
+   that map every client to one account, as NFS exports often do, need path rules, because the uid says nothing there.
+3. **Enrollments** add people to a folder without changing its owner: as co-owners (same rights as the owner), or as
+   readers or annotators. An enrollment is a standing share of a folder, inherited by everything below it, including
+   files that arrive later.
+
+Rules and enrollments are seeded from the server's config and live in the database after that, so they are changed in
+the web UI per folder: by the folder's owner (give it away, enroll others), or by an administrator in a step-up
+session. Every change is audited and shown to the people it affects (SECURITY.md). Backup copies follow their source
+file's owner and enrollments.
 
 ### Backup servers
 
@@ -148,15 +168,16 @@ truth because a watcher misses whatever happens while it isn't running.
 
 ## Web UI
 
-Served by `alexandria-web` behind the site's HTTPS reverse proxy. Proposed stack: Python (FastAPI or similar) with
-server-rendered pages and htmx, no JavaScript build step; open.
+Served by `alexandria-web` behind the site's HTTPS reverse proxy. Stack: Flask with Jinja templates, served by
+waitress; server-rendered pages, with htmx (one vendored file) for partial updates; no JavaScript build step.
 
 - **Browse** by host and root, or by person, or as one merged tree per source with its copies and backups folded in.
 - **Search** by name, path, hash, size, date, and metadata fields (author, place, camera, date taken); saved searches.
 - **A file's page**: every copy and backup, with ages; history (moves, edits); its bundle; metadata by schema, with
   where each value came from (extracted, sidecar, a person); shares.
 - **Reports**: only here, safe to delete, duplicates, not backed up, stale hosts, a root's growth.
-- **Managing**: edit metadata; tag; share; mark "keep" or "drop"; request file operations (below).
+- **Managing**: edit metadata; tag; share; change a folder's owner or enroll people (above); mark "keep" or "drop";
+  request file operations (below).
 - **Administration**: people, groups, hosts and roots; the audit log. Administrator views of other people's records
   only after stepping up (SECURITY.md).
 
@@ -192,6 +213,23 @@ alexandria stale                          hosts whose last scan is older than th
 ```
 
 Read-only, scoped to what the caller may see. Output as text or JSON.
+
+## Wish: an MCP server
+
+Not a requirement. The same read-only queries, offered as Model Context Protocol tools (`find`, `where`,
+`only_here`, `safe_to_delete`, `backed_up`, `history`, `search_metadata`), so an assistant can answer "is this
+folder safe to delete" or "where are the photos from that trip" from the catalog instead of walking disks.
+
+- `alexandria-mcp`, a thin layer over the API (the official Python MCP SDK as its one dependency), over stdio for a
+  local client or streamable HTTP behind the proxy.
+- It acts as one person, with a token that person creates in the web UI and can revoke. Row-level security applies
+  exactly as for the web UI.
+- Read-only. No step-up: an administrator session is never available to an assistant. No file operations, no
+  metadata edits, at least at first.
+- Protected roots show path, size and hash only, as everywhere.
+- What leaves the house is the person's choice: a local model (through a local runner with tool calling) keeps
+  everything on the LAN; a hosted assistant receives whatever file names and metadata its queries return. The token
+  can be limited to some roots for that reason.
 
 ## Running on machines that are often off
 

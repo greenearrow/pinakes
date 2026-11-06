@@ -3,7 +3,8 @@
 A cross-machine file catalog for a home lab, with owners, metadata and a web UI: see `README.md`, `DESIGN.md`,
 `SECURITY.md` and `METADATA.md`. Status: design only.
 
-Not decided yet: publishing; the web stack.
+Decided: Python 3.11+; the standard library first, and where a dependency is needed, Flask and waitress for the
+web. Not decided yet: publishing. A wish, not a requirement: an MCP server over the read-only queries.
 
 ## Rules for Claude in this repo
 

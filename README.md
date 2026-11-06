@@ -26,7 +26,10 @@ In short:
 - File operations (move, rename, write a sidecar, trash) only by approved request, carried out and verified by the
   agent; nothing is ever deleted.
 
-Target: Debian-family Linux with systemd, Python 3.11+, PostgreSQL 15+.
+- Owners per folder, changeable in the web UI, with others enrolled as co-owners, readers or annotators.
+- A wish: an MCP server over the read-only queries, acting as one person.
+
+Target: Debian-family Linux with systemd, Python 3.11+, PostgreSQL 15+; the web UI on Flask and waitress.
 
 Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
