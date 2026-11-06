@@ -117,11 +117,14 @@ def _walk(top, exclude):
 
 
 class Scanner:
-    def __init__(self, cfg, state, hook=None):
+    PROGRESS_EVERY = 60  # seconds between progress lines (to stdout: the journal under systemd)
+
+    def __init__(self, cfg, state, hook=None, progress=None):
         self.cfg = cfg
         self.state = state
         self.hook = hook          # tests: called with (relpath) before each file; may raise Interrupted
         self.counter = {}
+        self.progress = progress  # callable(str), e.g. print; None: quiet
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
@@ -230,8 +233,15 @@ class Scanner:
                 self.state.begin()
             return writer
 
+        seen = 0
+        last_report = time.monotonic()
         try:
             for relpath, abspath, err in _walk(top, root.exclude):
+                seen += 1
+                if self.progress and time.monotonic() - last_report >= self.PROGRESS_EVERY:
+                    last_report = time.monotonic()
+                    self.progress("%s: %d paths walked, %d sent, %d hashed, at %s"
+                                  % (root.label, seen, summary["sent"], self.counter.get("hashed", 0), relpath))
                 if err is not None:
                     unreadable.append(relpath)
                     w = ensure_writer()

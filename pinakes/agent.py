@@ -57,7 +57,7 @@ def cmd_scan(cfg, args):
     st = State(cfg.state)
     rc = 0
     try:
-        sc = Scanner(cfg, st)
+        sc = Scanner(cfg, st, progress=lambda m: print(m, flush=True))
         roots = [cfg.root(args.root)] if getattr(args, "root", None) else cfg.roots
         for root in roots:
             if getattr(args, "check_busy", False) and busy(cfg):

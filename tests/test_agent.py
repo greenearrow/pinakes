@@ -318,6 +318,16 @@ class TestScan(Tree):
         self.assertEqual(recs["link"]["target"], "real")
         self.assertNotIn("link/x", recs)
 
+    def test_progress_lines(self):
+        for i in range(5):
+            self.write("f%d" % i, b"x")
+        lines = []
+        self.scanner.progress = lines.append
+        self.scanner.PROGRESS_EVERY = 0
+        self.scan()
+        self.assertEqual(len(lines), 5)
+        self.assertIn("r: 5 paths walked", lines[-1])
+
     def test_full_resend(self):
         self.write("a", b"a")
         self.scan()
