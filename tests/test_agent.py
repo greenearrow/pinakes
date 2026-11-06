@@ -258,6 +258,38 @@ class TestScan(Tree):
         self.assertFalse(any(r["t"] == "gone" for r in recs))
         self.assertTrue(any(r["t"] == "error" and r["path"] == "locked" for r in recs))
 
+    def test_mount_points_not_crossed(self):
+        self.write("own/a", b"a")
+        self.write("other-fs/secret", b"plaintext")
+        self.write("other-fs/deeper/b", b"b")
+        import pinakes.scan as scanmod
+        real = scanmod._dev_of
+        root_dev = os.stat(self.top).st_dev
+        scanmod._dev_of = lambda e: root_dev + 1 if e.name == "other-fs" else real(e)
+        try:
+            self.scan()
+        finally:
+            scanmod._dev_of = real
+        recs = self.drain()
+        paths = {r["path"] for r in recs if r["t"] == "file"}
+        self.assertEqual(paths, {"own/a"})
+        self.assertTrue(any(r["t"] == "error" and r["path"] == "other-fs" and "mount point" in r["error"]
+                            for r in recs))
+
+    def test_mount_point_appearing_hides_nothing_as_gone(self):
+        self.write("media/x", b"x")
+        self.scan()
+        self.drain()
+        import pinakes.scan as scanmod
+        real = scanmod._dev_of
+        root_dev = os.stat(self.top).st_dev
+        scanmod._dev_of = lambda e: root_dev + 1 if e.name == "media" else real(e)
+        try:
+            self.scan()
+        finally:
+            scanmod._dev_of = real
+        self.assertFalse(any(r["t"] == "gone" for r in self.drain()))
+
     def test_mass_gone_guard(self):
         for i in range(150):
             self.write("f%03d" % i, b"%d" % i)

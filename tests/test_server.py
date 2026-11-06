@@ -307,6 +307,42 @@ class TestLineage(ServerCase):
         self.assertEqual(e[("report - new.txt", "Report (2) final.txt")], ("derived_from", "possible"))
 
 
+class TestHardLinks(ServerCase):
+    """Hard links are the same data on the same disk: one copy, however many paths."""
+
+    def test_snapshots_are_one_copy_and_take_space_once(self):
+        from pinakes import queries
+        data = os.urandom(10000)
+        self.write("server-1", "store", "people/user-1/photo.jpg", data)
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        first = self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/photo.jpg", data)
+        os.makedirs(self.path("server-2", "snapshots", "2026-01-02_0140/people/user-1"))
+        os.link(first, self.path("server-2", "snapshots", "2026-01-02_0140/people/user-1/photo.jpg"))
+        self.scan("server-2", "snapshots")
+        (row,) = queries.backed_up(self.conn, "store:people/user-1/")
+        self.assertEqual((row["backup_copies"], row["snapshots"]), (1, 2))
+        self.assertEqual(str(row["newest"]), "2026-01-02")
+        sizes = {e["entry"]: e["size"] for e in queries.listing(self.conn, "snapshots:")}
+        self.assertEqual(sizes, {"2026-01-01_0140": 10000, "2026-01-02_0140": 10000})
+
+    def test_dupes_count_copies_not_links(self):
+        from pinakes import queries
+        data = os.urandom(5000)
+        a = self.write("server-1", "store", "a.bin", data)
+        os.link(a, self.path("server-1", "store", "a-link.bin"))          # a hard link: reclaims nothing
+        self.scan("server-1", "store")
+        self.assertEqual(queries.dupes(self.conn), [])
+        self.write("server-1", "store", "a-copy.bin", data)               # a real second copy
+        self.scan("server-1", "store")
+        (d,) = queries.dupes(self.conn)
+        self.assertEqual((d["copies"], d["paths_count"], d["reclaimable"]), (2, 3, 5000))
+        f = self.file("store", "a.bin")
+        same = {r["relpath"]: r["same_inode"] for r in queries.where(self.conn, f)}
+        self.assertEqual(same, {"a.bin": True, "a-link.bin": True, "a-copy.bin": False})
+
+
 class TestRowLevelSecurity(ServerCase):
     def setUp(self):
         super().setUp()

@@ -3,7 +3,7 @@
   <tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th></tr>
   {% for r in rows %}
   <tr><td>{{ r.host }} · {{ r.root }} <span class="tag">{{ r.kind }}</span></td>
-      <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.gone_on %} <span class="tag">gone {{ r.gone_on }}</span>{% endif %}</td>
+      <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.gone_on %} <span class="tag">gone {{ r.gone_on }}</span>{% endif %}{% if r.same_inode and r.file_id != (f.file_id if f is defined else None) %} <span class="tag">hard link: same data</span>{% endif %}</td>
       <td class="num">{{ fmt_size(r.size) }}</td><td>{{ r.mtime.date() if r.mtime else '' }}</td>
       <td>{{ r.snapshot or '' }}</td></tr>
   {% else %}<tr><td colspan="5" class="muted">{{ empty }}</td></tr>{% endfor %}

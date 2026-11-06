@@ -15,13 +15,14 @@
   {% elif name == 'only-here' %}
     <p class="muted">Files under {{ loc }} with no copy anywhere else you can see.</p>{{ file_table(rows, "None: everything here exists elsewhere too.") }}
   {% else %}
-    <div class="scroll"><table><tr><th>File</th><th class="num">Backup copies</th><th>Newest snapshot</th></tr>
-    {% for r in rows %}<tr><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a></td><td class="num">{{ r.backup_copies }}</td><td>{{ r.newest or '—' }}</td></tr>{% endfor %}
+    <p class="muted">Backup copies are physical: snapshots made with hard links share one copy.</p>
+    <div class="scroll"><table><tr><th>File</th><th class="num">Backup copies</th><th class="num">Snapshots</th><th>Newest snapshot</th></tr>
+    {% for r in rows %}<tr><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a></td><td class="num">{{ r.backup_copies }}</td><td class="num">{{ r.snapshots }}</td><td>{{ r.newest or '—' }}</td></tr>{% endfor %}
     </table></div>
   {% endif %}
 {% endif %}
 {% elif name == 'dupes' %}
-<p class="muted">The same content at more than one place you can see (backups not counted).</p>
+<p class="muted">The same content stored more than once where you can see it (backups not counted; hard links are one copy).</p>
 <div class="scroll"><table><tr><th class="num">Copies</th><th class="num">Reclaimable</th><th>Where</th></tr>
 {% for r in rows %}<tr><td class="num">{{ r.copies }}</td><td class="num">{{ fmt_size(r.reclaimable) }}</td><td>{{ r.paths|join(', ') }}</td></tr>
 {% else %}<tr><td colspan="3" class="muted">No duplicates.</td></tr>{% endfor %}</table></div>

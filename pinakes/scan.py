@@ -88,8 +88,17 @@ def list_members(path):
     return out
 
 
-def _walk(top, exclude):
-    """(relpath, abspath, is_symlink) for every non-directory under top, sorted, excluded paths pruned."""
+class MountPoint(OSError):
+    """A folder that is another filesystem's mount point: not crossed (like restic --one-file-system)."""
+
+
+def _dev_of(entry):
+    return entry.stat(follow_symlinks=False).st_dev
+
+
+def _walk(top, exclude, root_dev=None):
+    """(relpath, abspath, error) for every non-directory under top, sorted, excluded paths pruned. With root_dev,
+    a folder on another filesystem is not entered: it comes back once, with a MountPoint error."""
     stack = [""]
     while stack:
         rel_dir = stack.pop()
@@ -109,6 +118,14 @@ def _walk(top, exclude):
                 is_dir = e.is_dir(follow_symlinks=False)
             except OSError:
                 is_dir = False
+            if is_dir and root_dev is not None:
+                try:
+                    dev = _dev_of(e)
+                except OSError:
+                    dev = root_dev
+                if dev != root_dev:
+                    yield rel, e.path, MountPoint("mount point of another filesystem: not crossed")
+                    continue
             if is_dir:
                 subdirs.append(rel)
             else:
@@ -236,7 +253,8 @@ class Scanner:
         seen = 0
         last_report = time.monotonic()
         try:
-            for relpath, abspath, err in _walk(top, root.exclude):
+            root_dev = None if root.cross_mounts else os.stat(top).st_dev
+            for relpath, abspath, err in _walk(top, root.exclude, root_dev):
                 seen += 1
                 if self.progress and time.monotonic() - last_report >= self.PROGRESS_EVERY:
                     last_report = time.monotonic()

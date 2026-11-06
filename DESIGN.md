@@ -29,6 +29,9 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
   writing sidecars) is a separate, opt-in capability per root ("Managing files").
 - **Each machine scans its own disks.** Local reads, not over a network share. A machine that is often off, or sleeps
   on demand, scans when it's awake and sends later.
+- **A root is one filesystem.** The walk doesn't enter a mount inside a root (a USB disk, a network share, an opened
+  encrypted folder): the mount point is reported once, and nothing that was under it is reported gone. A root can opt
+  out (`cross_mounts = true`). Bind mounts of the same filesystem look like ordinary folders and are walked.
 - **Every file has an owner, and people see only their own** unless they share it or an administrator deliberately
   steps up, which is logged where the owner can see it ([SECURITY.md](SECURITY.md)).
 - **No secrets on the clients.** Agents never hold database credentials. They write batches to a local spool and send
@@ -136,6 +139,15 @@ Rules and enrollments are seeded from the server's config and live in the databa
 the web UI per folder: by the folder's owner (give it away, enroll others), or by an administrator in a step-up
 session. Every change is audited and shown to the people it affects (SECURITY.md). Backup copies follow their source
 file's owner and enrollments.
+
+### Hard links and symlinks
+
+- **A hard link is one copy with several names.** Each path is its own row (they can be moved, owned and seen
+  separately), and rows with the same host, device and inode are one physical copy. Everything that counts copies
+  counts physical copies: duplicates (links reclaim nothing), backups (22 hard-linked snapshots of an unchanged file
+  are one backup copy), and space (a folder's size takes each inode once). The UI marks a hard link of the file being
+  shown as "same data", not as a copy.
+- **A symlink is recorded, never followed:** its target as text, no hash, and a symlinked folder is not entered.
 
 ### Backup servers
 
@@ -250,6 +262,38 @@ The catalog is the place to decide; the agent on the machine is the only thing t
    before removing a source, never overwrites, and reports the result.
 4. **No deletion.** `trash` moves into a per-root trash folder with a retention period; emptying it is a person's act
    outside the catalog, or a later, separately enabled feature.
+
+## Planned: linking same-disk duplicates
+
+Two files with the same content on the same filesystem can become one inode with two names, reclaiming one copy's
+space. A managed operation (`link`), opt-in per root, never automatic.
+
+**Why it isn't free.** A hard link is one file, not two copies:
+
+- an edit that rewrites the file in place through either name changes both (editors that write a new file and rename
+  it over the old one break the link instead, harmlessly; databases, VM images, torrent clients and some apps write in
+  place);
+- owner, permissions and times belong to the inode, so the replaced name takes the survivor's;
+- it is still one copy on one disk: linking removes a duplicate, never a backup.
+
+**So the rules are:**
+
+1. Same host, same filesystem, same root, same owner and enrollments (never across people).
+2. Only on roots that declare their content settled (`managed = ["link"]`, for photos, media, books, archives) and
+   only for files unchanged for a while (default 30 days). Never on drop folders, backup roots or protected roots.
+3. The agent re-hashes both files just before acting and refuses if either changed. The survivor is the older inode
+   (earliest birth time, then mtime). The other name is replaced atomically: a link to the survivor is made under a
+   temporary name in the same folder, checked (same inode, same hash), and renamed over it; nothing is removed
+   without its replacement in place.
+4. By default the replaced inode goes to the root's trash rather than being freed (so the space comes back when the
+   trash is emptied, outside the catalog); a root can choose to free it at once.
+5. History records the link (old inode, new inode, survivor), so it can be undone by copying the file back.
+6. A report lists linkable duplicates per root with the space each would reclaim; people request groups, the usual
+   approval rules apply (DESIGN "Managing files").
+
+Backups are unaffected where they keep hard links (`rsync -H`) or deduplicate content (restic, borg). On filesystems
+with reflinks (btrfs, XFS), `cp --reflink` shares the blocks while keeping two independent files, which is strictly
+safer; the operation would use that where it exists.
 
 ## Queries
 

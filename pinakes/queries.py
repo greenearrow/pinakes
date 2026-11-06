@@ -53,9 +53,12 @@ def file_by_id(conn, file_id):
 
 
 def where(conn, file_id):
-    return rows(conn, """SELECT %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         JOIN pinakes.hosts h USING (host_id)
-                         WHERE f.content_id = (SELECT content_id FROM pinakes.files WHERE file_id = %%s)
+    """Every copy; same_inode marks hard links of this very file (the same data on the same disk, not a copy)."""
+    return rows(conn, """SELECT %s, (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode
+                         FROM pinakes.files t JOIN pinakes.roots tr ON tr.root_id = t.root_id
+                         JOIN pinakes.present f ON f.content_id = t.content_id
+                         JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
+                         WHERE t.file_id = %%s
                          ORDER BY r.kind, h.name, f.relpath""" % FILE_COLS, (file_id,))
 
 
@@ -85,21 +88,31 @@ def not_safe_to_delete(conn, loc):
 
 
 def backed_up(conn, loc):
+    """Per file: physical backup copies (distinct host, device and inode: hard-linked snapshots are one copy), the
+    snapshots that hold the current version, and the newest of them."""
     root, path = split_location(loc)
-    return rows(conn, """SELECT f.file_id, f.relpath, count(b.file_id) AS backup_copies, max(b.snapshot) AS newest
+    return rows(conn, """SELECT f.file_id, f.relpath,
+                                count(DISTINCT (br.host_id, b.dev, b.ino)) FILTER (WHERE b.file_id IS NOT NULL)
+                                    AS backup_copies,
+                                count(b.file_id) AS snapshots, max(b.snapshot) AS newest
                          FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
+                         LEFT JOIN pinakes.roots br ON br.root_id = b.root_id
                          WHERE r.label = %s AND f.relpath LIKE %s
                          GROUP BY f.file_id, f.relpath ORDER BY backup_copies, f.relpath""", (root, _prefix(path)))
 
 
 def dupes(conn, limit=50):
-    return rows(conn, """SELECT encode(c.sha256, 'hex') AS sha256, c.size, count(*) AS copies,
-                                c.size * (count(*) - 1) AS reclaimable,
+    """The same content stored more than once. copies counts physical copies (host, device, inode): hard links share
+    their storage, so they are paths, not copies, and reclaim nothing."""
+    return rows(conn, """SELECT encode(c.sha256, 'hex') AS sha256, c.size,
+                                count(DISTINCT (r.host_id, f.dev, f.ino)) AS copies, count(*) AS paths_count,
+                                c.size * (count(DISTINCT (r.host_id, f.dev, f.ino)) - 1) AS reclaimable,
                                 array_agg(r.label || ':' || f.relpath ORDER BY r.label, f.relpath) AS paths
                          FROM pinakes.present f JOIN pinakes.contents c USING (content_id)
                          JOIN pinakes.roots r USING (root_id)
-                         WHERE r.kind <> 'backup' GROUP BY c.content_id HAVING count(*) > 1
+                         WHERE r.kind <> 'backup' GROUP BY c.content_id
+                         HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1
                          ORDER BY reclaimable DESC LIMIT %s""", (limit,))
 
 
@@ -179,14 +192,18 @@ def listing(conn, loc, limit=1000):
     root, path = split_location(loc)
     pre = _prefix(path)
     depth = path.count("/") + 1 if path else 0
-    return rows(conn, """SELECT split_part(f.relpath, '/', %s + 1) AS entry,
-                                bool_or(array_length(string_to_array(f.relpath, '/'), 1) > %s + 1) AS is_folder,
-                                count(*) AS files, sum(f.size) AS size, max(f.mtime) AS newest,
-                                min(f.file_id) FILTER (WHERE array_length(string_to_array(f.relpath, '/'), 1) = %s + 1)
-                                    AS file_id
-                         FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         WHERE r.label = %s AND f.relpath LIKE %s
-                         GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT %s""", (depth, depth, depth, root, pre, limit))
+    # size counts each inode once: hard links (a snapshot tree) take their space once on the disk
+    return rows(conn, """WITH e AS (
+                             SELECT split_part(f.relpath, '/', %s + 1) AS entry,
+                                    array_length(string_to_array(f.relpath, '/'), 1) > %s + 1 AS deeper,
+                                    f.file_id, f.size, f.mtime, f.dev, f.ino
+                             FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                             WHERE r.label = %s AND f.relpath LIKE %s)
+                         SELECT entry, bool_or(deeper) AS is_folder, count(*) AS files,
+                                (SELECT sum(s.size) FROM (SELECT DISTINCT ON (x.dev, x.ino) x.size FROM e x
+                                                          WHERE x.entry = e.entry) s) AS size,
+                                max(mtime) AS newest, min(file_id) FILTER (WHERE NOT deeper) AS file_id
+                         FROM e GROUP BY entry ORDER BY 2 DESC, 1 LIMIT %s""", (depth, depth, root, pre, limit))
 
 
 def owners_of(conn, file_ids):

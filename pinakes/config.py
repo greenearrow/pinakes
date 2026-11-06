@@ -39,6 +39,9 @@ class Root:
         if self.kind not in KINDS:
             raise ConfigError("root %s: kind must be one of %s" % (self.label, ", ".join(KINDS)))
         self.protected = bool(d.get("protected", False))
+        # stay on the root's own filesystem unless told otherwise: a mount inside a root (a USB disk, a network share,
+        # an opened encrypted folder) is not walked
+        self.cross_mounts = bool(d.get("cross_mounts", False))
         self.archives = bool(d.get("archives", False))
         if self.protected and self.archives:
             raise ConfigError("root %s: a protected root can't list archives" % self.label)

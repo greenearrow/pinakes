@@ -13,6 +13,7 @@ The tables of DESIGN.md "What is recorded", with the columns these queries use:
 
 ```sql
 hosts    (host_id, name, last_scan timestamptz, expected_every interval)   -- expected_every NULL: never stale
+-- files also carry dev and ino: rows with the same host, dev and ino are hard links, one physical copy
 roots    (root_id, host_id, label text UNIQUE, path, kind text)             -- kind: primary | drop | backup
 contents (content_id, sha256 bytea UNIQUE, size bigint, mime text)
 files    (file_id, root_id, relpath text, name text,                        -- name: last part of relpath
@@ -98,14 +99,19 @@ ORDER BY f.relpath;
 
 ## backed-up HOST:PATH
 
+Backup copies are counted physically: distinct (host, device, inode). Snapshot backups made with hard links hold one
+copy of an unchanged file however many snapshots list it, so a file in 22 such snapshots has one backup copy, not 22.
+
 ```sql
 -- pinakes backed-up store:people/user-1/
 SELECT f.relpath,
-       count(b.file_id) AS backup_copies,          -- copies of the current version
+       count(DISTINCT (br.host_id, b.dev, b.ino)) FILTER (WHERE b.file_id IS NOT NULL) AS backup_copies,
+       count(b.file_id) AS snapshots,                -- snapshots holding the current version
        max(b.snapshot)  AS newest_snapshot
 FROM present f
 JOIN roots r USING (root_id)
 LEFT JOIN present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
+LEFT JOIN roots br ON br.root_id = b.root_id
 WHERE r.label = 'store' AND f.relpath LIKE 'people/user-1/%'
 GROUP BY f.file_id, f.relpath
 ORDER BY backup_copies, f.relpath;                 -- unprotected files first
@@ -113,18 +119,22 @@ ORDER BY backup_copies, f.relpath;                 -- unprotected files first
 
 ## dupes [HOST:PATH]
 
+Hard links share their storage, so they are paths, not copies, and reclaim nothing: copies are distinct (host,
+device, inode).
+
 ```sql
 -- pinakes dupes
 SELECT encode(c.sha256, 'hex') AS sha256, c.size,
-       count(*)                AS copies,
-       c.size * (count(*) - 1) AS reclaimable,
-       array_agg(r.label || ':' || f.relpath ORDER BY r.label, f.relpath) AS paths
+       count(DISTINCT (r.host_id, f.dev, f.ino))                AS copies,
+       count(*)                                                 AS paths,
+       c.size * (count(DISTINCT (r.host_id, f.dev, f.ino)) - 1) AS reclaimable,
+       array_agg(r.label || ':' || f.relpath ORDER BY r.label, f.relpath) AS where_
 FROM present f
 JOIN contents c USING (content_id)
 JOIN roots r USING (root_id)
 WHERE r.kind <> 'backup'                           -- backups are meant to be copies
 GROUP BY c.content_id
-HAVING count(*) > 1
+HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1
 ORDER BY reclaimable DESC
 LIMIT 50;
 ```

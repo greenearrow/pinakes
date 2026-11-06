@@ -92,3 +92,10 @@ were made while building, to keep going, and are open to change.
 - **Behind a reverse proxy** (`[web] behind_proxy = true`), the visitor comes from `X-Forwarded-For`, trusting exactly
   one hop; otherwise every visitor is the proxy and the sign-in limit is one limit for everybody. The plain-http name
   should redirect to https: the session cookie is `Secure` and wouldn't stick over http.
+- **A root is one filesystem** (unless `cross_mounts = true`): a mount inside a root is reported, not walked, so a
+  plugged-in disk or an opened encrypted folder under a root is never scanned by accident; what was under the mount
+  point isn't reported gone. Bind mounts of the same filesystem aren't detected (same device number).
+- **Copies are physical:** distinct (host, device, inode). Hard links are paths of one copy: they reclaim nothing in
+  `dupes`, count once in `backed-up` (which also shows how many snapshots hold the version) and once in folder sizes.
+- **Linking same-disk duplicates** is designed (DESIGN.md "Planned"), not built: opt-in per root, settled content
+  only, same owner, verified and atomic, the replaced inode to trash by default.
