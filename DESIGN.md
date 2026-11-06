@@ -80,7 +80,7 @@ is possible later.
 | `roots` | A scanned folder: host, path, label, kind (`primary`, `drop`, `backup`), policies (below). |
 | `owner_rules`, `enrollments` | Who owns which folder, and who else is enrolled in it ("Ownership and enrollments"). |
 | `contents` | One row per distinct content: SHA-256, size, MIME type, extracted metadata. Copies share it. |
-| `files` | One row per path present now: root, relative path, content, mtime, ctime and birth time (ns; birth time where the filesystem has it, through `statx`), device and inode, owner, first seen, last seen, hashed at. A stable `file_id` follows the file through moves and edits. |
+| `files` | One row per file ever seen (`gone_on` set when it disappears; the view `present` is what exists now): root, relative path, content, mtime, ctime and birth time (ns; birth time where the filesystem has it, through `statx`), device and inode, owner, first seen, last seen, hashed at. For a backup copy, the source file it copies and its snapshot date. A stable `file_id` follows the file through moves and edits. |
 | `links` | For hard-linked trees (snapshot backups): one inode, many paths. The inode is hashed once. |
 | `history` | Every change: new, changed, moved, moved and changed, gone; old and new path and hash; the file's mtime, ctime and birth time before and after; the window it happened in (the dates of the scan before and the scan that saw it); evidence; confidence. |
 | `members` | Files inside archives (zip, tar), when a root asks for it: archive content, entry path, size, SHA-256. |
@@ -267,7 +267,8 @@ pinakes meta SCHEMA.FIELD=VALUE        files by metadata
 pinakes stale                          hosts whose last scan is older than their schedule allows
 ```
 
-Read-only, scoped to what the caller may see. Output as text or JSON.
+Read-only, scoped to what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
+[QUERIES.md](QUERIES.md).
 
 ## Wish: an MCP server
 

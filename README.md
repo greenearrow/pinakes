@@ -16,6 +16,7 @@ who wrote what, how long it was, where it was shelved. It held none of the scrol
   audited and visible to the people affected; row-level security; agents; the web UI.
 - [METADATA.md](METADATA.md): metadata on content and on files, enrolled standard schemas (Dublin Core, EXIF, XMP,
   audio tags, OPF and more), bundles of files that belong together, storage and indexes.
+- [QUERIES.md](QUERIES.md): every query in SQL.
 - [config.example.toml](config.example.toml) (an agent) and [server.example.toml](server.example.toml) (the server).
 
 In short:
