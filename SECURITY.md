@@ -84,7 +84,7 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 
 ## Agents
 
-- Each host's agent has its own SSH key, forced on the catalog server to `alexandria-ingest --host NAME`. The host
+- Each host's agent has its own SSH key, forced on the catalog server to `pinakes-ingest --host NAME`. The host
   name comes from the key, never from the batch.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
   host's sequence.

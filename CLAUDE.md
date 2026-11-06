@@ -1,4 +1,4 @@
-# library-of-alexandria
+# pinakes
 
 A cross-machine file catalog for a home lab, with owners, metadata and a web UI: see `README.md`, `DESIGN.md`,
 `SECURITY.md` and `METADATA.md`. Status: design only.

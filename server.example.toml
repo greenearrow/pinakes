@@ -1,22 +1,22 @@
-# alexandria-ingest and alexandria-web configuration, on the catalog server. Copy to
-# /etc/library-of-alexandria/server.toml and edit. Secrets (database password, session key) are not kept here:
+# pinakes-ingest and pinakes-web configuration, on the catalog server. Copy to
+# /etc/pinakes/server.toml and edit. Secrets (database password, session key) are not kept here:
 # each line names a file readable only by the service.
 
 [database]
-dsn = "postgresql://alexandria@localhost/alexandria"
-password_file = "/etc/library-of-alexandria/secrets/db-password"
+dsn = "postgresql://pinakes@localhost/pinakes"
+password_file = "/etc/pinakes/secrets/db-password"
 
 [web]
 listen = "127.0.0.1:8080"              # behind the site's HTTPS reverse proxy
 public_url = "https://catalog.home.example.net"
-session_key_file = "/etc/library-of-alexandria/secrets/session-key"
+session_key_file = "/etc/pinakes/secrets/session-key"
 idle_timeout = "30m"
 step_up_duration = "15m"
 auth = "local"                         # or "oidc"
 # [web.oidc]
 # issuer = "https://id.example.net"
-# client_id = "library-of-alexandria"
-# client_secret_file = "/etc/library-of-alexandria/secrets/oidc-client-secret"
+# client_id = "pinakes"
+# client_secret_file = "/etc/pinakes/secrets/oidc-client-secret"
 
 # People and groups. Passwords and second factors are set by each person in the UI, never here.
 [people.user-1]
@@ -53,15 +53,15 @@ as = "reader"                          # co-owner, reader or annotator
 
 # Hosts allowed to send batches, each with the public key its agent uses and the roots it may report.
 [hosts.server-1]
-key = "/etc/library-of-alexandria/agents/server-1.pub"
+key = "/etc/pinakes/agents/server-1.pub"
 roots = ["store", "store-writing"]
 
 [hosts.server-2]
-key = "/etc/library-of-alexandria/agents/server-2.pub"
+key = "/etc/pinakes/agents/server-2.pub"
 roots = ["store-snapshots"]
 
 [hosts.laptop-1]
-key = "/etc/library-of-alexandria/agents/laptop-1.pub"
+key = "/etc/pinakes/agents/laptop-1.pub"
 roots = ["downloads", "pictures"]
 uid_map = { 1000 = "user-1" }          # for rules by uid on this host
 expected_every = "never"               # often off: shown as stale, never alerted

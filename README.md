@@ -1,9 +1,12 @@
-# library-of-alexandria
+# pinakes
 
 A catalog of every file on every machine in a home lab, and of who owns it: path, size, times, SHA-256 and metadata,
 kept current by cheap incremental scans, with a web UI. Questions like "where are all copies of this", "what exists
 only on this laptop", "is this folder backed up" and "is it safe to delete" become one indexed query instead of a
 one-off hashing script.
+
+The name is the *Pinakes*, the catalogue Callimachus compiled of the Library of Alexandria's holdings:
+who wrote what, how long it was, where it was shelved. It held none of the scrolls; this holds none of the files.
 
 **Status: design only.** Nothing is built or tested.
 

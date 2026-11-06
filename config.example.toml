@@ -1,11 +1,11 @@
-# alexandria-agent configuration: one file per machine. Copy to /etc/library-of-alexandria/agent.toml (or
-# ~/.config/library-of-alexandria/agent.toml for a per-user agent) and edit. Nothing site-specific lives in the code.
+# pinakes-agent configuration: one file per machine. Copy to /etc/pinakes/agent.toml (or
+# ~/.config/pinakes/agent.toml for a per-user agent) and edit. Nothing site-specific lives in the code.
 # Owners are not set here: the server decides them (server.example.toml, [ownership]).
 
 [agent]
 host = "server-1"                      # this machine's name in the catalog
-state = "/var/lib/library-of-alexandria/state.sqlite"
-outbox = "/var/lib/library-of-alexandria/outbox"
+state = "/var/lib/pinakes/state.sqlite"
+outbox = "/var/lib/pinakes/outbox"
 
 [schedule]
 only_on_ac = false                     # laptops: true
@@ -18,10 +18,10 @@ ionice_class = 3                       # idle
 # "ssh": send each batch to a command on the catalog server that accepts batches and nothing else.
 # "directory": drop batches into a folder the ingester reads (for an agent on the catalog server itself).
 kind = "ssh"
-target = "alexandria@server-1"         # user@host; the key is forced to the ingest command there
-identity = "/var/lib/library-of-alexandria/id_ed25519"
+target = "pinakes@server-1"         # user@host; the key is forced to the ingest command there
+identity = "/var/lib/pinakes/id_ed25519"
 # kind = "directory"
-# path = "/srv/library-of-alexandria/inbox"
+# path = "/srv/pinakes/inbox"
 
 # One [[root]] per scanned folder.
 # This example shows one root of every kind; a real machine lists only its own, and the server's [hosts] says

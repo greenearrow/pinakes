@@ -44,26 +44,26 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
 ```
  machine (agent)                          catalog server
  ┌───────────────────────────┐            ┌──────────────────────────────┐
- │ alexandria-agent scan      │            │ alexandria-ingest            │
+ │ pinakes-agent scan      │            │ pinakes-ingest            │
  │  walks roots from config   │  batches   │  checks and applies batches  │
  │  extracts metadata         │ ─────────► │ PostgreSQL (row-level        │
  │  local SQLite: state +     │ transport  │  security per owner)         │
- │  outbox of batches         │            │ alexandria-web (web UI, API) │
- │  (optional) runs approved  │ ◄───────── │ alexandria (CLI)             │
+ │  outbox of batches         │            │ pinakes-web (web UI, API) │
+ │  (optional) runs approved  │ ◄───────── │ pinakes (CLI)             │
  │  file operations           │  requests  └──────────────────────────────┘
  └───────────────────────────┘
 ```
 
-- **`alexandria-agent`**: runs on each machine from a timer. Walks the configured roots, compares with its local
+- **`pinakes-agent`**: runs on each machine from a timer. Walks the configured roots, compares with its local
   state (SQLite), hashes what changed, extracts metadata (METADATA.md), writes a batch of observations to its outbox,
   and sends the outbox when the transport is reachable. Resumable: a scan interrupted by sleep or shutdown continues
   where it stopped. On a root that allows it, also fetches and carries out approved file operations.
-- **`alexandria-ingest`**: on the catalog server. Accepts batches (idempotent, by agent and sequence number), checks
+- **`pinakes-ingest`**: on the catalog server. Accepts batches (idempotent, by agent and sequence number), checks
   that every path lies inside a root that agent is enrolled for, assigns owners, applies the batch, and runs the move
   and change matching.
-- **`alexandria-web`**: the web UI and its JSON API (below). Each request runs with the signed-in person's identity
+- **`pinakes-web`**: the web UI and its JSON API (below). Each request runs with the signed-in person's identity
   set for the database, so row-level security, not the application code, decides what they can see.
-- **`alexandria`**: the command-line client, using the same API as the web UI.
+- **`pinakes`**: the command-line client, using the same API as the web UI.
 
 Python 3.11+ throughout. The standard library first; where a dependency earns its place, the preferred ones are
 **Flask** (web) and **waitress** (its WSGI server). The agent's core is standard library only (`hashlib`, `sqlite3`,
@@ -168,7 +168,7 @@ truth because a watcher misses whatever happens while it isn't running.
 
 ## Web UI
 
-Served by `alexandria-web` behind the site's HTTPS reverse proxy. Stack: Flask with Jinja templates, served by
+Served by `pinakes-web` behind the site's HTTPS reverse proxy. Stack: Flask with Jinja templates, served by
 waitress; server-rendered pages, with htmx (one vendored file) for partial updates; no JavaScript build step.
 
 - **Browse** by host and root, or by person, or as one merged tree per source with its copies and backups folded in.
@@ -200,16 +200,16 @@ The catalog is the place to decide; the agent on the machine is the only thing t
 ## Queries
 
 ```
-alexandria find NAME-OR-GLOB              where files with this name are
-alexandria where PATH|SHA256              every copy and backup of this file
-alexandria only-here HOST:PATH            files under PATH with no copy anywhere else
-alexandria safe-to-delete HOST:PATH       every file has a copy in a primary or backup root? (lists the ones that don't)
-alexandria backed-up HOST:PATH            per file: backup copies, newest age
-alexandria dupes [HOST:PATH]              duplicates, largest first
-alexandria history HOST:PATH              what happened to a file or folder
-alexandria changes --since DATE [--host]  what changed
-alexandria meta SCHEMA.FIELD=VALUE        files by metadata
-alexandria stale                          hosts whose last scan is older than their schedule allows
+pinakes find NAME-OR-GLOB              where files with this name are
+pinakes where PATH|SHA256              every copy and backup of this file
+pinakes only-here HOST:PATH            files under PATH with no copy anywhere else
+pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or backup root? (lists the ones that don't)
+pinakes backed-up HOST:PATH            per file: backup copies, newest age
+pinakes dupes [HOST:PATH]              duplicates, largest first
+pinakes history HOST:PATH              what happened to a file or folder
+pinakes changes --since DATE [--host]  what changed
+pinakes meta SCHEMA.FIELD=VALUE        files by metadata
+pinakes stale                          hosts whose last scan is older than their schedule allows
 ```
 
 Read-only, scoped to what the caller may see. Output as text or JSON.
@@ -220,7 +220,7 @@ Not a requirement. The same read-only queries, offered as Model Context Protocol
 `only_here`, `safe_to_delete`, `backed_up`, `history`, `search_metadata`), so an assistant can answer "is this
 folder safe to delete" or "where are the photos from that trip" from the catalog instead of walking disks.
 
-- `alexandria-mcp`, a thin layer over the API (the official Python MCP SDK as its one dependency), over stdio for a
+- `pinakes-mcp`, a thin layer over the API (the official Python MCP SDK as its one dependency), over stdio for a
   local client or streamable HTTP behind the proxy.
 - It acts as one person, with a token that person creates in the web UI and can revoke. Row-level security applies
   exactly as for the web UI.
