@@ -1,16 +1,19 @@
-# file-catalog
+# library-of-alexandria
 
-A cross-machine file catalog for a home lab: see `README.md` and `DESIGN.md`. Status: design only.
+A cross-machine file catalog for a home lab, with owners, metadata and a web UI: see `README.md`, `DESIGN.md`,
+`SECURITY.md` and `METADATA.md`. Status: design only.
 
-Not decided yet: the name, publishing.
+Not decided yet: publishing; the web stack.
 
 ## Rules for Claude in this repo
 
-- Nothing here is about one person's lab. No real addresses, MACs, host names, user names, domains, paths or folder
-  names from a real site, in code, config examples, tests, fixtures or commit messages. Use placeholders: machines
-  `server-1`, `workstation-1`, `laptop-1`; users `admin`, `user`; LAN `192.0.2.0/24`; domains `example.net`; paths
-  `/mnt/store`, `/home/user`.
+- Nothing here is about one person's lab. No real addresses, MACs, host names, user names, people, domains, paths or
+  folder names from a real site, in code, config examples, tests, fixtures or commit messages. Use placeholders:
+  machines `server-1`, `workstation-1`, `laptop-1`; people `user-1`, `user-2`, group `household`; LAN
+  `192.0.2.0/24`; domains `example.net`; paths `/mnt/store`, `/mnt/backup`, `/home/user`.
 - Everything site-specific is configuration. If code needs a name, path or address, it reads it from config.
+- Security is part of every change: anything that names or describes a file is under row-level security; agents get
+  no new powers the machine's local config hasn't granted (SECURITY.md).
 - Tests use generated trees in a temporary directory, never a real one.
 - Run `tools/leak-scan --all` before every commit and show the result. Fix findings; don't allowlist them without
   asking.

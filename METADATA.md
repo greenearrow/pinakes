@@ -1,0 +1,87 @@
+# Metadata
+
+Status: design only. Files carry metadata of their own (a photo's camera and place, a song's artist, a book's author)
+and people add more (tags, notes, "this is the master copy"). The catalog stores both, typed by enrolled schemas,
+indexed, and attached so that it follows files through copies and moves.
+
+## Two places metadata attaches
+
+- **On content** (by SHA-256): facts about the bytes, true of every copy. A photo's date taken, a song's artist.
+  Extracted once; every copy anywhere has it at once, with no re-reading.
+- **On a file** (by `file_id`): facts about one copy, or a person's view of it. Tags, notes, keep or drop, "master
+  copy". The `file_id` survives moves and edits (DESIGN.md "Matching moves and changes"), so this metadata follows
+  the file.
+
+Person-entered metadata belongs to its author. Extracted metadata is visible to anyone who can see a file with that
+content (SECURITY.md).
+
+## Schemas
+
+A schema is enrolled in the project as a versioned file, `schemas/<name>.toml`. It declares:
+
+- its fields and their types: text, number, date and time, geographic point, duration, list, reference to a person
+  or another file;
+- which fields are indexed and how (exact, trigram for substring, range for dates and numbers, spatial for places);
+- which fields are **sensitive** (GPS position, people's names, phone numbers): visible to the owner only, even when
+  the file is shared, unless they share those fields too;
+- which MIME types it applies to;
+- its extractor: a Python module, with its optional dependency (for example `Pillow` or `exifread` for EXIF,
+  `mutagen` for audio tags, `ffprobe` for video). A missing dependency turns the extractor off, not the scan;
+- its sidecar patterns (below);
+- a mapping onto common fields, so one search covers every type: `creator` is a photo's photographer, a song's artist
+  and a book's author; `date` is a photo's date taken, a song's release date, a document's creation date.
+
+To be enrolled first, all standards:
+
+| Schema | From | Holds |
+|---|---|---|
+| `dc` | Dublin Core | title, creator, subject, description, date, type, format, language, rights: the common fields |
+| `exif` | EXIF | camera, lens, exposure, date taken, GPS (sensitive) |
+| `xmp` | XMP, IPTC Core | keywords, people shown (sensitive), place names, ratings, description; also read from `.xmp` sidecars |
+| `audio` | ID3, Vorbis comments, MP4 tags | artist, album, track, disc, year, genre, duration |
+| `video` | container metadata | duration, codecs, resolution, date recorded, GPS (sensitive) |
+| `ebook` | OPF (EPUB, a Calibre `metadata.opf`) | title, authors, series and index, identifiers (ISBN), language, publisher |
+| `document` | PDF info, Office core properties | title, author, created, modified, page count |
+
+A site can enroll its own schemas in config (a collection's catalogue numbers, a family's own tags) in the same form.
+Export maps onto schema.org types where they exist.
+
+## Where values come from
+
+Each value records its source and time: **person** (entered in the UI), **sidecar** (read from a paired file),
+**embedded** (read from the file itself), **derived** (computed, such as a duration). When sources disagree, the UI
+shows all of them and searches use the first of person, sidecar, embedded, derived.
+
+Extraction reads file content, so it never runs on a protected root, and it runs on the agent, on the machine that
+has the file, never on the server.
+
+## Pairing: bundles
+
+Some files only make sense together. A **bundle** is a set of files with a lead file; each schema declares its
+pairing rules:
+
+- a photo and its sidecar: `IMG_0001.JPG` with `IMG_0001.JPG.xmp` or `IMG_0001.xmp`;
+- RAW and JPEG of the same shot (same base name, same folder);
+- a video and its subtitles (`.srt`, `.vtt`) and chapters;
+- a disc image and its cue sheet (`.cue` with `.bin`);
+- a book folder: the book files, `metadata.opf` and `cover.jpg`;
+- an export's JSON sidecars (`photo.jpg.json`).
+
+What pairing gives:
+
+- **Searches** return the bundle once, with the sidecar's metadata applied to the lead file.
+- **Move matching** treats the bundle as a unit: a photo and its sidecar that appear together in a new folder are one
+  move, with higher confidence.
+- **Managed moves** move the whole bundle, so a sidecar is never left behind.
+- **Write-back**: metadata entered in the catalog can be written to the bundle's sidecar (the `write-sidecar`
+  operation), so it survives outside the catalog and other programs can read it. The catalog never writes metadata
+  into a file itself, which would change its hash.
+
+## Storage and speed
+
+- One row per subject and schema, with the values as JSONB, plus a typed index for every field the schema marks
+  indexed (B-tree for exact and range, trigram for text, GiST for places). A search on metadata is an index lookup;
+  no file is read.
+- Content metadata is extracted once per content. When a copy of known content turns up on another machine, its
+  metadata is already there.
+- Re-extraction happens when a file's content changes, when its sidecar changes, or when a schema's version goes up.

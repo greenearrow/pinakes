@@ -1,43 +1,63 @@
-# catalog-agent configuration: one file per machine. Copy to /etc/file-catalog/agent.toml (or
-# ~/.config/file-catalog/agent.toml for a per-user agent) and edit. Nothing site-specific lives in the code.
+# alexandria-agent configuration: one file per machine. Copy to /etc/library-of-alexandria/agent.toml (or
+# ~/.config/library-of-alexandria/agent.toml for a per-user agent) and edit. Nothing site-specific lives in the code.
+# The server's own configuration is server.example.toml.
 
 [agent]
-host = "workstation-1"                 # this machine's name in the catalog
-state = "/var/lib/file-catalog/state.sqlite"
-outbox = "/var/lib/file-catalog/outbox"
+host = "server-1"                      # this machine's name in the catalog
+state = "/var/lib/library-of-alexandria/state.sqlite"
+outbox = "/var/lib/library-of-alexandria/outbox"
 
 [schedule]
 only_on_ac = false                     # laptops: true
 busy_command = ""                      # skip this run while the command exits 0, e.g. "pgrep -x some-game"
+inhibit_sleep = true                   # hold a sleep inhibitor while scanning (machines that sleep on demand)
 nice = 19
 ionice_class = 3                       # idle
 
 [transport]
-# "ssh": send each batch to a command on the catalog host that accepts batches and nothing else.
-# "directory": drop batches into a folder the ingester reads (for an agent on the catalog host itself).
+# "ssh": send each batch to a command on the catalog server that accepts batches and nothing else.
+# "directory": drop batches into a folder the ingester reads (for an agent on the catalog server itself).
 kind = "ssh"
-target = "catalog@server-1"            # user@host; the key is forced to the ingest command on the server
-identity = "/var/lib/file-catalog/id_ed25519"
+target = "alexandria@server-1"         # user@host; the key is forced to the ingest command there
+identity = "/var/lib/library-of-alexandria/id_ed25519"
 # kind = "directory"
-# path = "/srv/file-catalog/inbox"
+# path = "/srv/library-of-alexandria/inbox"
 
-# One [[root]] per scanned folder.
+# One [[root]] per scanned folder. Owners are names from the server's [people] and [groups].
+# This example shows one root of every kind; a real machine lists only its own, and the server's [hosts] says
+# which host may report which root (server.example.toml).
+
 [[root]]
 label = "store"
 path = "/mnt/store"
-kept = true                            # copies here count for "safe to delete"
+kind = "primary"
+owner = { default = "user-1", rules = [
+  { path = "people/user-1/**", owner = "user-1" },
+  { path = "people/user-2/**", owner = "user-2" },
+  { path = "shared/**", owner = "household" },
+] }
 archives = true                        # list zip and tar members
 exclude = ["**/lost+found", "**/.Trash-*"]
+managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operations may do here; [] for none
 
 [[root]]
 label = "store-writing"
-path = "/mnt/store/writing"
-kept = true
-protected = true                       # hash only: no chunks, no archive listing, nothing derived from content
+path = "/mnt/store/people/user-1/writing"
+kind = "primary"
+owner = "user-1"
+protected = true                       # hash only: no chunks, no archives, no metadata, no previews
+
+[[root]]
+label = "store-snapshots"
+path = "/mnt/backup/snapshots"
+kind = "backup"
+mirrors = { root = "server-1:store", layout = "*/{relpath}" }   # each snapshot folder holds the source's tree
+owner = "inherit"                      # each copy belongs to its source file's owner
 
 [[root]]
 label = "downloads"
 path = "/home/user/Downloads"
-kept = false                           # a drop folder
+kind = "drop"
+owner = { uid_map = { 1000 = "user-1" } }
 chunks = { enabled = true, min_size = "64KiB", max_size = "2GiB", average = "256KiB" }
 exclude = ["**/*.part", "**/*.crdownload"]

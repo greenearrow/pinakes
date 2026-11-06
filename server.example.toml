@@ -1,0 +1,49 @@
+# alexandria-ingest and alexandria-web configuration, on the catalog server. Copy to
+# /etc/library-of-alexandria/server.toml and edit. Secrets (database password, session key) are not kept here:
+# each line names a file readable only by the service.
+
+[database]
+dsn = "postgresql://alexandria@localhost/alexandria"
+password_file = "/etc/library-of-alexandria/secrets/db-password"
+
+[web]
+listen = "127.0.0.1:8080"              # behind the site's HTTPS reverse proxy
+public_url = "https://catalog.home.example.net"
+session_key_file = "/etc/library-of-alexandria/secrets/session-key"
+idle_timeout = "30m"
+step_up_duration = "15m"
+auth = "local"                         # or "oidc"
+# [web.oidc]
+# issuer = "https://id.example.net"
+# client_id = "library-of-alexandria"
+# client_secret_file = "/etc/library-of-alexandria/secrets/oidc-client-secret"
+
+# People and groups. Passwords and second factors are set by each person in the UI, never here.
+[people.user-1]
+display = "User One"
+roles = ["person", "operator", "administrator"]   # administrator only takes effect in a step-up session
+
+[people.user-2]
+display = "User Two"
+roles = ["person"]
+
+[groups.household]
+members = ["user-1", "user-2"]
+
+# Hosts allowed to send batches, each with the public key its agent uses and the roots it may report.
+[hosts.server-1]
+key = "/etc/library-of-alexandria/agents/server-1.pub"
+roots = ["store", "store-writing"]
+
+[hosts.server-2]
+key = "/etc/library-of-alexandria/agents/server-2.pub"
+roots = ["store-snapshots"]
+
+[hosts.laptop-1]
+key = "/etc/library-of-alexandria/agents/laptop-1.pub"
+roots = ["downloads", "pictures"]
+expected_every = "never"               # often off: shown as stale, never alerted
+
+[audit]
+notify_people = true                   # tell people when an administrator saw their records
+keep = "2y"

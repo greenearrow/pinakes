@@ -1,0 +1,122 @@
+# Security design
+
+Status: design only. Several people share one catalog. Each sees their own files; an administrator sees other
+people's only by deliberately stepping up, and the people affected can see that it happened.
+
+## What the catalog protects, and what it doesn't
+
+The catalog holds the names, places, sizes, hashes and metadata of everyone's files. That is sensitive in itself:
+file names and photo locations say a lot about a person. The catalog must not make anything **less** private than it
+is on the disks.
+
+It cannot make anything **more** private than the disks. Whoever can read a folder on the machine can read the files,
+whatever the catalog shows them. Whoever has root on the catalog server, or is a database superuser, can read the
+whole catalog. The guarantees below are about access through the catalog (its web UI, API and CLI), enforced in the
+database, with an audit trail. They are not cryptographic.
+
+## People and roles
+
+| Role | Can |
+|---|---|
+| **person** | See and manage their own files and what is shared with them. Everyone who signs in is a person. |
+| **operator** | Run the system: hosts, roots, agents, health, schedules. Sees counts, sizes, ages and errors per root, never file names or metadata of other people. |
+| **administrator** | Everything, but only during a **step-up session**. Outside one, an administrator is just a person. |
+
+The site's administrator normally works as a person. To see someone else's records they step up:
+
+1. Re-authenticate (password plus a second factor) and give a reason.
+2. The session is time-limited (default 15 minutes) and shown with a banner on every page.
+3. Every record viewed or changed in it is written to the `audit` table: who, when, reason, which records (by folder,
+   with counts, so the log stays readable).
+4. The people whose records were seen get an entry on their own "Access to your records" page, and optionally a
+   notification.
+
+The audit table is append-only for every role the application uses (no `UPDATE` or `DELETE` granted); only the
+database superuser could change it.
+
+## Ownership
+
+Every file row has an owner, set by the ingester from the root's owner rule (DESIGN.md "Roots and their policies"):
+
+- a fixed person for the root, or
+- path rules (`people/<name>/...` belongs to that person), or
+- the file's owner id on the host, through a uid map per host.
+
+Backup copies inherit the owner of the source file they mirror. Files with no matching rule go to the root's default
+owner, never to "everyone".
+
+Owners can share a file, folder or bundle with a person or a group (read, or read and annotate). A household can have
+shared roots (a family photo folder) owned by a group.
+
+## Enforcement: row-level security
+
+Visibility is enforced by PostgreSQL row-level security on every table that names or describes a file (`files`,
+`links`, `history`, `members`, `chunks`, `metadata`, `bundles`, `shares`, `operations`), not by `WHERE` clauses in
+application code. A policy allows a row when:
+
+- its owner is the current person, or
+- it is shared with the current person or one of their groups, or
+- the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
+  check also writes the audit row).
+
+The web service and CLI connect as one unprivileged role that is subject to these policies, and set the signed-in
+person for each transaction. This guards against bugs (a forgotten filter, a crafted query parameter). It does not
+guard against a compromised web service, which could claim to be anyone: that is the line where "root on the catalog
+server" begins.
+
+`contents` (hash, size, type) is shared by all copies. A person reaches a content row only through a file they can
+see; there is no query by hash outside one's own files.
+
+## Copies across owners
+
+Deduplication can leak: "where are all copies of this file" would reveal that another person holds the same file.
+
+- A person's queries only consider copies they can see. Copies in someone else's space are not shown or counted.
+- So "safe to delete" for a person means "you can see another kept copy". If the only other copy is someone else's,
+  the answer is no, which is the safe answer.
+- Backups of a person's own files are theirs (inherited owner), so "is this backed up" works without seeing anyone
+  else's records.
+- Cross-owner duplicate reports are administrator-only.
+
+## Agents
+
+- Each host's agent has its own SSH key, forced on the catalog server to `alexandria-ingest --host NAME`. The host
+  name comes from the key, never from the batch.
+- The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
+  host's sequence.
+- An agent can't read the catalog. It can fetch only approved operations for its own roots.
+- Operations are limited by the agent's **local** config (`managed` per root). The server can't widen them: a
+  compromised server could at worst ask for moves and renames the machine's owner already allowed, never a deletion.
+  The agent re-checks hashes before acting and never overwrites.
+- Protected roots send hashes, sizes and names only. Nothing derived from content leaves the machine.
+
+## Web UI
+
+- Accounts: local accounts (argon2id passwords, TOTP or WebAuthn second factor), or sign-in through an OpenID Connect
+  provider the site already runs. The second factor is required for step-up.
+- HTTPS only; session cookies `Secure`, `HttpOnly`, `SameSite=Strict`; CSRF tokens on every change; short idle
+  timeout.
+- Reachable on the LAN or a VPN by default. Exposing it to the internet is out of scope.
+- No file content is served unless a root enables previews; never for a protected root.
+- Rate limits on sign-in and search.
+
+## The database and its backups
+
+- Its dumps hold everything: back them up like the most private data in the catalog (encrypted at rest offsite).
+- Removing a person removes their files' catalog records, metadata, shares and sessions; the audit entries about them
+  are kept for a set period, then removed.
+- Person-entered metadata could later be encrypted per person (client-side), at the cost of server-side search on it.
+  Not in the first version.
+
+## Threats considered
+
+| Threat | Answer |
+|---|---|
+| A person tries to see another's files through the UI or API | Row-level security; no hash lookups outside own files. |
+| The administrator browses others' files casually | Step-up with reason and second factor, time-limited, audited, visible to the people affected. |
+| A bug in a query forgets the owner filter | Row-level security still applies. |
+| A laptop's agent is stolen or tampered with | Its key can only submit batches for its own roots; revoke the key. It holds no database credentials. |
+| A forged batch claims another host's files | Host from the SSH key; paths checked against enrolled roots. |
+| The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
+| Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
+| Photo locations or people's names leak through sharing | Metadata fields marked sensitive stay with the owner unless shared explicitly (METADATA.md). |
