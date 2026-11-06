@@ -8,7 +8,8 @@ one-off hashing script.
 The name is the *Pinakes*, the catalogue Callimachus compiled of the Library of Alexandria's holdings:
 who wrote what, how long it was, where it was shelved. It held none of the scrolls; this holds none of the files.
 
-**Status: design only.** Nothing is built or tested.
+**Status: early.** The agent, ingester, queries, CLI and a read-only web UI with sign-in are built and tested;
+metadata, file operations and more are not (ROADMAP.md).
 
 - [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
   the web UI, managing files, queries.
@@ -17,6 +18,8 @@ who wrote what, how long it was, where it was shelved. It held none of the scrol
 - [METADATA.md](METADATA.md): metadata on content and on files, enrolled standard schemas (Dublin Core, EXIF, XMP,
   audio tags, OPF and more), bundles of files that belong together, storage and indexes.
 - [QUERIES.md](QUERIES.md): every query in SQL.
+- [ROADMAP.md](ROADMAP.md): what is built, what is left, and what "done" means for each piece.
+- [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
 - [config.example.toml](config.example.toml) (an agent) and [server.example.toml](server.example.toml) (the server).
 
 In short:
