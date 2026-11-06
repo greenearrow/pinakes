@@ -48,6 +48,11 @@ were made while building, to keep going, and are open to change.
 - **Mass-gone guard:** if a completed walk finds more than half of a root's files missing (and at least 100), it
   reports nothing gone and stops: a mount that didn't come up looks exactly like that. `--accept-gone` confirms a real
   deletion. Files under a folder that couldn't be listed are never reported gone.
+- **Telling a dismount from a deletion:** when the guard trips, it names the likely cause: the root is on another
+  device than its files were recorded on ("not mounted"), or the same one ("deleted?"). And every walk checks the
+  root's device at its start and end: if it changed (unmounted or remounted mid-scan), nothing is reported gone,
+  however few files were missed and even with `--accept-gone`; the next run resumes. Without that, an unmount late
+  in a walk left fewer missing than the guard's threshold and they were reported gone.
 - **A file that changes while it's read** is sent with no hash and `unstable`; the next scan hashes it.
 - **Symlinks** are recorded (with their target) and never followed. Sockets, fifos and devices are skipped.
 - **Chunk digests** are the first 128 bits of SHA-256: enough to tell chunks apart, half the space.

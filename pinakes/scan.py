@@ -24,7 +24,24 @@ class Interrupted(Exception):
 
 class TooManyGone(Exception):
     """The walk found most of the root missing: a mount that didn't come up, or a mass deletion. Nothing is
-    reported gone until a person confirms (accept_gone=True)."""
+    reported gone until a person confirms (accept_gone=True). cause says which it looks like: "not-mounted" (the
+    root is on another filesystem than the one its files were recorded on) or "deleted" (the same filesystem)."""
+
+    def __init__(self, message, cause):
+        super().__init__(message)
+        self.cause = cause
+
+
+class MountChanged(TooManyGone):
+    """The root's filesystem changed during the walk (unmounted or remounted mid-scan). Nothing from the end of
+    this scan can be trusted, so nothing is reported gone, whatever accept_gone says; the next run resumes."""
+
+    def __init__(self, message):
+        super().__init__(message, "unmounted-during-scan")
+
+
+def _root_dev(top):
+    return os.stat(top).st_dev
 
 
 def _open_readonly(path):
@@ -253,7 +270,8 @@ class Scanner:
         seen = 0
         last_report = time.monotonic()
         try:
-            root_dev = None if root.cross_mounts else os.stat(top).st_dev
+            start_dev = _root_dev(top)
+            root_dev = None if root.cross_mounts else start_dev
             for relpath, abspath, err in _walk(top, root.exclude, root_dev):
                 seen += 1
                 if self.progress and time.monotonic() - last_report >= self.PROGRESS_EVERY:
@@ -296,7 +314,15 @@ class Scanner:
                             self.state.mark_seen(root.label, relpath, scan_id)
                 if len(w) >= self.cfg.batch_records:
                     flush(False)
-            # the walk completed: everything not seen in this scan is gone, except under unreadable folders
+            # the walk completed. If the root's filesystem changed under it, what was missed is not gone.
+            try:
+                end_dev = _root_dev(top)
+            except OSError:
+                end_dev = None
+            if end_dev != start_dev:
+                raise MountChanged("root %s: %s changed filesystem during the scan (unmounted or remounted?); "
+                                   "nothing reported gone. Rerun when it is mounted." % (root.label, top))
+            # everything not seen in this scan is gone, except under unreadable folders
             w = ensure_writer()
             unseen = self.state.unseen(root.label, scan_id)
             gone = [p for p in unseen
@@ -304,8 +330,16 @@ class Scanner:
             total = self.state.db.execute("SELECT count(*) FROM files WHERE root = ?", (root.label,)).fetchone()[0]
             if (not accept_gone and len(gone) >= self.GONE_GUARD_MIN
                     and len(gone) > self.GONE_GUARD_FRACTION * total):
-                raise TooManyGone("root %s: %d of %d files are missing; is %s mounted? Rerun with --accept-gone "
-                                  "if this is real." % (root.label, len(gone), total, top))
+                recorded = self.state.db.execute(
+                    "SELECT dev FROM files WHERE root = ? GROUP BY dev ORDER BY count(*) DESC LIMIT 1",
+                    (root.label,)).fetchone()
+                if recorded is not None and recorded[0] != start_dev:
+                    raise TooManyGone("root %s: %d of %d files are missing, and %s is on another filesystem than "
+                                      "they were recorded on: not mounted? Mount it and rerun; --accept-gone only "
+                                      "if this is real." % (root.label, len(gone), total, top), "not-mounted")
+                raise TooManyGone("root %s: %d of %d files are missing on the same filesystem as before: deleted? "
+                                  "Rerun with --accept-gone if this is real." % (root.label, len(gone), total),
+                                  "deleted")
             gone_set = set(gone)
             for relpath in unseen:
                 if relpath in gone_set:

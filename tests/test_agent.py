@@ -13,7 +13,7 @@ import unittest
 import zipfile
 
 from pinakes import chunker, config, fsinfo, globs, outbox
-from pinakes.scan import Interrupted, Scanner, TooManyGone
+from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone
 from pinakes.state import State
 
 
@@ -297,11 +297,87 @@ class TestScan(Tree):
         self.drain()
         for i in range(120):
             os.remove(os.path.join(self.top, "f%03d" % i))
-        with self.assertRaises(TooManyGone):
+        with self.assertRaises(TooManyGone) as cm:
             self.scan()
+        self.assertEqual(cm.exception.cause, "deleted")
         self.assertFalse(any(r["t"] == "gone" for r in self.drain()))
         self.scan(accept_gone=True)
         self.assertEqual(sum(r["t"] == "gone" for r in self.drain()), 120)
+
+    def unmount(self):
+        """Stand-in for an unmount: the tree moves aside, an empty folder is left at the mount point, and the
+        root reports another device (a real unmount needs root)."""
+        import pinakes.scan as scanmod
+        os.rename(self.top, self.top + ".mounted")
+        os.makedirs(self.top)
+        real_dev = os.stat(self.top + ".mounted").st_dev
+        scanmod._root_dev = lambda top: real_dev + 1
+
+    def remount(self):
+        import pinakes.scan as scanmod
+        shutil.rmtree(self.top)
+        os.rename(self.top + ".mounted", self.top)
+        scanmod._root_dev = self.real_root_dev
+
+    def keep_root_dev(self):
+        import pinakes.scan as scanmod
+        self.real_root_dev = scanmod._root_dev
+        self.addCleanup(setattr, scanmod, "_root_dev", scanmod._root_dev)
+
+    def test_mass_gone_guard_not_mounted(self):
+        self.keep_root_dev()
+        for i in range(150):
+            self.write("d/f%03d" % i, b"%d" % i)
+        self.scan()
+        self.drain()
+        self.unmount()
+        with self.assertRaises(TooManyGone) as cm:
+            self.scan()
+        self.assertEqual(cm.exception.cause, "not-mounted")
+        self.assertNotIsInstance(cm.exception, MountChanged)
+        self.assertIn("not mounted", str(cm.exception))
+        self.assertFalse(any(r["t"] == "gone" for r in self.drain()))
+        self.remount()
+        self.scan()
+        self.assertFalse(any(r["t"] == "gone" for r in self.drain()))
+
+    def test_unmounted_during_scan(self):
+        # 40 files in one folder, unmounted after the 10th: the other 30 vanish, below the mass-gone threshold,
+        # so only the device check stops them being reported gone. accept_gone does not override it.
+        self.keep_root_dev()
+        for i in range(40):
+            self.write("d/f%03d" % i, b"%d" % i)
+        self.scan()
+        self.drain()
+        for accept in (False, True):
+            self.write("d/f000", b"changed %d" % accept)  # something to send before the unmount
+            calls = []
+
+            def hook(relpath):
+                calls.append(relpath)
+                if len(calls) == 10:
+                    self.unmount()
+            scanner = Scanner(self.cfg, self.state, hook=hook)
+            with self.assertRaises(MountChanged) as cm:
+                scanner.scan(self.cfg.roots[0], accept_gone=accept)
+            self.assertEqual(cm.exception.cause, "unmounted-during-scan")
+            self.assertFalse(any(r["t"] == "gone" for r in self.drain()))
+            self.remount()
+        self.scan()  # resumes with the mount back: nothing gone
+        recs = self.drain()
+        self.assertFalse(any(r["t"] == "gone" for r in recs))
+        self.assertEqual(len(list(self.state.all_files("r"))), 40)
+
+    def test_device_unchanged_small_loss_still_reported(self):
+        self.keep_root_dev()
+        for i in range(40):
+            self.write("d/f%03d" % i, b"%d" % i)
+        self.scan()
+        self.drain()
+        for i in range(30):
+            os.remove(os.path.join(self.top, "d/f%03d" % i))
+        self.scan()
+        self.assertEqual(sum(r["t"] == "gone" for r in self.drain()), 30)
 
     def test_changed_while_reading(self):
         p = self.write("growing", b"start")
