@@ -46,6 +46,20 @@ To be enrolled first, all standards:
 A site can enroll its own schemas in config (a collection's catalogue numbers, a family's own tags) in the same form.
 Export maps onto schema.org types where they exist.
 
+## Identity fields
+
+Some formats keep an id that survives edits and saves; a schema marks such fields as **identity fields**, and lineage
+(DESIGN.md "Lineage across machines") links any two files that share one, wherever they are:
+
+- PDF: the first part of the trailer's `/ID`, meant to stay for the document's life (the second part changes with each
+  revision);
+- XMP: `xmpMM:DocumentID` (stays), `xmpMM:InstanceID` (one per saved version), `xmpMM:DerivedFrom` (the parent);
+- EPUB: `dc:identifier`;
+- office documents: to be checked per format before relying on it (some word processors write a document id that
+  survives saves; not verified here).
+
+Identity fields need extraction, so they are never read on a protected root.
+
 ## Where values come from
 
 Each value records its source and time: **person** (entered in the UI), **sidecar** (read from a paired file),

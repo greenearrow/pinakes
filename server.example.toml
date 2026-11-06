@@ -66,6 +66,10 @@ roots = ["downloads", "pictures"]
 uid_map = { 1000 = "user-1" }          # for rules by uid on this host
 expected_every = "never"               # often off: shown as stale, never alerted
 
+[lineage]
+name_patterns = "/etc/pinakes/name-patterns.toml"   # added to the project's patterns/names.toml
+chunk_overlap = 0.6                    # "derived from" at or above this share of chunks
+
 [audit]
 notify_people = true                   # tell people when an administrator saw their records
 keep = "2y"

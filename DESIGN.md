@@ -84,7 +84,8 @@ is possible later.
 | `links` | For hard-linked trees (snapshot backups): one inode, many paths. The inode is hashed once. |
 | `history` | Every change: new, changed, moved, moved and changed, gone; old and new path and hash; the file's mtime, ctime and birth time before and after; the window it happened in (the dates of the scan before and the scan that saw it); evidence; confidence. |
 | `members` | Files inside archives (zip, tar), when a root asks for it: archive content, entry path, size, SHA-256. |
-| `chunks` | Optional, per root: content-defined chunk hashes (FastCDC). Used only to recognise an edited and renamed file. |
+| `chunks` | Optional, per root: content-defined chunk hashes (FastCDC). Used to recognise an edited and renamed file, here or on another machine. |
+| `lineage` | Edges between file ids: copied from, replaced by, derived from; each with its evidence, confidence, date, and whether a person confirmed or rejected it ("Lineage across machines"). |
 | `metadata` | Typed metadata on a content or on one file, by schema (METADATA.md): extracted, imported from a sidecar, or entered by a person. |
 | `bundles` | Files that belong together (a photo and its XMP sidecar, a book's folder): METADATA.md "Pairing". |
 | `shares` | Who else may see a file, folder or bundle. |
@@ -111,8 +112,10 @@ Set in config, per root:
 - `archives`: list members of zip and tar files.
 - `metadata`: which extractors run (METADATA.md); default all that apply.
 - `exclude`: glob patterns (caches, build output, VM images).
-- `protected`: hash only. No chunks, no archive listing, no metadata extraction, no previews, nothing derived from
-  content; the UI never shows more than path, size and hash.
+- `protected`: nothing readable is derived from the files. Hashes only: SHA-256 and, if `chunks` is on, chunk hashes,
+  which say nothing about the text but let lineage work. No archive listing, no metadata extraction, no previews;
+  the UI shows path, size, times and hashes. Its records never go to an outside service that would use them: MCP
+  tokens leave protected roots out unless the person adds them (SECURITY.md).
 - `managed`: off (default) or the operations allowed here (`move`, `rename`, `write-sidecar`, `trash`).
 
 ### Ownership and enrollments
@@ -157,8 +160,9 @@ Per root, on each scan, for every path:
      overlap). Catches "save as" and editors that replace the file, which get a new inode;
    - its bundle moved with it (a photo and its sidecar to the same new folder): raises the confidence of the above;
    - otherwise: **gone** and **new**.
-4. Across hosts nothing is a move: the same SHA-256 on two hosts is a **copy**. A file that vanished from a laptop and
-   appeared on the storage server in the same window is reported as "copied there, then removed here".
+4. Across hosts nothing is a move: the same SHA-256 on two hosts is a **copy**, and a copy is a lineage edge, not a
+   dead end ("Lineage across machines"). A file that vanished from a laptop and appeared on the storage server in
+   the same window is reported as "copied there, then removed here".
 
 A move keeps the `file_id`, so metadata entered by a person, shares and history follow the file.
 
@@ -182,6 +186,34 @@ dates against backup roots, which the catalog does (`versions` below); restoring
 
 History starts when a root is first scanned. Earlier states are not reconstructed.
 
+### Lineage across machines
+
+A file taken to a laptop to work on, and brought back, gets a new inode and new hashes on the way: no single-host rule
+can follow it. Lineage is a graph of file ids, built from four kinds of evidence, strongest first:
+
+1. **Identical content at a hand-off.** When a file crosses machines it is byte-identical on both sides at that
+   moment. A new file whose SHA-256 is already known elsewhere is **copied from** that file (certain). A file whose
+   new content is already known on another machine **was replaced by** that file's version (certain): this is the
+   copy back over the original. Scan order doesn't matter: matching runs whenever both sides are known, so a laptop
+   that reports a week late still links up.
+2. **Identity fields inside the file.** Formats that keep an id across saves (PDF's `/ID`, XMP's `DocumentID`,
+   `InstanceID` and `DerivedFrom`, EPUB's `dc:identifier`; METADATA.md "Identity fields") link versions with no help
+   from names or hashes (certain when the field is present). Not on protected roots: it needs extraction.
+3. **Chunk overlap**, on roots with `chunks`: a file sharing most of its chunks with another is **derived from** it
+   (likely, with the overlap recorded).
+4. **Names**, normalized by a list of patterns before comparing: copy markers (` - Copy`, ` copy`, ` (1)`,
+   `Copy of `), dates in common formats, version marks (`v2`, `_final`, ` - new`, ` - old`), case and separators.
+   The project ships the list (`patterns/names.toml`) with defaults for common systems and programs; a site adds its
+   own in config. A normalized-name match with the same extension is weak alone (possible); with chunk overlap, or
+   appearing in the window the original changed, it is likely.
+
+Lineage breaks only where content is never seen identical on both sides and no other evidence survives: a laptop
+copy edited and deleted before the laptop was ever scanned, with no identity field, no chunks and a new name.
+
+People settle what can't be proven. A file's page shows its likely and possible relatives ("looks like a later
+version of ..."); confirming or rejecting one is stored as fact and outranks every heuristic. Nothing is merged
+without that.
+
 Not covered: content changed so much that no chunks survive, and inode reuse by an unrelated file (hence the size
 check). A live watcher (fanotify/inotify) could be added later on a busy server; the nightly scan stays the source of
 truth because a watcher misses whatever happens while it isn't running.
@@ -193,8 +225,9 @@ waitress; server-rendered pages, with htmx (one vendored file) for partial updat
 
 - **Browse** by host and root, or by person, or as one merged tree per source with its copies and backups folded in.
 - **Search** by name, path, hash, size, date, and metadata fields (author, place, camera, date taken); saved searches.
-- **A file's page**: every copy and backup, with ages; history (moves, edits); its bundle; metadata by schema, with
-  where each value came from (extracted, sidecar, a person); shares.
+- **A file's page**: every copy and backup, with ages; history (moves, edits); its lineage, with likely and possible
+  relatives to confirm or reject; its bundle; metadata by schema, with where each value came from (extracted,
+  sidecar, a person); shares.
 - **Reports**: only here, safe to delete, duplicates, not backed up, stale hosts, a root's growth.
 - **Managing**: edit metadata; tag; share; change a folder's owner or enroll people (above); mark "keep" or "drop";
   request file operations (below).
@@ -227,6 +260,7 @@ pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or bac
 pinakes backed-up HOST:PATH            per file: backup copies, newest age
 pinakes dupes [HOST:PATH]              duplicates, largest first
 pinakes history HOST:PATH              what happened to a file or folder
+pinakes lineage HOST:PATH              where this file came from and what came from it, on every host
 pinakes versions HOST:PATH             each known version (hash, dates) and which backup copies hold it
 pinakes changes --since DATE [--host]  what changed
 pinakes meta SCHEMA.FIELD=VALUE        files by metadata
@@ -247,7 +281,8 @@ folder safe to delete" or "where are the photos from that trip" from the catalog
   exactly as for the web UI.
 - Read-only. No step-up: an administrator session is never available to an assistant. No file operations, no
   metadata edits, at least at first.
-- Protected roots show path, size and hash only, as everywhere.
+- Protected roots are left out of every token unless the person adds them; even then, path, size, times and hashes
+  only.
 - What leaves the house is the person's choice: a local model (through a local runner with tool calling) keeps
   everything on the LAN; a hosted assistant receives whatever file names and metadata its queries return. The token
   can be limited to some roots for that reason.

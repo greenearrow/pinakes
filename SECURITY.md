@@ -92,7 +92,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - Operations are limited by the agent's **local** config (`managed` per root). The server can't widen them: a
   compromised server could at worst ask for moves and renames the machine's owner already allowed, never a deletion.
   The agent re-checks hashes before acting and never overwrites.
-- Protected roots send hashes, sizes and names only. Nothing derived from content leaves the machine.
+- Protected roots send names, sizes, times and hashes (SHA-256 and chunk hashes) only. Nothing readable derived from
+  their content leaves the machine.
 
 ## Web UI
 
@@ -114,6 +115,8 @@ DESIGN.md "Wish: an MCP server". Its rules:
   or edit metadata.
 - Every MCP query is logged with its token, so a person can see what their assistants asked.
 - A hosted assistant receives the names and metadata its answers contain. The UI says so when the token is made.
+- Protected roots are not in a token unless the person adds them, after a warning that the records go to whoever
+  runs the assistant.
 
 ## The database and its backups
 
@@ -136,4 +139,5 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
 | An assistant with an MCP token oversteps | Read-only, the person's own view, no step-up, revocable, logged. |
+| Protected work's records reach an outside service that would use them | Protected roots: hashes only, never extracted; left out of MCP tokens unless added deliberately. Encrypted offsite backups of the database are storage, not use. |
 | Photo locations or people's names leak through sharing | Metadata fields marked sensitive stay with the owner unless shared explicitly (METADATA.md). |

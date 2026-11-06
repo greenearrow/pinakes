@@ -39,7 +39,8 @@ managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operati
 label = "store-writing"
 path = "/mnt/store/people/user-1/writing"
 kind = "primary"
-protected = true                       # hash only: no chunks, no archives, no metadata, no previews
+protected = true                       # hashes only: no archives, no metadata, no previews; not in MCP tokens
+chunks = { enabled = true }            # chunk hashes are allowed on protected roots: they say nothing readable
 
 [[root]]
 label = "store-snapshots"
