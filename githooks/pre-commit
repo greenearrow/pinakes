@@ -1,0 +1,4 @@
+#!/bin/sh
+# Block the commit if staged changes contain private data. Installed by:
+#   git config core.hooksPath githooks
+exec "$(git rev-parse --show-toplevel)/tools/leak-scan" --staged

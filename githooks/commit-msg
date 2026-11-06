@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block the commit if its message contains private data.
+exec "$(git rev-parse --show-toplevel)/tools/leak-scan" --message "$1"

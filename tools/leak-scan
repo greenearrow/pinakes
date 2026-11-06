@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Block private home-lab data from entering this repo.
+
+Two layers, both must pass:
+  1. Our own patterns: addresses, MACs, LAN host names, email addresses, push URLs,
+     keys and fingerprints (built in), plus the owner's own terms from the gitignored
+     file leak-patterns.local (see leak-patterns.example).
+  2. gitleaks, for tokens and keys. If gitleaks is missing the scan is incomplete.
+
+Usage:
+  tools/leak-scan --staged          added lines and paths in the index (pre-commit hook)
+  tools/leak-scan --message FILE    a commit message (commit-msg hook)
+  tools/leak-scan --all             every tracked and untracked, non-ignored file
+Both hook modes also check the commit's author and committer name and email.
+
+Exit status: 0 clean, 1 findings, 2 incomplete (gitleaks missing or failed).
+There is no allowlist: fix the finding.
+"""
+
+import argparse
+import ipaddress
+import itertools
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True,
+                      text=True, check=True).stdout.strip()
+LOCAL_TERMS = os.path.join(ROOT, "leak-patterns.local")
+
+# Documentation, loopback and other addresses that identify no one.
+ALLOWED_NETS = [ipaddress.ip_network(n) for n in (
+    "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",  # IPv4 documentation (RFC 5737)
+    "2001:db8::/32",                                      # IPv6 documentation (RFC 3849)
+    "127.0.0.0/8", "0.0.0.0/8", "255.0.0.0/8",            # loopback, unspecified, netmasks
+    "::1/128", "::/128",
+)]
+# Whole reserved blocks (naming the range, not an address in it).
+RESERVED_BLOCKS = {ipaddress.ip_network(n) for n in (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "169.254.0.0/16",
+    "fc00::/7", "fd00::/8", "fe80::/10")}
+# Well-known public resolvers, safe to name in docs.
+ALLOWED_IPS = {ipaddress.ip_address(a) for a in (
+    "1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4", "9.9.9.9", "149.112.112.112")}
+
+# Shared, non-personal addresses (commit attribution, git remotes).
+ALLOWED_EMAILS = {"noreply@anthropic.com", "git@github.com", "git@gitlab.com"}
+EXAMPLE_DOMAIN = re.compile(r"(^|\.)example(\.(com|net|org))?$|\.(test|invalid)$", re.I)
+
+# Placeholder host labels and tokens that may appear in docs.
+PLACEHOLDER_HOST = re.compile(
+    r"^(example|server|host|node|pi|nas|router|client|desktop|laptop|vm)(-?\d+)?$", re.I)
+PLACEHOLDER_TOKEN = re.compile(r"example|placeholder|your|changeme|x{4,}|^<", re.I)
+# RFC 7042 documentation MACs, and all-zero / broadcast.
+ALLOWED_MAC = re.compile(r"^(00[:-]00[:-]5e[:-]00[:-]53[:-][0-9a-f]{2}|(00[:-]){5}00|(ff[:-]){5}ff)$",
+                         re.I)
+
+IPV4 = re.compile(r"(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?:/\d{1,2})?(?![\w.]*\d)")
+IPV6 = re.compile(r"(?<![\w:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?:/\d{1,3})?(?![\w:])")
+MAC = re.compile(r"(?<![\w:-])[0-9A-Fa-f]{2}([:-])(?:[0-9A-Fa-f]{2}\1){4}[0-9A-Fa-f]{2}(?![\w:-])"
+                 r"|(?<![\w.])[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}\.[0-9A-Fa-f]{4}(?![\w.])")
+LAN_HOST = re.compile(r"\b([\w-]+)\.(?:[\w-]+\.)*(home\.arpa|lan|internal|localdomain|ts\.net)\b", re.I)
+EMAIL = re.compile(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+PUSH_URL = re.compile(
+    r"(?:hc-ping\.com|healthchecks\.io/ping)/([\w-]{4,})"   # healthchecks.io
+    r"|/api/push/([\w-]{4,})"                                 # Uptime Kuma push
+    r"|ntfy\.sh/([\w-]{4,})", re.I)                           # ntfy topic
+PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+PUBLIC_KEY = re.compile(r"\b(?:ssh-(?:ed25519|rsa|dss)|ecdsa-sha2-nistp\d+) AAAA[0-9A-Za-z+/]{20,}")
+FINGERPRINT = re.compile(r"\bSHA256:[A-Za-z0-9+/]{43}\b|\b(?:[0-9a-f]{2}:){15}[0-9a-f]{2}\b")
+
+
+def load_local_terms():
+    """leak-patterns.local: one term per line, `re:` for a regex, `#` for comments."""
+    terms = []
+    if not os.path.exists(LOCAL_TERMS):
+        return terms
+    with open(LOCAL_TERMS, encoding="utf-8") as f:
+        for n, raw in enumerate(f, 1):
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("re:"):
+                pattern = line[3:]
+            else:
+                pattern = r"(?<![A-Za-z0-9])" + re.escape(line) + r"(?![A-Za-z0-9])"
+            terms.append((n, re.compile(pattern, re.I)))
+    return terms
+
+
+def address_finding(text):
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        return None
+    if net in RESERVED_BLOCKS:
+        return None
+    if any(net.subnet_of(a) for a in ALLOWED_NETS if a.version == net.version):
+        return None
+    if net.num_addresses == 1 and net.network_address in ALLOWED_IPS:
+        return None
+    if net.version == 4:
+        kind = "private" if net.is_private or net.subnet_of(ipaddress.ip_network("100.64.0.0/10")) else "public"
+        return f"{kind} IPv4 address"
+    return "IPv6 address"
+
+
+def scan_line(text, terms):
+    """Return (rule, match) for each finding in one line."""
+    found = []
+    for m in IPV4.finditer(text):
+        if all(int(o) <= 255 for o in m.group().split("/")[0].split(".")):
+            rule = address_finding(m.group())
+            if rule:
+                found.append((rule, m.group()))
+    for m in IPV6.finditer(text):
+        if m.group().count(":") >= 2 and not MAC.fullmatch(m.group()):
+            rule = address_finding(m.group())
+            if rule:
+                found.append((rule, m.group()))
+    for m in MAC.finditer(text):
+        if not ALLOWED_MAC.match(m.group()):
+            found.append(("MAC address", m.group()))
+    for m in LAN_HOST.finditer(text):
+        if not PLACEHOLDER_HOST.match(m.group(1)):
+            found.append(("LAN host name", m.group()))
+    for m in EMAIL.finditer(text):
+        domain = m.group(1)
+        if m.group().lower() in ALLOWED_EMAILS or EXAMPLE_DOMAIN.search(domain):
+            continue
+        try:
+            ipaddress.ip_address(domain)
+            continue  # user@address: the address rule reports it
+        except ValueError:
+            found.append(("email address", m.group()))
+    for m in PUSH_URL.finditer(text):
+        token = next(g for g in m.groups() if g)
+        if not PLACEHOLDER_TOKEN.search(token):
+            found.append(("push URL or topic", m.group()))
+    for rx, rule in ((PRIVATE_KEY, "private key"), (PUBLIC_KEY, "SSH public key"),
+                     (FINGERPRINT, "key fingerprint")):
+        for m in rx.finditer(text):
+            found.append((rule, m.group()))
+    for n, rx in terms:
+        for m in rx.finditer(text):
+            found.append((f"local term (leak-patterns.local line {n})", m.group()))
+    return found
+
+
+def staged_lines():
+    """Yield (path, line number, text) for added lines and paths in the index."""
+    out = subprocess.run(["git", "diff", "--cached", "-U0", "--no-color", "--no-ext-diff",
+                          "--diff-filter=ACMR"], cwd=ROOT, capture_output=True, text=True,
+                         errors="replace", check=True).stdout
+    path, lineno = None, 0
+    for line in out.splitlines():
+        if line.startswith("+++ "):
+            path = line[6:] if line.startswith("+++ b/") else None
+            if path:
+                yield path, 0, path
+        elif line.startswith("@@"):
+            lineno = int(re.search(r"\+(\d+)", line).group(1))
+        elif line.startswith("+") and path:
+            yield path, lineno, line[1:]
+            lineno += 1
+
+
+def repo_files():
+    out = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=ROOT,
+                         capture_output=True, text=True, check=True).stdout
+    return [p for p in out.split("\0") if p and os.path.isfile(os.path.join(ROOT, p))]
+
+
+def file_lines(paths):
+    for path in paths:
+        yield path, 0, path
+        with open(os.path.join(ROOT, path), "rb") as f:
+            data = f.read()
+        if b"\0" in data:
+            continue  # binary
+        for n, line in enumerate(data.decode("utf-8", "replace").splitlines(), 1):
+            yield path, n, line
+
+
+def identity_lines():
+    """Yield the author and committer name and email this commit will carry."""
+    for var, label in (("GIT_AUTHOR_IDENT", "author"), ("GIT_COMMITTER_IDENT", "committer")):
+        r = subprocess.run(["git", "var", var], cwd=ROOT, capture_output=True, text=True)
+        if r.returncode == 0:
+            # "Name <email> 1730000000 +0000": drop the timestamp.
+            yield f"{label} identity", None, re.sub(r"\s+\d+\s+[+-]\d{4}$", "", r.stdout.strip())
+
+
+def message_lines(msg_file):
+    with open(msg_file, encoding="utf-8", errors="replace") as f:
+        for n, line in enumerate(f, 1):
+            if not line.startswith("#"):
+                yield "commit message", n, line.rstrip("\n")
+
+
+def run_gitleaks(mode, paths=None, msg_file=None):
+    """Return (status, output): status is 'clean', 'leaks' or 'not run: ...'."""
+    exe = shutil.which("gitleaks")
+    if not exe:
+        return "not run: gitleaks is not installed", ""
+    new_cli = subprocess.run([exe, "git", "--help"], capture_output=True).returncode == 0
+    common = ["--no-banner", "--redact", "-v", "--exit-code", "1"]
+    with tempfile.TemporaryDirectory() as tmp:
+        if mode == "staged":
+            cmd = ([exe, "git", "--staged", "--pre-commit", ROOT] if new_cli
+                   else [exe, "protect", "--staged", "-s", ROOT])
+        else:
+            # Copy only what we scan, so ignored files (CLAUDE.local.md...) stay out.
+            if mode == "message":
+                shutil.copy(msg_file, os.path.join(tmp, "COMMIT_MSG"))
+            else:
+                for p in paths:
+                    dest = os.path.join(tmp, p)
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    shutil.copy(os.path.join(ROOT, p), dest)
+            cmd = [exe, "dir", tmp] if new_cli else [exe, "detect", "--no-git", "-s", tmp]
+        r = subprocess.run(cmd + common, capture_output=True, text=True)
+    output = (r.stdout + r.stderr).strip()
+    if r.returncode == 0:
+        return "clean", output
+    if r.returncode == 1:
+        return "leaks", output
+    return f"not run: gitleaks exited {r.returncode}", output
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    group = ap.add_mutually_exclusive_group(required=True)
+    group.add_argument("--staged", action="store_true")
+    group.add_argument("--all", action="store_true")
+    group.add_argument("--message", metavar="FILE")
+    args = ap.parse_args()
+
+    terms = load_local_terms()
+    if args.staged:
+        mode, lines, paths = "staged", itertools.chain(identity_lines(), staged_lines()), None
+    elif args.all:
+        paths = repo_files()
+        mode, lines = "all", file_lines(paths)
+    else:
+        mode, lines, paths = "message", itertools.chain(identity_lines(), message_lines(args.message)), None
+
+    findings = [(p, n, rule, hit) for p, n, text in lines for rule, hit in scan_line(text, terms)]
+    for p, n, rule, hit in findings:
+        where = p if n is None else f"{p}:{n}" if n else f"{p} (path)"
+        print(f"LEAK {where}: {rule}: {hit}")
+
+    local = (f"{len(terms)} local terms" if terms
+             else "NO local terms (leak-patterns.local missing or empty)")
+    print(f"own patterns: {len(findings)} finding(s), {local}")
+    status, output = run_gitleaks(mode, paths, args.message)
+    if status != "clean" and output:
+        print(output)
+    print(f"gitleaks: {status}")
+
+    if findings or status == "leaks":
+        print("leak-scan: FAILED. Fix the findings; nothing is allowlisted without the owner.")
+        return 1
+    if status != "clean" or not terms:
+        print("leak-scan: INCOMPLETE.")
+        return 2
+    print("leak-scan: clean")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

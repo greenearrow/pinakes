@@ -1,0 +1,14 @@
+# Copy to leak-patterns.local (gitignored) and list what is private to YOUR lab.
+# tools/leak-scan blocks any of these from entering the repo. It already catches
+# addresses, MACs, LAN host names, email addresses, push URLs and keys on its own.
+#
+# One term per line, matched case-insensitively as a whole word.
+# Prefix with re: for a Python regular expression. Lines starting with # are comments.
+#
+# Machine names
+server-name-1
+# User names
+your-login
+# Domains, account IDs, SSIDs, people
+your-domain
+re:host-[0-9]+
