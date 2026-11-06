@@ -224,6 +224,16 @@ class TestIngest(ServerCase):
                      "ON p.person_id = f.owner_id WHERE relpath = '2026-01-02_0140/people/user-2/hers.txt'")[0]
         self.assertEqual(row, (src, "2026-01-02", "user-2"))
 
+    def test_backup_of_one_folder_with_prefix(self):
+        self.write("server-1", "store", "games/world-1/level.dat", b"level")
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}", prefix = "games/world-1" }')
+        self.write("server-2", "snapshots", "2026-02-03_0100/level.dat", b"level")
+        self.scan("server-2", "snapshots")
+        row = self.q("SELECT backup_of, snapshot::text FROM pinakes.files WHERE relpath = '2026-02-03_0100/level.dat'")[0]
+        self.assertEqual(row, (self.file("store", "games/world-1/level.dat"), "2026-02-03"))
+
     def test_rule_change_recomputes(self):
         self.write("server-1", "store", "projects/x.txt", b"x")
         self.scan("server-1", "store")

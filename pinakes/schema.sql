@@ -83,6 +83,7 @@ CREATE TABLE roots (
     protected   boolean NOT NULL DEFAULT false,
     mirrors_root_id int REFERENCES roots,
     mirrors_layout text,
+    mirrors_prefix text,                                    -- where in the source root the copied tree sits
     last_complete_on date
 );
 CREATE TABLE scans (

@@ -103,7 +103,8 @@ Set in config, per root:
   - `primary`: where files are kept.
   - `drop`: a folder where things are left for later (`Downloads`, `Desktop`).
   - `backup`: a copy of another root. Needs `mirrors`: which root it copies, and how a backup path maps back to a
-    source path (for example `snapshots/*/`, then the source's relative path). That answers "is this backed up, how
+    source path (for example `snapshots/*/`, then the source's relative path, under an optional `prefix` when the
+    backup copies one folder of the source). That answers "is this backed up, how
     many times, how old is the newest copy" for a source file, and gives backup copies their source's owner.
 - Owners are not set here: see "Ownership and enrollments" below. The agent reports paths and uids; the server
   decides who owns them.

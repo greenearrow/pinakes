@@ -158,17 +158,18 @@ class Ingester:
             raise Refused("root %s belongs to another host" % label)
         mirrors = d.get("mirrors") or {}
         if r:
-            self.q("UPDATE pinakes.roots SET path = %s, kind = %s, protected = %s, mirrors_layout = %s "
-                   "WHERE root_id = %s", (d.get("path", ""), d.get("kind", r[2]), bool(d.get("protected")),
-                                          mirrors.get("layout"), r[0]))
+            self.q("UPDATE pinakes.roots SET path = %s, kind = %s, protected = %s, mirrors_layout = %s, "
+                   "mirrors_prefix = %s WHERE root_id = %s",
+                   (d.get("path", ""), d.get("kind", r[2]), bool(d.get("protected")), mirrors.get("layout"),
+                    (mirrors.get("prefix") or "").strip("/") or None, r[0]))
             root_id = r[0]
             new = False
         else:
             root_id = self.one(
-                "INSERT INTO pinakes.roots (host_id, label, path, kind, protected, mirrors_layout) "
-                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING root_id",
+                "INSERT INTO pinakes.roots (host_id, label, path, kind, protected, mirrors_layout, mirrors_prefix) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING root_id",
                 (host_id, label, d.get("path", ""), d.get("kind", "primary"), bool(d.get("protected")),
-                 mirrors.get("layout")))[0]
+                 mirrors.get("layout"), (mirrors.get("prefix") or "").strip("/") or None))[0]
             new = True
         if mirrors.get("root"):
             m = self.one("SELECT root_id FROM pinakes.roots WHERE label = %s", (mirrors["root"],))
@@ -239,7 +240,10 @@ class Ingester:
                 snapshot = datetime.date.fromisoformat(seg[:10])
             except ValueError:
                 pass
-        return root["mirrors_root_id"], "/".join(rparts[len(lparts) - 1:]), snapshot
+        rest = "/".join(rparts[len(lparts) - 1:])
+        if root.get("mirrors_prefix"):
+            rest = root["mirrors_prefix"] + "/" + rest
+        return root["mirrors_root_id"], rest, snapshot
 
     # applying a batch ------------------------------------------------------------------------------------------
     def apply(self, header, records, host):
@@ -261,10 +265,10 @@ class Ingester:
             if seq <= last_seq:
                 return "duplicate"
             root_id = self._root(host_id, host, header)
-            root = self.one("SELECT root_id, kind, protected, mirrors_root_id, mirrors_layout, last_complete_on "
-                            "FROM pinakes.roots WHERE root_id = %s", (root_id,))
+            root = self.one("SELECT root_id, kind, protected, mirrors_root_id, mirrors_layout, last_complete_on, "
+                            "mirrors_prefix FROM pinakes.roots WHERE root_id = %s", (root_id,))
             root = dict(zip(("root_id", "kind", "protected", "mirrors_root_id", "mirrors_layout",
-                             "last_complete_on"), root))
+                             "last_complete_on", "mirrors_prefix"), root))
             scan = int(header["scan"])
             started_on = datetime.date.fromisoformat(header["started"][:10])
             self.q("INSERT INTO pinakes.scans (root_id, scan, started_on) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",

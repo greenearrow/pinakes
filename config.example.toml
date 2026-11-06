@@ -47,6 +47,7 @@ label = "store-snapshots"
 path = "/mnt/backup/snapshots"
 kind = "backup"
 mirrors = { root = "store", layout = "*/{relpath}" }   # each snapshot folder holds the source's tree
+# a backup of one folder of the source: mirrors = { root = "store", layout = "*/{relpath}", prefix = "games/world-1" }
 
 [[root]]
 label = "downloads"
