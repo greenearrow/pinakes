@@ -186,26 +186,28 @@ ORDER BY v.first_seen_on, b.snapshot;
 
 ## lineage HOST:PATH
 
-Ancestors, following edges backwards; descendants are the same query with the join reversed.
+Ancestors, following edges backwards; descendants are the same query with the join reversed. Lineage links files,
+and a file keeps its id through its versions, so a copy taken out and brought back makes a cycle: the walk carries
+the files it has visited (`seen`) and never revisits one.
 
 ```sql
 -- pinakes lineage store:people/user-1/notes.odt
-WITH RECURSIVE up (file_id, depth, kind, confidence, decision) AS (
-    SELECT f.file_id, 0, NULL::text, NULL::text, NULL::text
+WITH RECURSIVE up (file_id, depth, how, confidence, decision, seen) AS (
+    SELECT f.file_id, 0, NULL::text, NULL::text, NULL::text, ARRAY[f.file_id]
     FROM files f JOIN roots r USING (root_id)
     WHERE r.label = 'store' AND f.relpath = 'people/user-1/notes.odt'
-  UNION
-    SELECT l.from_file_id, up.depth + 1, l.kind, l.confidence, l.decision
+  UNION ALL
+    SELECT l.from_file_id, up.depth + 1, l.kind, l.confidence, l.decision, up.seen || l.from_file_id
     FROM lineage l JOIN up ON l.to_file_id = up.file_id
     WHERE l.decision IS DISTINCT FROM 'rejected'
-      AND up.depth < 50                             -- a bound, in case of a cycle
+      AND NOT l.from_file_id = ANY (up.seen)        -- no file twice: copies out and back form cycles
 )
-SELECT up.depth, h.name AS host, r.label AS root, f.relpath, up.kind, up.confidence, up.decision,
-       f.gone_on
+SELECT up.depth, h.name AS host, r.label AS root, f.relpath, up.how, up.confidence, up.decision, f.gone_on
 FROM up
 JOIN files f USING (file_id)
 JOIN roots r USING (root_id)
 JOIN hosts h USING (host_id)
+WHERE up.depth > 0
 ORDER BY up.depth, h.name;
 ```
 

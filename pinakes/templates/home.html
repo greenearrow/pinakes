@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block body %}
+<h1>Roots</h1>
+<p class="muted">The folders each machine scans. Counts are the files you can see.</p>
+<div class="scroll"><table>
+  <tr><th>Root</th><th>Host</th><th>Kind</th><th class="num">Files</th><th>Last complete scan</th></tr>
+  {% for r in roots %}
+  <tr><td><a href="{{ url_for('browse', root=r.label, path='') }}">{{ r.label }}</a>
+      {% if r.protected %}<span class="tag">protected</span>{% endif %}</td>
+      <td>{{ r.host }}</td><td>{{ r.kind }}</td><td class="num">{{ r.files }}</td>
+      <td>{{ r.last_complete_on or 'never' }}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">No roots have reported yet.</td></tr>{% endfor %}
+</table></div>
+{% if stale %}
+<h2>Not heard from</h2>
+<div class="scroll"><table>
+  <tr><th>Host</th><th>Last scan</th><th>Expected every</th></tr>
+  {% for s in stale %}<tr><td>{{ s.name }}</td><td>{{ s.last_scan or 'never' }}</td><td>{{ s.expected_every }}</td></tr>{% endfor %}
+</table></div>
+{% endif %}
+{% endblock %}

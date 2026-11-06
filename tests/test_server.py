@@ -259,6 +259,11 @@ class TestLineage(ServerCase):
             ("essay.odt", "people/user-1/essay.odt", "replaced_by", "certain"),
             ("people/user-1/essay.odt", "essay.odt", "copied_from", "certain"),
         ])
+        # the two edges form a cycle between the two files: walks must stop, not loop
+        from pinakes import queries
+        store = self.file("store", "people/user-1/essay.odt")
+        self.assertEqual(len(queries.lineage(self.conn, store, "up")), 1)
+        self.assertEqual(len(queries.lineage(self.conn, store, "down")), 1)
 
     def test_late_laptop_report_links_up(self):
         """The laptop reports after the copy came back: the direction comes from the files' times."""

@@ -7,6 +7,8 @@ dsn = "postgresql://pinakes@localhost/pinakes"
 password_file = "/etc/pinakes/secrets/db-password"
 
 [web]
+dsn = "postgresql://pinakes_app@localhost/pinakes"   # the web UI and CLI's role: row-level security applies
+password_file = "/etc/pinakes/secrets/app-db-password"
 listen = "127.0.0.1:8080"              # behind the site's HTTPS reverse proxy
 public_url = "https://catalog.home.example.net"
 session_key_file = "/etc/pinakes/secrets/session-key"

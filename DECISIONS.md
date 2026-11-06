@@ -70,3 +70,16 @@ were made while building, to keep going, and are open to change.
 - **Past versions stay visible to their owner.** Running QUERIES.md as a test found that `versions` lost every version
   no file holds any more: the contents policy only allowed content a visible file holds now. Contents referenced by a
   visible file's history are now visible too (still nobody else's).
+- **Two database roles, two DSNs:** `[database]` is the ingester's (`pinakes_ingest`, bypasses row-level security);
+  `[web]` is the web UI's and CLI's (`pinakes_app`, under it). The CLI takes `--as NAME` and never steps up.
+- **Passwords are scrypt** (`hashlib.scrypt`, standard library; N=2^15, r=8, about 32 MB), not argon2id, which would
+  be a dependency. A sign-in for an unknown name checks a dummy hash, so both take the same time.
+- **TOTP is implemented in the standard library** (RFC 6238, checked against its test vector), with one step of
+  clock drift either side. WebAuthn and OpenID Connect are later.
+- **Sign-in limits** are in memory: five failures per address in 15 minutes. They reset when the service restarts.
+- **The first password** is set on the server with `pinakes-ingest passwd NAME` at a hidden prompt; after that,
+  people change their own in the UI.
+- **No htmx yet:** every page is plain server-rendered HTML; htmx comes when something needs a partial update.
+- **A file you can't see answers 404**, the same as one that doesn't exist.
+- **Lineage walks never revisit a file.** A file keeps its id through versions, so a copy out and back makes a
+  cycle between two files; found when the demo's walk came back 50 levels deep.

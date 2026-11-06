@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% from "_files.html" import file_table with context %}
+{% block title %}Find {{ q }} · pinakes{% endblock %}
+{% block body %}
+<h1>Find</h1>
+{% if q %}<p class="muted">Names containing “{{ q }}” (<code>*</code> and <code>?</code> work as wildcards).</p>
+{{ file_table(results, "No file you can see has a name like that.") }}{% endif %}
+{% endblock %}

@@ -97,8 +97,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 
 ## Web UI
 
-- Accounts: local accounts (argon2id passwords, TOTP or WebAuthn second factor), or sign-in through an OpenID Connect
-  provider the site already runs. The second factor is required for step-up.
+- Accounts: local accounts (scrypt passwords, TOTP second factor; WebAuthn later), or sign-in through an OpenID
+  Connect provider the site already runs (later). The second factor is required for step-up.
 - HTTPS only; session cookies `Secure`, `HttpOnly`, `SameSite=Strict`; CSRF tokens on every change; short idle
   timeout.
 - Reachable on the LAN or a VPN by default. Exposing it to the internet is out of scope.

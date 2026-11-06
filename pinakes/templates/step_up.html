@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Step up · pinakes{% endblock %}
+{% block body %}
+<h1>Step up to administrator</h1>
+<p>For {{ minutes }} minutes you will see everyone's records. Everything you open is logged, and the people it
+belongs to see it, with your reason, on their “Access to your records” page.</p>
+<form method="post" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Reason <input name="reason" required placeholder="e.g. finding which backup has the old version"></label>
+  <label>Code from your authenticator <input name="code" inputmode="numeric" autocomplete="one-time-code" required></label>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <button>Step up</button></form>
+{% endblock %}

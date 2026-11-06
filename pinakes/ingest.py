@@ -3,6 +3,8 @@
   pinakes-ingest --config server.toml --host NAME     one batch on stdin (the forced command of an agent's key)
   pinakes-ingest --config server.toml inbox DIR       every batch file waiting in DIR (the directory transport)
   pinakes-ingest --config server.toml setup           create the schema if needed and seed people, hosts, settings
+  pinakes-ingest --config server.toml passwd NAME     set a person's password at a hidden prompt (first sign-in)
+  pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
 
 Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
 applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
@@ -545,7 +547,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
-    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox"))
+    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute"))
     ap.add_argument("dir", nargs="?")
     args = ap.parse_args(argv)
     cfg = load_server_config(args.config)
@@ -558,6 +560,30 @@ def main(argv=None):
             print("seeded people, groups, hosts and settings")
             return 0
         ing = Ingester(conn, cfg)
+        if args.cmd == "passwd":
+            import getpass
+            from . import auth
+            pid = conn.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (args.dir,)).fetchone()
+            if not pid:
+                print("no person %r (add them to server.toml and run setup)" % args.dir, file=sys.stderr)
+                return 1
+            pw = getpass.getpass("New password for %s (12+ characters): " % args.dir)
+            if len(pw) < 12 or pw != getpass.getpass("Again: "):
+                print("too short, or the two didn't match; nothing changed", file=sys.stderr)
+                return 1
+            conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) VALUES (%s, %s) "
+                         "ON CONFLICT (person_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated = now()",
+                         (pid[0], auth.hash_password(pw)))
+            print("password set for %s" % args.dir)
+            return 0
+        if args.cmd == "recompute":
+            r = conn.execute("SELECT root_id FROM pinakes.roots WHERE label = %s", (args.dir,)).fetchone()
+            if not r:
+                print("no root %r" % args.dir, file=sys.stderr)
+                return 1
+            with conn.transaction():
+                print("%d file(s) reassigned" % ing.recompute_root(r[0]))
+            return 0
         if args.cmd == "inbox":
             rc = 0
             for name in sorted(os.listdir(args.dir)):

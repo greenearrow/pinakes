@@ -57,6 +57,14 @@ CREATE TABLE audit (
     detail      jsonb NOT NULL DEFAULT '{}'
 );
 
+-- sign-in: the application reads these only through the functions below
+CREATE TABLE credentials (
+    person_id   int PRIMARY KEY REFERENCES people ON DELETE CASCADE,
+    password_hash text,                                     -- scrypt$N$r$p$salt$hash
+    totp_secret text,                                       -- base32; NULL until the person enrolls a second factor
+    updated     timestamptz NOT NULL DEFAULT now()
+);
+
 -- hosts, roots, scans -----------------------------------------------------------------------------------------
 
 CREATE TABLE hosts (
@@ -295,6 +303,34 @@ LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
     SELECT current_person(), 'view', affects, detail WHERE stepped_up()
 $$;
 
+-- The password hash of a person by name, to check a sign-in (the application verifies it).
+CREATE FUNCTION login_material(person_name text) RETURNS TABLE (person_id int, password_hash text, has_totp boolean)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
+    SELECT p.person_id, c.password_hash, c.totp_secret IS NOT NULL
+    FROM people p LEFT JOIN credentials c USING (person_id) WHERE p.name = person_name
+$$;
+
+-- The current person's own second-factor secret, to check a code before a step-up.
+CREATE FUNCTION my_totp_secret() RETURNS text LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
+    SELECT totp_secret FROM credentials WHERE person_id = current_person()
+$$;
+
+CREATE FUNCTION set_my_password(hash text) RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER
+SET search_path = pinakes AS $$
+    INSERT INTO credentials (person_id, password_hash) VALUES (current_person(), hash)
+    ON CONFLICT (person_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, updated = now()
+$$;
+
+CREATE FUNCTION set_my_totp(secret text) RETURNS void LANGUAGE sql VOLATILE SECURITY DEFINER
+SET search_path = pinakes AS $$
+    INSERT INTO credentials (person_id, totp_secret) VALUES (current_person(), secret)
+    ON CONFLICT (person_id) DO UPDATE SET totp_secret = EXCLUDED.totp_secret, updated = now()
+$$;
+
+CREATE FUNCTION my_roles() RETURNS text[] LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
+    SELECT roles FROM people WHERE person_id = current_person()
+$$;
+
 -- row-level security ------------------------------------------------------------------------------------------
 
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
@@ -350,7 +386,8 @@ GRANT SELECT ON files, present, contents, content_chunks, members, history, line
 GRANT SELECT (person_id, name, display) ON people TO pinakes_app;
 GRANT SELECT ON groups TO pinakes_app;
 GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visible_acls(), begin_step_up(text, int),
-                          end_step_up(), audit_view(int[], jsonb) TO pinakes_app;
+                          end_step_up(), audit_view(int[], jsonb), login_material(text), my_totp_secret(),
+                          set_my_password(text), set_my_totp(text), my_roles() TO pinakes_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pinakes TO pinakes_ingest;
 REVOKE UPDATE, DELETE ON audit FROM pinakes_ingest;
