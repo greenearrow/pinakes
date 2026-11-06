@@ -88,7 +88,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   name comes from the key, never from the batch.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
   host's sequence.
-- An agent can't read the catalog. It can fetch only approved operations for its own roots.
+- An agent can't read the catalog. It can fetch only approved operations for its own roots. It never sends a file
+  to the server, only records (and previews, where a root enables them).
 - Operations are limited by the agent's **local** config (`managed` per root). The server can't widen them: a
   compromised server could at worst ask for moves and renames the machine's owner already allowed, never a deletion.
   The agent re-checks hashes before acting and never overwrites.
@@ -102,7 +103,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - HTTPS only; session cookies `Secure`, `HttpOnly`, `SameSite=Strict`; CSRF tokens on every change; short idle
   timeout.
 - Reachable on the LAN or a VPN by default. Exposing it to the internet is out of scope.
-- No file content is served unless a root enables previews; never for a protected root.
+- Never a file: no download, upload, opening or editing, by any route (DESIGN.md "Principles"). The only thing
+  shown that is rendered from content is a preview, where a root enables it; never for a protected root.
 - Rate limits on sign-in and search.
 
 ## The MCP server (a wish)
@@ -111,8 +113,8 @@ DESIGN.md "Wish: an MCP server". Its rules:
 
 - One token per person and client, created and revoked in the web UI, optionally limited to some roots; stored
   hashed on the server.
-- The token acts as that person under row-level security. It can never open a step-up session, request operations
-  or edit metadata.
+- The token acts as that person under row-level security. It can never open a step-up session, fetch a file, request
+  operations or edit metadata.
 - Every MCP query is logged with its token, so a person can see what their assistants asked.
 - A hosted assistant receives the names and metadata its answers contain. The UI says so when the token is made.
 - Protected roots are not in a token unless the person adds them, after a warning that the records go to whoever
@@ -135,6 +137,7 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | A bug in a query forgets the owner filter | Row-level security still applies. |
 | A laptop's agent is stolen or tampered with | Its key can only submit batches for its own roots; revoke the key. It holds no database credentials. |
 | A forged batch claims another host's files | Host from the SSH key; paths checked against enrolled roots. |
+| The catalog is breached through the web UI or a stolen session | It holds no files and can reach none: the intruder gets what that person can see (names, hashes, metadata, previews), not file content, and no path to the disks. |
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |

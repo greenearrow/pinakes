@@ -24,6 +24,14 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
 
 ## Principles
 
+- **A catalog, never a way to reach a file.** Pinakes says what exists, where, whose and how it is related; it never
+  hands over, takes in or changes a file's content. No download, upload, streaming, opening or editing, through the
+  web UI, the MCP server, an API or a proxy to a share. Reaching a file is the job of the machine that holds it and
+  its own access controls (a file share, SSH, a local login). Two reasons: working on a file through a portal means
+  download, change, re-upload, which makes stray copies, the problem the catalog exists to find; and a breached
+  catalog exposes names, hashes and metadata, while a breached file portal exposes the files. Previews (optional per
+  root, below) are the only thing shown that is rendered from content, and they are not the file. File operations
+  are done by the agent on its own machine, within its local config; no file passes through the catalog.
 - **Read-only on the files by default.** The agent opens files read-only and never writes to a scanned tree: no
   xattrs, no sidecar files, no touching of times (`O_NOATIME` where permitted). Changing files (moving, renaming,
   writing sidecars) is a separate, opt-in capability per root ("Managing files").
@@ -325,8 +333,8 @@ folder safe to delete" or "where are the photos from that trip" from the catalog
   local client or streamable HTTP behind the proxy.
 - It acts as one person, with a token that person creates in the web UI and can revoke. Row-level security applies
   exactly as for the web UI.
-- Read-only. No step-up: an administrator session is never available to an assistant. No file operations, no
-  metadata edits, at least at first.
+- Read-only. No step-up: an administrator session is never available to an assistant. Never a file's content. No
+  file operations, no metadata edits, at least at first.
 - Protected roots are left out of every token unless the person adds them; even then, path, size, times and hashes
   only.
 - What leaves the house is the person's choice: a local model (through a local runner with tool calling) keeps
@@ -351,4 +359,5 @@ per file; the database the same plus history and metadata.
 
 ## Out of scope
 
-Deleting anything, content search inside documents, and Windows (possible later with the same batch format).
+Deleting anything; reaching a file's content (download, upload, opening, editing: see "Principles"); content
+search inside documents; and Windows (possible later with the same batch format).

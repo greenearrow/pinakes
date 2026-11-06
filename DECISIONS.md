@@ -14,6 +14,10 @@ were made while building, to keep going, and are open to change.
 - Chunk hashes are allowed on protected roots: they say nothing readable. Protected records never go to an outside
   service that would use them (MCP tokens leave protected roots out unless added).
 - No deletion, ever: `trash` only.
+- Never a way to reach a file: no download, upload, opening or editing, by any route (web UI, MCP, API, a proxy to a
+  share). Working on a file through a portal makes stray copies, and a breached index exposes far less than a
+  breached file portal. Access stays with each machine's own shares and logins. Previews stay as designed (optional
+  per root, never on a protected root).
 
 ## Build
 

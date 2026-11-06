@@ -13,6 +13,8 @@ web. Not decided yet: publishing. A wish, not a requirement: an MCP server over 
   machines `server-1`, `workstation-1`, `laptop-1`; people `user-1`, `user-2`, group `household`; LAN
   `192.0.2.0/24`; domains `example.net`; paths `/mnt/store`, `/mnt/backup`, `/home/user`.
 - Everything site-specific is configuration. If code needs a name, path or address, it reads it from config.
+- Pinakes never gives access to a file: no download, upload, opening or editing, by any route (DESIGN.md
+  "Principles"). Don't build toward it.
 - Security is part of every change: anything that names or describes a file is under row-level security; agents get
   no new powers the machine's local config hasn't granted (SECURITY.md).
 - Tests use generated trees in a temporary directory, never a real one.

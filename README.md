@@ -30,6 +30,8 @@ In short:
   to its source.
 - Moves and edits are tracked by hash, inode and content-defined chunk overlap, with the evidence recorded.
 - PostgreSQL with row-level security; agents hold no database credentials.
+- Never a way to reach a file: no download, upload or editing. The catalog says where a file is; the machine that
+  holds it, through its own shares and logins, gives access.
 - File operations (move, rename, write a sidecar, trash) only by approved request, carried out and verified by the
   agent; nothing is ever deleted.
 
