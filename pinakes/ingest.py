@@ -2,7 +2,7 @@
 
   pinakes-ingest --config server.toml --host NAME     one batch on stdin (the forced command of an agent's key)
   pinakes-ingest --config server.toml inbox DIR       every batch file waiting in DIR (the directory transport)
-  pinakes-ingest --config server.toml setup           create the schema if needed and seed people, hosts, settings
+  pinakes-ingest --config server.toml setup           seed people, hosts and settings (the schema must exist)
   pinakes-ingest --config server.toml passwd NAME     set a person's password at a hidden prompt (first sign-in)
   pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
 
@@ -558,8 +558,12 @@ def main(argv=None):
     with psycopg.connect(**cfg.connect_kwargs(), autocommit=True) as conn:
         if args.cmd == "setup":
             if not schema_exists(conn):
-                apply_schema(conn)
-                print("schema created")
+                # the schema belongs to the owner role, which can't log in: a superuser applies it once
+                print("no schema yet. Apply it as its owner, then run setup again:\n"
+                      "  psql -d pinakes -c 'SET ROLE pinakes_owner' -f - < %s\n"
+                      "(on a server in Docker: sudo docker exec -i -u postgres CONTAINER psql ...)" % SCHEMA_FILE,
+                      file=sys.stderr)
+                return 2
             Ingester(conn, cfg).seed()
             print("seeded people, groups, hosts and settings")
             return 0

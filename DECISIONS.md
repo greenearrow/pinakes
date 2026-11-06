@@ -83,3 +83,9 @@ were made while building, to keep going, and are open to change.
 - **A file you can't see answers 404**, the same as one that doesn't exist.
 - **Lineage walks never revisit a file.** A file keeps its id through versions, so a copy out and back makes a
   cycle between two files; found when the demo's walk came back 50 levels deep.
+- **`pinakes-ingest setup` doesn't create the schema.** The schema belongs to a role that can't log in, so a
+  superuser applies it once; setup says how and stops (exit 2).
+- **Measured on a desktop (12th-gen Intel, ext4, warm cache), a 3.0 GB tree of 383,985 entries:** first scan 44 s
+  (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
+  database 584 MB (about 1.5 KB a file, indexes included). The ingester does a few round trips per record; batching
+  them is the first optimization if a large first pass is too slow on a small server.
