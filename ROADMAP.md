@@ -38,6 +38,15 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
    unbatched ingest give the same catalog.
+   *Found on the board:* the batch that completes a first scan of ~340k files ran past the agent's 10-minute send
+   timeout, so the scan never finished: completing did its work per file (a history row and 5-7 lineage queries
+   each, about 2M round trips). Now done in bulk: the new files' history in one statement, lineage in rounds of
+   2000 files with a handful of queries each (chunk sharing still per chunked file).
+   `TestLineageRounds` proves rounds of 3 and 2000 give the same catalog as rounds of 1 (the per-file order).
+   On a desktop (i7-12700KF, PostgreSQL 16 on a local socket, synthetic 300k files): that batch 68.7 s before,
+   18.7 s after, the same catalog; an ordinary batch of 5000 files 1.3 s. The per-record queries of ordinary
+   batches are not batched yet. Still per file: matching a scan's gone paths against its new ones (one pass over
+   the new files per gone path), so a reorganisation that moves 100k files at once will be slow.
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.

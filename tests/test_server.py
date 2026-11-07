@@ -5,6 +5,7 @@ default postgres, is a superuser) and psycopg. Each test class gets a fresh data
 """
 
 import os
+import random
 import shutil
 import tempfile
 import time
@@ -352,6 +353,96 @@ class TestHardLinks(ServerCase):
         f = self.file("store", "a.bin")
         same = {r["relpath"]: r["same_inode"] for r in queries.where(self.conn, f)}
         self.assertEqual(same, {"a.bin": True, "a-link.bin": True, "a-copy.bin": False})
+
+
+class TestLineageRounds(ServerCase):
+    """Lineage worked out in rounds of many files gives the same catalog as one file at a time."""
+
+    CHUNKS = 'chunks = { enabled = true, min_size = "1", average = "4KiB" }'
+    NAMES = ["report.txt", "report (2).txt", "Report - Copy.txt", "notes.txt", "notes 2024-01-01.txt", "photo.jpg",
+             "photo (1).jpg", "plan.odt", "plan final.odt", "data.bin"]
+
+    def reset(self, lineage_round):
+        for st, _, _ in self.agents.values():
+            st.close()
+        self.agents = {}
+        shutil.rmtree(self.tmp)
+        self.tmp = tempfile.mkdtemp(prefix="pinakes-srv-")
+        with admin_conn(self.db) as c:
+            c.execute("DROP SCHEMA IF EXISTS pinakes CASCADE")
+            apply_schema(c)
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        self.ing.lineage_round = lineage_round
+
+    def scenario(self, lineage_round):
+        self.reset(lineage_round)
+        rnd = random.Random(7)
+        base = [rnd.randbytes(30000) for _ in range(4)]
+        pool = base + [b"small %d" % i for i in range(4)]
+
+        def content():  # a copy of a pooled content, an edited copy of a big one (shared chunks), or its own
+            r = rnd.random()
+            if r < 0.4:
+                return rnd.choice(pool)
+            if r < 0.7:
+                b, k = rnd.choice(base), rnd.randrange(1000, 29000)
+                return b[:k] + rnd.randbytes(8) + b[k:]
+            return rnd.randbytes(rnd.randrange(10, 200))
+        t0 = 1700000000
+        self.agent("server-1", "store", extra=self.CHUNKS)
+        self.agent("laptop-1", "downloads", extra=self.CHUNKS)
+        for i in range(40):  # mtimes from a few values: ties between copies are common (cp -p)
+            self.write("server-1", "store", "d%d/%s" % (i % 7, self.NAMES[i % len(self.NAMES)]) if i < 10 else
+                       "d%d/%d-%s" % (i % 7, i, rnd.choice(self.NAMES)), content(), mtime=t0 + 60 * rnd.randint(0, 5))
+        # the oldest copy has two names on one inode: each name finds the copies without a source, and only the
+        # first one worked out may become their source (what a round must remember between its files)
+        old = self.write("server-1", "store", "links/old.bin", b"linked original", mtime=t0 - 600)
+        os.link(old, self.path("server-1", "store", "links/old-link.bin"))
+        for i in range(2):
+            self.write("server-1", "store", "links/copy-%d.bin" % i, b"linked original", mtime=t0 + 60 * i)
+        for i in range(3):  # hard links: the same data, not a copy
+            os.link(self.path("server-1", "store", "d%d/%s" % (i, self.NAMES[i])),
+                    self.path("server-1", "store", "d%d/link-%d.bin" % (i, i)))
+        self.scan("server-1", "store")
+        for i in range(15):
+            self.write("laptop-1", "downloads", "%d-%s" % (i, rnd.choice(self.NAMES)), content(),
+                       mtime=t0 + 60 * rnd.randint(-3, 8))
+        self.scan("laptop-1", "downloads")
+        # a person rejects one edge; then the store changes: edits, moves, new copies
+        self.q("""UPDATE pinakes.lineage SET decision = 'rejected' WHERE (from_file_id, to_file_id, kind) =
+                  (SELECT from_file_id, to_file_id, kind FROM pinakes.lineage l
+                   JOIN pinakes.files f ON f.file_id = l.to_file_id ORDER BY f.relpath, l.kind LIMIT 1)
+                  RETURNING 1""")
+        for i in range(5):
+            self.write("server-1", "store", "d%d/%s" % (i, self.NAMES[i]), content(), mtime=t0 + 900 + i)
+        os.makedirs(self.path("server-1", "store", "moved"))
+        for i in range(5, 8):
+            os.rename(self.path("server-1", "store", "d%d/%s" % (i % 7, self.NAMES[i])),
+                      self.path("server-1", "store", "moved/%s" % self.NAMES[i]))
+        for i in range(5):
+            self.write("server-1", "store", "new/%d-%s" % (i, rnd.choice(self.NAMES)), content(),
+                       mtime=t0 + 60 * rnd.randint(-2, 12))
+        self.scan("server-1", "store")
+        edges = self.q("""SELECT rf.label, fr.relpath, rt.label, ft.relpath, l.kind, l.evidence, l.confidence, l.decision
+                          FROM pinakes.lineage l
+                          JOIN pinakes.files fr ON fr.file_id = l.from_file_id JOIN pinakes.roots rf ON rf.root_id = fr.root_id
+                          JOIN pinakes.files ft ON ft.file_id = l.to_file_id JOIN pinakes.roots rt ON rt.root_id = ft.root_id
+                          ORDER BY 1, 2, 3, 4, 5""")
+        history = self.q("""SELECT r.label, f.relpath, h.kind, h.evidence FROM pinakes.history h
+                            JOIN pinakes.files f USING (file_id) JOIN pinakes.roots r USING (root_id) ORDER BY 1, 2, 3""")
+        return edges, history
+
+    def test_rounds_match_one_at_a_time(self):
+        one_edges, one_history = self.scenario(1)
+        kinds = {e[5] for e in one_edges}
+        # the scenario exercises every kind of evidence and a rejected edge
+        self.assertTrue({"same sha256", "similar name"} <= kinds and any(k.startswith("chunks") for k in kinds), kinds)
+        self.assertIn("rejected", {e[7] for e in one_edges})
+        for n in (3, 2000):
+            edges, history = self.scenario(n)
+            self.assertEqual(edges, one_edges, "rounds of %d" % n)
+            self.assertEqual(history, one_history, "rounds of %d" % n)
 
 
 class TestRowLevelSecurity(ServerCase):

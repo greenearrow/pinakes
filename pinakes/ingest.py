@@ -40,12 +40,39 @@ def _under(relpath, folder):
     return folder == "" or relpath == folder or relpath.startswith(folder + "/")
 
 
+class _LineageState:
+    """What one pass of lineage knows. Files and history don't change during a pass, so what was read of them is
+    kept for the whole pass; edges do, so what is known of them is read again from the table each round."""
+
+    def __init__(self):
+        self.holders = {}            # content_id -> [(file_id, content_id, mtime, first_seen, host_id, dev, ino)]
+        self.how_loaded = set()
+        self.how = {}                # (file_id, content_id) -> latest history kind that brought it
+        self.new_round()
+
+    def new_round(self):
+        self.loaded = set()          # file ids whose incoming edges are in keys / has_source
+        self.keys = set()            # (from, to, kind) present in the table or queued
+        self.has_source = set()      # files with an edge in that isn't rejected
+        self.has_copy_source = set()  # ... of evidence 'same sha256'
+        self.queue = []              # edges to write at the end of the round
+
+
+def _other_inode(h, host_id, dev, ino):
+    """SQL's NOT (host = host AND dev = dev AND ino = ino): true only if one of them is known to differ."""
+    eqs = [h[4] == host_id, None if h[5] is None or dev is None else h[5] == dev,
+           None if h[6] is None or ino is None else h[6] == ino]
+    return False in eqs
+
+
 class Ingester:
     def __init__(self, conn, cfg):
         self.conn = conn
         self.cfg = cfg
         self.patterns = names.load_patterns(cfg.name_patterns_file)
         self._acl_cache = {}
+        # files worked out per round of lineage: a few queries per round, not per file (1 gives the per-file order)
+        self.lineage_round = 2000
 
     # helpers ---------------------------------------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -349,8 +376,10 @@ class Ingester:
     def _complete(self, ctx, gone_paths, host_id):
         root_id, scan, on, after = ctx["root"]["root_id"], ctx["scan"], ctx["on"], ctx["after"]
         fields = "file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
-        new = {r[0]: r for r in self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
-                                       "AND gone_on IS NULL" % fields, (root_id, scan)).fetchall()}
+        new = {}
+        if gone_paths:  # only a scan that lost paths needs the new files in hand, to match moves
+            new = {r[0]: r for r in self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
+                                           "AND gone_on IS NULL" % fields, (root_id, scan)).fetchall()}
         touched = []
         for path in gone_paths:
             g = self.one("SELECT %s FROM pinakes.files WHERE root_id = %%s AND relpath = %%s AND gone_on IS NULL"
@@ -369,18 +398,18 @@ class Ingester:
                 self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, old_content_id, old_mtime, old_ctime, "
                        "old_btime, seen_after, seen_on) VALUES (%s, 'gone', %s, %s, %s, %s, %s, %s, %s)",
                        (g[0], g[1], g[2], g[6], g[7], g[8], after, on))
-        for n in new.values():
-            self.q("INSERT INTO pinakes.history (file_id, kind, new_relpath, new_content_id, new_mtime, new_ctime, "
-                   "new_btime, seen_after, seen_on) VALUES (%s, 'new', %s, %s, %s, %s, %s, %s, %s)",
-                   (n[0], n[1], n[2], n[6], n[7], n[8], after, on))
-            touched.append(n[0])
+        # what is still pending after the moves is new in this scan: one statement however many (a first scan: all)
+        pending = "FROM pinakes.files WHERE root_id = %s AND pending_scan = %s AND gone_on IS NULL"
+        touched += [r[0] for r in self.q("SELECT file_id %s ORDER BY file_id" % pending, (root_id, scan)).fetchall()]
+        self.q("INSERT INTO pinakes.history (file_id, kind, new_relpath, new_content_id, new_mtime, new_ctime, "
+               "new_btime, seen_after, seen_on) SELECT file_id, 'new', relpath, content_id, mtime, ctime, btime, %%s, "
+               "%%s %s ORDER BY file_id" % pending, (after, on, root_id, scan))
         touched += [r[0] for r in self.q("SELECT file_id FROM pinakes.files WHERE root_id = %s AND changed_scan = %s",
                                          (root_id, scan)).fetchall()]
         self.q("UPDATE pinakes.files SET pending_scan = NULL, changed_scan = NULL "
                "WHERE root_id = %s AND (pending_scan = %s OR changed_scan = %s)", (root_id, scan, scan))
         if ctx["root"]["kind"] != "backup":
-            for file_id in dict.fromkeys(touched):
-                self.lineage_for(file_id, on)
+            self.lineage_many(list(dict.fromkeys(touched)), on)
         self.q("UPDATE pinakes.scans SET completed = true WHERE root_id = %s AND scan = %s", (root_id, scan))
         self.q("UPDATE pinakes.roots SET last_complete_on = %s WHERE root_id = %s", (on, root_id))
         self.q("UPDATE pinakes.hosts SET last_scan = now() WHERE host_id = %s", (host_id,))
@@ -436,70 +465,152 @@ class Ingester:
                 confidence))
 
     # lineage ---------------------------------------------------------------------------------------------------
-    def _edge(self, src, dst, kind, evidence, confidence, on):
-        if src == dst:
-            return
-        self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, found_on) "
-               "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", (src, dst, kind, evidence, confidence, on))
-
-    def _how_got(self, file_id, content_id):
-        """'replaced_by' if the file came to hold this content by a change, else 'copied_from'."""
-        r = self.one("SELECT kind FROM pinakes.history WHERE file_id = %s AND new_content_id = %s "
-                     "ORDER BY history_id DESC LIMIT 1", (file_id, content_id))
-        return "replaced_by" if r and r[0] in ("changed", "moved_changed") else "copied_from"
-
     def lineage_for(self, file_id, on):
-        f = self.one("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext, r.protected
-                        FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE f.file_id = %s""", (file_id,))
-        if f is None or f[1] is None:
+        self.lineage_many([file_id], on)
+
+    def lineage_many(self, file_ids, on):
+        """Lines of descent for these files, in this order, as if one at a time.
+
+        Each round of `lineage_round` files costs a handful of queries; the edges a round finds are written at its end.
+        What a later file depends on (which files already have a source) is kept here meanwhile, so the result is
+        the same as working the files out one by one: a round of 1 is the per-file order exactly, reading every edge
+        back from the table. Chunk sharing, rare, is still asked per file.
+        """
+        st = _LineageState()
+        for i in range(0, len(file_ids), self.lineage_round):
+            self._lineage_round(file_ids[i:i + self.lineage_round], on, st)
+
+    def _lineage_round(self, ids, on, st):
+        st.new_round()
+        rows = self.q("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext
+                         FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
+                         WHERE f.file_id = ANY(%s) AND f.content_id IS NOT NULL""", (ids,)).fetchall()
+        by_id = {r[0]: r for r in rows}
+        if not by_id:
             return
-        _, content, mtime, dev, ino, host_id, name_key, ext, _protected = f
-        # 1. identical content elsewhere (not a backup copy, not another link to the same inode)
-        others = self.q("""SELECT o.file_id, o.mtime, o.first_seen FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
-                           WHERE o.content_id = %s AND o.file_id <> %s AND r.kind <> 'backup'
-                             AND NOT (r.host_id = %s AND o.dev = %s AND o.ino = %s)""",
-                        (content, file_id, host_id, dev, ino)).fetchall()
-        if others:
+        contents = list({r[1] for r in rows})
+        # holders of each content, earliest first (the files table doesn't change while lineage is worked out)
+        missing = [c for c in contents if c not in st.holders]
+        if missing:
             far = datetime.datetime.max.replace(tzinfo=datetime.timezone.utc)
-            earliest = min(others, key=lambda o: (o[1] or far, o[2]))
-            if mtime is not None and earliest[1] is not None and mtime < earliest[1]:
+            for c in missing:
+                st.holders[c] = []
+            for h in self.q("""SELECT o.file_id, o.content_id, o.mtime, o.first_seen, r.host_id, o.dev, o.ino
+                               FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
+                               WHERE o.content_id = ANY(%s) AND r.kind <> 'backup'""", (missing,)).fetchall():
+                st.holders[h[1]].append(h)
+            for c in missing:
+                st.holders[c].sort(key=lambda h: (h[2] or far, h[3], h[0]))
+        # incoming edges and history of these files and of every holder of their contents (each loaded once a pass)
+        near = list(by_id) + [h[0] for c in contents for h in st.holders[c]]
+        self._load_lineage(near, st)
+        self._load_how(near, st)
+        changed = {r[0] for r in self.q("SELECT DISTINCT file_id FROM pinakes.history WHERE file_id = ANY(%s) "
+                                        "AND kind <> 'new'", (list(by_id),)).fetchall()}
+        chunked = {r[0] for r in self.q("SELECT c.content_id FROM pinakes.contents c WHERE c.content_id = ANY(%s) "
+                                        "AND EXISTS (SELECT 1 FROM pinakes.content_chunks k "
+                                        "WHERE k.content_id = c.content_id)", (contents,)).fetchall()}
+        named = [r for r in rows if r[6]]
+        by_name = {}
+        if named:
+            by_name = dict(self.q(
+                """SELECT t.fid, (SELECT o.file_id FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
+                                  WHERE o.name_key = t.key AND o.ext = t.ext AND o.file_id <> t.fid
+                                    AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content
+                                  ORDER BY (o.mtime <= t.mtime) DESC, o.mtime DESC NULLS LAST, o.file_id LIMIT 1)
+                   FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::bigint[], %s::timestamptz[])
+                        AS t(fid, key, ext, content, mtime)""",
+                ([r[0] for r in named], [r[6] for r in named], [r[7] for r in named], [r[1] for r in named],
+                 [r[2] for r in named])).fetchall())
+        for file_id in ids:
+            f = by_id.get(file_id)
+            if f is not None:
+                self._lineage_one(f, on, st, changed, chunked, by_name)
+        if st.queue:
+            with self.conn.cursor() as cur:
+                cur.executemany("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, "
+                                "found_on) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", st.queue)
+            st.queue = []
+
+    def _load_lineage(self, ids, st):
+        ids = [i for i in ids if i not in st.loaded]
+        if not ids:
+            return
+        st.loaded.update(ids)
+        for frm, to, kind, evidence, decision in self.q(
+                "SELECT from_file_id, to_file_id, kind, evidence, decision FROM pinakes.lineage "
+                "WHERE to_file_id = ANY(%s)", (ids,)).fetchall():
+            st.keys.add((frm, to, kind))
+            if decision != "rejected":
+                st.has_source.add(to)
+                if evidence == "same sha256":
+                    st.has_copy_source.add(to)
+
+    def _load_how(self, ids, st):
+        ids = [i for i in ids if i not in st.how_loaded]
+        if not ids:
+            return
+        st.how_loaded.update(ids)
+        for file_id, content_id, kind in self.q(
+                "SELECT DISTINCT ON (file_id, new_content_id) file_id, new_content_id, kind FROM pinakes.history "
+                "WHERE file_id = ANY(%s) AND new_content_id IS NOT NULL "
+                "ORDER BY file_id, new_content_id, history_id DESC", (ids,)).fetchall():
+            st.how[(file_id, content_id)] = kind
+
+    def _how_got(self, st, file_id, content_id):
+        """'replaced_by' if the file came to hold this content by a change, else 'copied_from'."""
+        return "replaced_by" if st.how.get((file_id, content_id)) in ("changed", "moved_changed") else "copied_from"
+
+    def _edge(self, st, src, dst, kind, evidence, confidence, on):
+        if src == dst or (src, dst, kind) in st.keys:
+            return  # the table already has it, perhaps rejected: as ON CONFLICT DO NOTHING would leave it
+        st.keys.add((src, dst, kind))
+        st.has_source.add(dst)
+        if evidence == "same sha256":
+            st.has_copy_source.add(dst)
+        st.queue.append((src, dst, kind, evidence, confidence, on))
+
+    def _lineage_one(self, f, on, st, changed, chunked, by_name):
+        file_id, content, mtime, dev, ino, host_id, name_key, ext = f
+        # 1. identical content elsewhere (not a backup copy, not another link to the same inode)
+        others = [h for h in st.holders.get(content, ()) if h[0] != file_id and _other_inode(h, host_id, dev, ino)]
+        if others:
+            earliest = others[0]
+            if mtime is not None and earliest[2] is not None and mtime < earliest[2]:
                 # this file had it first: it is the source of the copies that have no source yet
+                ids = [o[0] for o in others]
+                self._load_lineage(ids, st)
+                self._load_how(ids, st)
                 for o in others:
-                    if not self.one("SELECT 1 FROM pinakes.lineage WHERE to_file_id = %s AND evidence = 'same sha256' "
-                                    "AND decision IS DISTINCT FROM 'rejected'", (o[0],)):
-                        self._edge(file_id, o[0], self._how_got(o[0], content), "same sha256", "certain", on)
+                    if o[0] not in st.has_copy_source:
+                        self._edge(st, file_id, o[0], self._how_got(st, o[0], content), "same sha256", "certain", on)
             else:
-                self._edge(earliest[0], file_id, self._how_got(file_id, content), "same sha256", "certain", on)
+                self._edge(st, earliest[0], file_id, self._how_got(st, file_id, content), "same sha256", "certain",
+                           on)
             return
         # weaker evidence only for a file with no line of descent yet (a changed file keeps its own)
-        if self.one("SELECT 1 FROM pinakes.lineage WHERE to_file_id = %s AND decision IS DISTINCT FROM 'rejected'",
-                    (file_id,)) or self.one("SELECT 1 FROM pinakes.history WHERE file_id = %s AND kind <> 'new'",
-                                            (file_id,)):
+        if file_id in st.has_source or file_id in changed:
             return
         # 2. shared chunks with another content
-        best = self.one("""SELECT cb.content_id, sum(ca.len)::float / (SELECT sum(len) FROM pinakes.content_chunks
-                                                                        WHERE content_id = %s) AS share
-                           FROM pinakes.content_chunks ca JOIN pinakes.content_chunks cb
-                             ON cb.digest = ca.digest AND cb.content_id <> ca.content_id
-                           WHERE ca.content_id = %s GROUP BY cb.content_id ORDER BY share DESC LIMIT 1""",
-                        (content, content))
-        if best and best[1] and best[1] >= self.cfg.chunk_overlap:
-            src = self.one("""SELECT o.file_id FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
-                              WHERE o.content_id = %s AND r.kind <> 'backup' AND o.file_id <> %s
-                              ORDER BY (o.mtime <= %s) DESC, o.mtime DESC NULLS LAST LIMIT 1""",
-                           (best[0], file_id, mtime))
-            if src:
-                self._edge(src[0], file_id, "derived_from", "chunks %.0f%% shared" % (100 * best[1]), "likely", on)
-                return
+        if content in chunked:
+            best = self.one("""SELECT cb.content_id, sum(ca.len)::float / (SELECT sum(len) FROM pinakes.content_chunks
+                                                                            WHERE content_id = %s) AS share
+                               FROM pinakes.content_chunks ca JOIN pinakes.content_chunks cb
+                                 ON cb.digest = ca.digest AND cb.content_id <> ca.content_id
+                               WHERE ca.content_id = %s GROUP BY cb.content_id ORDER BY share DESC LIMIT 1""",
+                            (content, content))
+            if best and best[1] and best[1] >= self.cfg.chunk_overlap:
+                src = self.one("""SELECT o.file_id FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
+                                  WHERE o.content_id = %s AND r.kind <> 'backup' AND o.file_id <> %s
+                                  ORDER BY (o.mtime <= %s) DESC, o.mtime DESC NULLS LAST LIMIT 1""",
+                               (best[0], file_id, mtime))
+                if src:
+                    self._edge(st, src[0], file_id, "derived_from", "chunks %.0f%% shared" % (100 * best[1]),
+                               "likely", on)
+                    return
         # 3. the same name once copy markers, dates and versions are taken off
-        if name_key:
-            src = self.one("""SELECT o.file_id FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
-                              WHERE o.name_key = %s AND o.ext = %s AND o.file_id <> %s AND r.kind <> 'backup'
-                                AND o.content_id IS DISTINCT FROM %s
-                              ORDER BY (o.mtime <= %s) DESC, o.mtime DESC NULLS LAST LIMIT 1""",
-                           (name_key, ext, file_id, content, mtime))
-            if src:
-                self._edge(src[0], file_id, "derived_from", "similar name", "possible", on)
+        if name_key and by_name.get(file_id):
+            self._edge(st, by_name[file_id], file_id, "derived_from", "similar name", "possible", on)
 
     # setup -----------------------------------------------------------------------------------------------------
     def seed(self):
