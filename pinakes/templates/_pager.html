@@ -12,9 +12,13 @@
 {% endif %}
 {% endmacro %}
 
-{# A column header that sorts list p by `key` (a name in the query's whitelist): a link that sorts ascending, or
-   descending when it is already the ascending sort, marked with the current direction. #}
+{# A column header for list p's column `key` (a name in the query's whitelist): its label, then ▲ and ▼, each a link
+   that sorts by it in that direction, so either is one click. The current sort is marked, not a link. #}
 {% macro th(p, key, label, cls="") %}
 {%- set on = p.sort == key -%}
-<th{% if cls %} class="{{ cls }}"{% endif %}{% if on %} aria-sort="{{ 'ascending' if p.dir == 'asc' else 'descending' }}"{% endif %}><a class="sort{% if on %} on{% endif %}" href="{{ p.url(sort=key) }}">{{ label }}{% if on %} {{ '▲' if p.dir == 'asc' else '▼' }}{% endif %}</a></th>
+<th{% if cls %} class="{{ cls }}"{% endif %}{% if on %} aria-sort="{{ 'ascending' if p.dir == 'asc' else 'descending' }}"{% endif %}>{{ label }}<span class="sort">
+  {%- for d, arrow, word in (("asc", "▲", "ascending"), ("desc", "▼", "descending")) -%}
+  {%- if on and p.dir == d %}<span class="on" title="{{ label }}, {{ word }}">{{ arrow }}</span>
+  {%- else %}<a href="{{ p.url(sort=key, dir=d) }}" title="Sort by {{ label }}, {{ word }}" aria-label="Sort by {{ label }}, {{ word }}">{{ arrow }}</a>{% endif %}
+  {%- endfor %}</span></th>
 {%- endmacro %}

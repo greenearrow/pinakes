@@ -415,18 +415,23 @@ class TestSorting(ServerCase):
                     self.assertEqual([int(x) for x in got], want, (col, d))
         page = c.get("/find?q=*.txt&per=50&sort=size&dir=asc").get_data(as_text=True)
         self.assertIn('aria-sort="ascending"', page)
-        self.assertIn("Size ▲", page)
-        size = re.search(r'<a class="sort on" href="([^"]+)">Size', page).group(1).replace("&amp;", "&")
-        self.assertIn("sort=size", size)
-        self.assertIn("dir=desc", size)                                    # a second click turns it round
+        link = lambda html, label, word: re.search(r'<a href="([^"]+)" title="Sort by %s, %s"' % (label, word),
+                                                   html).group(1).replace("&amp;", "&")
+        self.assertIn('<span class="on" title="Size, ascending">▲</span>', page)   # the current one: marked
+        self.assertIsNone(re.search(r'title="Sort by Size, ascending"', page))      # and not a link
+        down = link(page, "Size", "descending")                            # the other way is one click
+        self.assertIn("sort=size", down)
+        self.assertIn("dir=desc", down)
+        self.assertIn("dir=desc", link(page, "Path", "descending"))        # any column, either way, one click
+        self.assertIn("dir=asc", link(page, "Path", "ascending"))
         nxt = re.search(r'href="([^"]+)" rel="next"', page).group(1).replace("&amp;", "&")
         self.assertIn("sort=size", nxt)                                    # the pager keeps the sort
         self.assertIn("dir=asc", nxt)
         self.assertIn("page=2", nxt)
         p2 = c.get("/find?q=*.txt&per=50&sort=size&dir=asc&page=2").get_data(as_text=True)
-        path = re.search(r'<a class="sort" href="([^"]+)">Path', p2).group(1).replace("&amp;", "&")
+        path = link(p2, "Path", "descending")
         self.assertIn("page=1", path)                                      # a new sort starts at page 1
-        self.assertIn("dir=asc", path)
+        self.assertIn("sort=path", path)
         # a bad sort is no sort: the default page, no column marked, and the links drop it
         plain = c.get("/find?q=*.txt&per=50").get_data(as_text=True)
         bad = c.get("/find?q=*.txt&per=50&sort=f.size%3B--&dir=up").get_data(as_text=True)

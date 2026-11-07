@@ -69,9 +69,9 @@ class Pager:
         """The query's sort arguments: sort=, direction=."""
         return {"sort": self.sort, "direction": self.dir}
 
-    def url(self, page=None, per=None, sort=None):
+    def url(self, page=None, per=None, sort=None, dir="asc"):
         """This page with another page, page size or sort of this list; the others stay. A new size or sort starts
-        at page 1. sort= a column: ascending, or descending if it is the current ascending sort."""
+        at page 1. sort= a column, dir= "asc" or "desc"."""
         args = request.args.to_dict()
         args[self.param] = page if page is not None else self.page
         if self.sort:
@@ -84,7 +84,7 @@ class Pager:
             args[self.param] = 1
         if sort is not None:
             args[self.sort_param] = sort
-            args[self.dir_param] = "desc" if (self.sort, self.dir) == (sort, "asc") else "asc"
+            args[self.dir_param] = "desc" if dir == "desc" else "asc"
             args[self.param] = 1
         return request.path + "?" + urlencode(args)
 

@@ -112,8 +112,9 @@ were made while building, to keep going, and are open to change.
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.
 - **Sorting is in SQL, not in the browser:** a page holds only part of a list, so a script (DataTables and the like)
-  would sort that part. Column headers are links (`sort`, `dir`; `copies_sort` and the like for the lists on a
-  file's page); each query maps the column names it allows to SQL, a name outside that list is the default order,
+  would sort that part. Each column header has a ▲ and a ▼ link (`sort`, `dir`; `copies_sort` and the like for
+  the lists on a file's page), so either direction is one click and one query, not a toggle; the current one is
+  marked. Each query maps the column names it allows to SQL, a name outside that list is the default order,
   and the default order follows the chosen column, ending in a unique key, so pages neither overlap nor skip. NULLs
   sort last both ways. A new sort starts at page 1; the pager keeps it. Row-level security is untouched: the sort
   only orders the rows a person already sees. No JavaScript; one, if ever needed, goes in `static/`, no CDN.
