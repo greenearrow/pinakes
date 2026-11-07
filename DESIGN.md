@@ -233,8 +233,10 @@ can follow it. Lineage is a graph of file ids, built from four kinds of evidence
    The project ships the list (`pinakes/patterns/names.toml`) with defaults for common systems and programs; a site adds its
    own in config. A normalized-name match with the same extension is no evidence alone: generic names (camera
    numbers, `README`, a game's `level.dat`) match across unrelated folders by the thousand. It links (possible) only
-   with a second signal: sizes within 5% of each other, the same parent folder name, the other file changing, moving
-   or going within a week of this one appearing, or a drop root on either side (`[lineage]` in server.toml).
+   with a second signal: sizes within 5% of each other, the same parent folder name when few folders have it (five or
+   fewer: `region/` or `data/` is structure, a trip's folder isn't), the other file changing, moving or going within
+   a week of this one appearing, or a drop root on either side (`[lineage]` in server.toml). A minus sign before a
+   number stays in the name (`r.-1.1` is not `r.1.1`).
 
 Lineage breaks only where content is never seen identical on both sides and no other evidence survives: a laptop
 copy edited and deleted before the laptop was ever scanned, with no identity field, no chunks and a new name.

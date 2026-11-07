@@ -118,9 +118,16 @@ were made while building, to keep going, and are open to change.
 - **A similar name needs a second signal** (ROADMAP 29), any one of: sizes within `name_size_within` (5%) of each
   other, the same parent folder name (compared case-insensitively; a file at the top of a root has none), the other
   file changed, moved or went within `name_window_days` (7) of this one first appearing, or a drop root on either
-  side. The edge's evidence names the signal ("similar name, same folder name"). The parent folder name still links
-  generic names in folders that share one by structure (a game's `region/`, a camera's `100CANON/`); a person rejects
-  those, and a rejection outranks every heuristic.
+  side. The edge's evidence names the signal ("similar name, same folder name").
+- **The folder name counts only when it is rare:** held by at most `name_folder_max` (5) folders (distinct root and
+  parent path, present files, backup roots left out since every snapshot repeats them). Found by sampling the first
+  deployment's 39,832 "same folder name" edges: names held by under about five folders (a trip's photos) were real
+  copies, names held by fifty or more (a game's `region/`, `data/`, `html/`) were structure. The counts are one
+  statement once a lineage pass (1.6 s on 450k files, desktop). A camera's `100CANON/` on two cards is still rare
+  enough to link; a person rejects that.
+- **A minus sign before a number is kept in a name key** (at the start of a stem or after a separator): it folded to
+  a separator, so a game's region `r.-1.1` matched `r.1.1`; 8 of 12 unrelated edges in that sample. `tidy` recomputes
+  every stored name key by the current patterns.
 - **`pinakes-ingest tidy`** brings a catalog built by an older release in line: backup roots' history rows, gone rows
-  and lineage edges go; every undecided edge by name alone is worked out again (kept with the signal named, moved to
+  and lineage edges go; name keys are recomputed; every undecided edge by name is worked out again (kept with the signal named, moved to
   another source, or removed). Decided edges stay. `--dry-run` counts and changes nothing. It is idempotent.

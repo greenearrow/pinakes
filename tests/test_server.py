@@ -494,6 +494,48 @@ class TestNameLineage(ServerCase):
             ("people/user-1/plan.odt", "work/plan v2.odt", "similar name, the other changed or went then"),
         ])
 
+    def test_structural_folder_names_link_nothing(self):
+        """A folder name many folders have (a game's region/, a package's data/) is structure, not a sign; and a
+        minus sign keeps region coordinates apart."""
+        t0 = time.time() - 86400
+        for i in range(6):
+            self.write("server-1", "store", "pkg-%d/data/index.dat" % i, os.urandom(1000 + 400 * i), mtime=t0 + i)
+        self.write("server-1", "store", "worlds/a/region/r.-1.1.mca", os.urandom(3000), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", "worlds/b/region/r.1.1.mca", os.urandom(6000), mtime=t0 + 10)
+        self.write("server-1", "store", "pkg-6/data/index.dat", os.urandom(9000), mtime=t0 + 10)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [])
+        # the rare folder name still links: two folders have region/ here
+        self.write("server-1", "store", "worlds/b/region/r.-1.1.mca", os.urandom(6000), mtime=t0 + 20)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [("worlds/a/region/r.-1.1.mca", "worlds/b/region/r.-1.1.mca",
+                                         "similar name, same folder name")])
+
+    def test_tidy_rekeys_and_drops_what_the_new_rules_reject(self):
+        """Edges from 286c409: one between region files whose keys lost the sign, one in a structural folder."""
+        t0 = time.time() - 86400
+        for i in range(6):
+            self.write("server-1", "store", "pkg-%d/data/index.dat" % i, os.urandom(1000 + 400 * i), mtime=t0 + i)
+        self.write("server-1", "store", "worlds/a/region/r.-1.1.mca", os.urandom(3000), mtime=t0)
+        self.write("server-1", "store", "worlds/b/region/r.1.1.mca", os.urandom(6000), mtime=t0 + 10)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [])
+        neg, pos = self.file("store", "worlds/a/region/r.-1.1.mca"), self.file("store", "worlds/b/region/r.1.1.mca")
+        self.q("UPDATE pinakes.files SET name_key = 'r 1 1' WHERE file_id = %s RETURNING 1", (neg,))  # the old key
+        for frm, to in [(neg, pos), (self.file("store", "pkg-0/data/index.dat"),
+                                     self.file("store", "pkg-1/data/index.dat"))]:
+            self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence) "
+                   "VALUES (%s, %s, 'derived_from', 'similar name, same folder name', 'possible') RETURNING 1",
+                   (frm, to))
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual((n["name keys updated"], n["name edges removed"], n["name edges kept"]), (1, 2, 0))
+        self.assertEqual(self.q("SELECT name_key FROM pinakes.files WHERE file_id = %s", (neg,)), [("r -1 1",)])
+        self.assertEqual(self.edges(), [])
+        with self.conn.transaction():
+            self.assertEqual(set(self.ing.tidy(datetime.date.today()).values()), {0})
+
     def test_tidy_redoes_name_edges(self):
         """Edges by name alone from an older release: the unrelated ones go, a decided one stays."""
         t0 = time.time() - 86400

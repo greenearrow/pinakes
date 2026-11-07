@@ -12,7 +12,7 @@ import time
 import unittest
 import zipfile
 
-from pinakes import chunker, config, fsinfo, globs, outbox
+from pinakes import chunker, config, fsinfo, globs, names, outbox
 from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone
 from pinakes.state import State
 
@@ -108,6 +108,19 @@ class TestGlobs(unittest.TestCase):
             self.assertTrue(m(p), p)
         for p in ("cachex", "a/cache/x", "x.parts", "people/user-22/a", "people/user-2", "a/top.txt"):
             self.assertFalse(m(p), p)
+
+
+class TestNames(unittest.TestCase):
+    def test_markers_off_signs_kept(self):
+        p = names.load_patterns()
+        key = lambda n: names.normalize(n, p)
+        self.assertEqual(key("Report - Copy (2).txt"), key("report.txt"))
+        self.assertEqual(key("plan v2.odt"), key("plan.odt"))
+        # a minus sign before a number is part of the name (a game's region coordinates): not a separator
+        self.assertNotEqual(key("r.-1.1.mca"), key("r.1.1.mca"))
+        self.assertNotEqual(key("r.8.-2.mca"), key("r.8.2.mca"))
+        self.assertEqual(key("r.-1.1.mca"), ("r -1 1", ".mca"))
+        self.assertEqual(key("report-2.txt"), key("report 2.txt"))   # a hyphen inside a word is still a separator
 
 
 class TestChunker(unittest.TestCase):

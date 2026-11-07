@@ -35,5 +35,7 @@ def normalize(name, patterns):
             stem = p.sub("", stem)
         if stem == before:
             break
-    stem = re.sub(r"[\s_.-]+", " ", stem).strip().casefold()
+    # a minus sign before a number, at the start or after a separator, is part of the name: r.-1.1 is not r.1.1
+    stem = re.sub(r"(?<![^\s_.])-(?=\d)", "\0", stem)
+    stem = re.sub(r"[\s_.-]+", " ", stem).strip().casefold().replace("\0", "-")
     return stem, ext

@@ -76,6 +76,7 @@ chunk_overlap = 0.6                    # "derived from" at or above this share o
 # the same parent folder name, the other file changed or gone within this many days, or a drop root on either side
 name_size_within = 0.05
 name_window_days = 7
+name_folder_max = 5                    # the folder name counts only if at most this many folders have it
 
 [audit]
 notify_people = true                   # tell people when an administrator saw their records
