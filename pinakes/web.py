@@ -273,6 +273,7 @@ def create_app(cfg, connect=None):
 def fmt_size(n):
     if n is None:
         return ""
+    n = float(n)  # a SQL sum() of bigints comes back as Decimal
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1000 or unit == "TB":
             return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))

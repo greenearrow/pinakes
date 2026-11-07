@@ -101,6 +101,14 @@ class TestWeb(ServerCase):
         c2, _ = self.login("user-2", "staple pony 12345")
         self.assertEqual(c2.get("/step-up").status_code, 403)
 
+    def test_browse_sizes_over_a_kilobyte(self):
+        self.write("server-1", "store", "people/user-1/big.bin", b"x" * 1500)   # a folder's size is a numeric sum
+        self.scan("server-1", "store")
+        c1, _ = self.login("user-1", "correct horse battery")
+        r = c1.get("/browse/store/people")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("1.5 KB", r.get_data(as_text=True))
+
     def test_reports_and_headers(self):
         c1, _ = self.login("user-1", "correct horse battery")
         r = c1.get("/reports/safe-to-delete?loc=store:people/user-1/")
