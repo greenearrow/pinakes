@@ -111,6 +111,12 @@ were made while building, to keep going, and are open to change.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.
+- **Sorting is in SQL, not in the browser:** a page holds only part of a list, so a script (DataTables and the like)
+  would sort that part. Column headers are links (`sort`, `dir`; `copies_sort` and the like for the lists on a
+  file's page); each query maps the column names it allows to SQL, a name outside that list is the default order,
+  and the default order follows the chosen column, ending in a unique key, so pages neither overlap nor skip. NULLs
+  sort last both ways. A new sort starts at page 1; the pager keeps it. Row-level security is untouched: the sort
+  only orders the rows a person already sees. No JavaScript; one, if ever needed, goes in `static/`, no CDN.
 - **Backup roots record the present only** (ROADMAP 28): a gone path's row is deleted, no history rows, no move
   matching; the agent ignores link-count and ctime changes there (a uid or mtime change is still sent). Versions and
   `backed-up` come from the source's history and the copies' content. A backup root's own "what was in snapshot X

@@ -5,5 +5,5 @@
 {% block body %}
 <h1>Find</h1>
 {% if q %}<p class="muted">Names containing “{{ q }}” (<code>*</code> and <code>?</code> work as wildcards).</p>
-{{ pager(pg, "files") }}{{ file_table(results, "No file you can see has a name like that.") }}{{ pager(pg, "files") }}{% endif %}
+{{ pager(pg, "files") }}{{ file_table(results, "No file you can see has a name like that.", pg) }}{{ pager(pg, "files") }}{% endif %}
 {% endblock %}

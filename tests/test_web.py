@@ -1,10 +1,11 @@
 """The web UI through Flask's test client, on a catalog built by real scans, under row-level security."""
 
+import os
 import re
 import time
 import unittest
 
-from tests.test_server import PGHOST, ServerCase, psycopg
+from tests.test_server import PGHOST, ServerCase, admin_conn, psycopg
 
 try:
     from pinakes import auth, server_config, web
@@ -203,6 +204,272 @@ class TestPaging(ServerCase):
         from pinakes import queries
         self.assertEqual(len(queries.find(self.conn, "f*.txt")), 120)
         self.assertEqual(queries.page_total(queries.find(self.conn, "f*.txt", 10, 0)), 120)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestSorting(ServerCase):
+    """Sorting in SQL: every whitelisted column of every paged list, both ways, across small pages; bad values; the
+    web wiring; and a second person under row-level security."""
+
+    MANY = "people/user-1/many/"
+    PAGE = 2                        # the queries take any limit: small pages make several of every list
+    CONSTANT = {("copies", "size"),                                    # one content, one size
+                ("only-here", "where"), ("safe-to-delete", "where"),   # one folder: one root,
+                ("only-here", "snapshot"), ("safe-to-delete", "snapshot")}  # and not a backup
+
+    def setUp(self):
+        super().setUp()
+        t0 = int(time.time()) - 86400
+        for i in range(16):         # sizes and times that tie (the tie-breaker matters); four duplicated contents
+            self.write("server-1", "store", self.MANY + "f%02d.txt" % i, (b"c%d" % (i % 6)) * (1 + i % 4),
+                       mtime=t0 + (i % 5) * 60)
+        for i in range(5):
+            self.write("server-1", "store", self.MANY + "copies/c%d.txt" % i, b"one content, five paths",
+                       mtime=t0 + i * 60)
+        self.write("server-1", "store", self.MANY + "sub-a/x.txt", b"c5c5", mtime=t0)
+        self.write("server-1", "store", self.MANY + "sub-b/deeper/z.txt", b"deep", mtime=t0 + 30)
+        for i in range(40):         # enough for a second page of find in the web UI
+            self.write("server-1", "store", "people/user-1/bulk/b%02d.txt" % i, b"bulk %d" % i, mtime=t0 + i)
+        for i in range(6):          # user-2's own, one sharing a content with user-1
+            self.write("server-1", "store", "people/user-2/d%02d.txt" % i, b"hers %d" % i if i else b"c0", mtime=t0)
+        target = self.MANY + "target.txt"
+        self.write("server-1", "store", target, b"version 1", mtime=t0)
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        for snap, n, version in (("2026-01-01_0100", 8, b"version 1"), ("2026-01-02_0100", 4, b"version 2")):
+            if version == b"version 2":
+                self.write("server-1", "store", target, version, mtime=t0 + 60)
+                self.scan("server-1", "store")
+            for i in range(n):
+                self.write("server-2", "snapshots", "%s/%sf%02d.txt" % (snap, self.MANY, i),
+                           (b"c%d" % (i % 6)) * (1 + i % 4), mtime=t0)
+            self.write("server-2", "snapshots", "%s/%s" % (snap, target), version, mtime=t0)
+            self.write("server-2", "snapshots", "%s/%scopies/c0.txt" % (snap, self.MANY), b"one content, five paths",
+                       mtime=t0)
+            self.scan("server-2", "snapshots")
+        self.write("server-1", "store", target, b"version 3", mtime=t0 + 120)
+        self.scan("server-1", "store")
+        os.rename(self.path("server-1", "store", target), self.path("server-1", "store", self.MANY + "target-2.txt"))
+        with open(self.path("server-1", "store", self.MANY + "target-2.txt"), "ab") as f:
+            f.write(b" and 4")
+        os.remove(self.path("server-1", "store", self.MANY + "f15.txt"))
+        self.scan("server-1", "store")
+        self.write("server-1", "store", self.MANY + "target-2.txt", b"version 5", mtime=t0 + 300)
+        self.scan("server-1", "store")
+        for i in range(3):          # another machine's changes (owned by the default owner, user-1)
+            self.write("laptop-1", "downloads", "camera/img-%d.jpg" % i, b"photo %d" % i, mtime=t0)
+        self.scan("laptop-1", "downloads")
+        with admin_conn(self.db) as c:   # spread the scans over days, and an entry by someone else in the access log
+            c.execute("UPDATE pinakes.history SET seen_on = seen_on - (history_id % 4)::int, "
+                      "seen_after = seen_after - (history_id % 4)::int - 1")
+            ids = dict(c.execute("SELECT name, person_id FROM pinakes.people").fetchall())
+            c.execute("INSERT INTO pinakes.audit (actor, action, affects, at) VALUES (%s, 'rule_change', %s, "
+                      "now() - interval '1 hour')", (ids["user-2"], [ids["user-1"]]))
+        self.target = self.file("store", self.MANY + "target-2.txt")
+        self.copied = self.file("store", self.MANY + "copies/c0.txt")
+        with self.as_person("user-1", "s-audit") as c:
+            c.execute("SELECT pinakes.begin_step_up('checking sorting', 15)")
+            c.commit()
+            for n in range(4):
+                c.execute("SELECT pinakes.audit_view(%s, %s::jsonb)", ([ids["user-2"]], '{"page": "p%d"}' % n))
+                c.commit()
+        pid = ids["user-1"]
+        for name, pw in (("user-1", "correct horse battery"), ("user-2", "staple pony 12345")):
+            self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) VALUES (%s, %s)",
+                              (ids[name], auth.hash_password(pw)))
+        app = web.create_app(server_config.loads(TestWeb.SERVER_WEB),
+                             connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db))
+        app.testing = True
+        self.app = app
+
+    def login(self, name, pw):
+        c = self.app.test_client()
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").get_data(as_text=True)).group(1)
+        c.post("/login", data={"csrf": tok, "name": name, "password": pw})
+        return c
+
+    # every paged list: (name, call(conn, limit, offset, **order), whitelist, the value each column sorts by)
+    def lists(self):
+        from pinakes import queries as Q
+        loc = "store:" + self.MANY
+        files = {"where": lambda r: (r["host"], r["root"]), "path": lambda r: r["relpath"],
+                 "size": lambda r: r["size"], "modified": lambda r: r["mtime"], "snapshot": lambda r: r["snapshot"]}
+        return [
+            ("find", lambda c, *a, **o: Q.find(c, "*", *a, **o), Q.FILE_SORT, files),
+            ("copies", lambda c, *a, **o: Q.where(c, self.copied, *a, **o), Q.FILE_SORT, files),
+            ("only-here", lambda c, *a, **o: Q.only_here(c, loc, *a, **o), Q.FILE_SORT, files),
+            ("safe-to-delete", lambda c, *a, **o: Q.not_safe_to_delete(c, loc, *a, **o), Q.FILE_SORT, files),
+            ("backed-up", lambda c, *a, **o: Q.backed_up(c, loc, *a, **o), Q.BACKED_UP_SORT,
+             {"file": lambda r: r["relpath"], "copies": lambda r: r["backup_copies"],
+              "snapshots": lambda r: r["snapshots"], "newest": lambda r: r["newest"]}),
+            ("dupes", lambda c, *a, **o: Q.dupes(c, *a, **o), Q.DUPES_SORT,
+             {"copies": lambda r: r["copies"], "reclaimable": lambda r: r["reclaimable"],
+              "where": lambda r: r["paths"]}),
+            ("changes", lambda c, *a, **o: Q.changes(c, 7, None, *a, **o), Q.CHANGES_SORT,
+             {"seen": lambda r: r["seen_on"], "where": lambda r: (r["host"], r["root"]),
+              "what": lambda r: r["kind"], "path": lambda r: r["path"]}),
+            ("history", lambda c, *a, **o: Q.history(c, self.target, *a, **o), Q.HISTORY_SORT,
+             {"between": lambda r: r["seen_on"], "what": lambda r: r["kind"],
+              "path": lambda r: r["new_relpath"] or r["old_relpath"], "evidence": lambda r: r["evidence"]}),
+            ("versions", lambda c, *a, **o: Q.versions(c, self.target, *a, **o), Q.VERSIONS_SORT,
+             {"sha256": lambda r: r["sha256"], "first_seen": lambda r: r["first_seen_on"],
+              "backup": lambda r: r["backup_root"], "snapshot": lambda r: r["snapshot"]}),
+            ("browse", lambda c, *a, **o: Q.listing(c, loc, *a, **o), Q.LISTING_SORT,
+             {"name": lambda r: r["entry"], "files": lambda r: r["files"], "size": lambda r: r["size"],
+              "newest": lambda r: r["newest"]}),
+            ("access", lambda c, *a, **o: Q.audit_mine(c, *a, **o), Q.AUDIT_SORT,
+             {"when": lambda r: r["at"], "who": lambda r: r["actor"], "what": lambda r: r["action"]}),
+        ]
+
+    def assert_sorted(self, conn, vals, desc, what):
+        """Values in order, NULLs last; text compared in the database's own collation."""
+        present = [v for v in vals if v is not None]
+        self.assertEqual(vals[:len(present)], present, "%s: NULLs last" % what)
+        texts = set()
+
+        def collect(v):
+            if isinstance(v, str):
+                texts.add(v)
+            elif isinstance(v, (tuple, list)):
+                for x in v:
+                    collect(x)
+        for v in present:
+            collect(v)
+        rank = {t: i for i, (t,) in enumerate(conn.execute("SELECT t FROM unnest(%s::text[]) t ORDER BY t",
+                                                           (sorted(texts),)).fetchall())}
+
+        def key(v):
+            if isinstance(v, str):
+                return rank[v]
+            if isinstance(v, (tuple, list)):
+                return tuple(key(x) for x in v)
+            return v
+        keys = [key(v) for v in present]
+        self.assertEqual(keys, sorted(keys, reverse=desc), what)
+
+    def test_every_column_both_ways_across_pages(self):
+        with self.as_person("user-1") as c:
+            for name, call, sorts, value in self.lists():
+                self.assertEqual(set(value), set(sorts), name)          # a column added to a whitelist gets tested
+                default = call(c)
+                self.assertGreater(len(default), 2 * self.PAGE, name)    # three pages at least
+                for col in sorts:
+                    if (name, col) not in self.CONSTANT:
+                        vals = {repr(value[col](r)) for r in default}
+                        self.assertGreater(len(vals), 1, "%s %s: the data doesn't vary" % (name, col))
+                    for d in ("asc", "desc"):
+                        with self.subTest(list=name, sort=col, dir=d):
+                            whole = call(c, sort=col, direction=d)
+                            pages, off = [], 0
+                            while True:
+                                page = call(c, self.PAGE, off, sort=col, direction=d)
+                                if not page:
+                                    break
+                                pages += page
+                                off += self.PAGE
+                            self.assertEqual(pages, whole)               # pages neither overlap nor skip
+                            self.assertEqual(sorted(map(repr, whole)), sorted(map(repr, default)))  # same rows
+                            self.assert_sorted(c, [value[col](r) for r in whole], d == "desc", "%s %s" % (name, col))
+
+    def test_bad_values_fall_back(self):
+        with self.as_person("user-1") as c:
+            for name, call, sorts, value in self.lists():
+                default = call(c)
+                col = next(iter(sorts))
+                for bad in ("nonsense", "f.size; DROP TABLE pinakes.files", "", None, 3, ["size"]):
+                    self.assertEqual(call(c, sort=bad, direction="desc"), default, (name, bad))
+                self.assertEqual(call(c, sort=col, direction="sideways"), call(c, sort=col, direction="asc"), name)
+
+    def test_second_person_sees_only_their_own_when_sorted(self):
+        with self.as_person("user-2") as c2, self.as_person("user-1") as c1:
+            for name, call, sorts, value in self.lists():
+                default = call(c2)
+                total = queries_total(default)
+                for col in sorts:
+                    for d in ("asc", "desc"):
+                        rows = call(c2, sort=col, direction=d)
+                        self.assertEqual(sorted(map(repr, rows)), sorted(map(repr, default)), (name, col, d))
+                        self.assertEqual(queries_total(call(c2, 1, 0, sort=col, direction=d)), total)
+            found = {r["relpath"] for r in call_find(c2)}
+            self.assertTrue(found)
+            self.assertFalse({p for p in found if p.startswith(self.MANY)})    # none of user-1's files
+            dupes = call_dupes(c2)
+            self.assertEqual(dupes, [])            # d00 matches a file of user-1's, which user-2 can't see
+            self.assertTrue(call_dupes(c1))
+        c = self.login("user-2", "staple pony 12345")
+        for col in ("size", "path", "where"):
+            page = c.get("/find?q=*&sort=%s&dir=desc&per=50" % col).get_data(as_text=True)
+            self.assertNotIn(self.MANY, page)
+            self.assertIn("people/user-2/d00.txt", page)
+        self.assertEqual(c.get("/file/%d?copies_sort=size&history_sort=what" % self.copied).status_code, 404)
+
+    def test_web_wiring(self):
+        from pinakes import queries
+        c = self.login("user-1", "correct horse battery")
+        with self.as_person("user-1") as conn:
+            for col in queries.FILE_SORT:
+                for d in ("asc", "desc"):
+                    want = [r["file_id"] for r in queries.find(conn, "*.txt", sort=col, direction=d)]
+                    got = re.findall(r'href="/file/(\d+)"',
+                                     c.get("/find?q=*.txt&per=500&sort=%s&dir=%s" % (col, d)).get_data(as_text=True))
+                    self.assertEqual([int(x) for x in got], want, (col, d))
+        page = c.get("/find?q=*.txt&per=50&sort=size&dir=asc").get_data(as_text=True)
+        self.assertIn('aria-sort="ascending"', page)
+        self.assertIn("Size ▲", page)
+        size = re.search(r'<a class="sort on" href="([^"]+)">Size', page).group(1).replace("&amp;", "&")
+        self.assertIn("sort=size", size)
+        self.assertIn("dir=desc", size)                                    # a second click turns it round
+        nxt = re.search(r'href="([^"]+)" rel="next"', page).group(1).replace("&amp;", "&")
+        self.assertIn("sort=size", nxt)                                    # the pager keeps the sort
+        self.assertIn("dir=asc", nxt)
+        self.assertIn("page=2", nxt)
+        p2 = c.get("/find?q=*.txt&per=50&sort=size&dir=asc&page=2").get_data(as_text=True)
+        path = re.search(r'<a class="sort" href="([^"]+)">Path', p2).group(1).replace("&amp;", "&")
+        self.assertIn("page=1", path)                                      # a new sort starts at page 1
+        self.assertIn("dir=asc", path)
+        # a bad sort is no sort: the default page, no column marked, and the links drop it
+        plain = c.get("/find?q=*.txt&per=50").get_data(as_text=True)
+        bad = c.get("/find?q=*.txt&per=50&sort=f.size%3B--&dir=up").get_data(as_text=True)
+        self.assertEqual(re.findall(r'/file/\d+', bad), re.findall(r'/file/\d+', plain))
+        self.assertNotIn("aria-sort", bad)
+        self.assertNotIn("sort=f.size", bad)
+        # each list on a file's page sorts on its own, and every page with a table answers sorted
+        fp = c.get("/file/%d?copies_sort=size&copies_dir=desc&history_sort=what" % self.target).get_data(as_text=True)
+        self.assertEqual(fp.count('aria-sort='), 2)
+        loc = "loc=store:" + self.MANY
+        page = "/reports/%s?loc=store:" + self.MANY + "&"
+        for url, prefix, cols in (("/browse/store/%s?" % self.MANY, "", queries.LISTING_SORT),
+                                  (page % "only-here", "", queries.FILE_SORT),
+                                  (page % "safe-to-delete", "", queries.FILE_SORT),
+                                  (page % "backed-up", "", queries.BACKED_UP_SORT),
+                                  ("/reports/dupes?", "", queries.DUPES_SORT),
+                                  ("/reports/changes?", "", queries.CHANGES_SORT),
+                                  ("/access?", "", queries.AUDIT_SORT),
+                                  ("/file/%d?" % self.copied, "copies_", queries.FILE_SORT),
+                                  ("/file/%d?" % self.target, "versions_", queries.VERSIONS_SORT),
+                                  ("/file/%d?" % self.target, "history_", queries.HISTORY_SORT)):
+            for col in cols:
+                for d in ("asc", "desc"):
+                    r = c.get("%s%ssort=%s&%sdir=%s" % (url, prefix, col, prefix, d))
+                    self.assertEqual(r.status_code, 200, (url, col, d))
+                    html = r.get_data(as_text=True)
+                    self.assertEqual(html.count('aria-sort="%s"' % ("ascending" if d == "asc" else "descending")), 1,
+                                     (url, col, d))
+
+
+def queries_total(rows):
+    from pinakes import queries
+    return queries.page_total(rows)
+
+
+def call_find(c):
+    from pinakes import queries
+    return queries.find(c, "*", sort="size", direction="desc")
+
+
+def call_dupes(c):
+    from pinakes import queries
+    return queries.dupes(c, sort="where", direction="desc")
 
 
 class TestAuth(unittest.TestCase):

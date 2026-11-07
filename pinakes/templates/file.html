@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_files.html" import file_table with context %}
-{% from "_pager.html" import pager with context %}
+{% from "_pager.html" import pager, th with context %}
 {% block title %}{{ f.relpath.split('/')[-1] }} · pinakes{% endblock %}
 {% block body %}
 <h1>{{ f.relpath.split('/')[-1] }}</h1>
@@ -16,12 +16,12 @@
 </dl>
 
 <h2>Every copy</h2>
-{{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.") }}{{ pager(pc, "paths") }}
+{{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc) }}{{ pager(pc, "paths") }}
 
 <h2>Versions, and which backups hold them</h2>
 {{ pager(pv, "rows") }}
 <div class="scroll"><table>
-  <tr><th>SHA-256</th><th>First seen</th><th>Backup</th><th>Snapshot</th></tr>
+  <tr>{{ th(pv, "sha256", "SHA-256") }}{{ th(pv, "first_seen", "First seen") }}{{ th(pv, "backup", "Backup") }}{{ th(pv, "snapshot", "Snapshot") }}</tr>
   {% for v in versions %}<tr><td class="mono">{{ v.sha256[:16] }}…</td><td>{{ v.first_seen_on }}</td>
     <td>{{ v.backup_root or '—' }}</td><td>{{ v.snapshot or '' }}</td></tr>
   {% else %}<tr><td colspan="4" class="muted">No versions recorded.</td></tr>{% endfor %}
@@ -31,7 +31,7 @@
 <h2>History</h2>
 {{ pager(ph, "changes") }}
 <div class="scroll"><table>
-  <tr><th>Between</th><th>What</th><th>Path</th><th>Evidence</th></tr>
+  <tr>{{ th(ph, "between", "Between") }}{{ th(ph, "what", "What") }}{{ th(ph, "path", "Path") }}{{ th(ph, "evidence", "Evidence") }}</tr>
   {% for h in history %}<tr><td>{{ h.seen_after or 'first scan' }} – {{ h.seen_on }}</td><td>{{ h.kind }}</td>
     <td>{% if h.old_relpath and h.new_relpath and h.old_relpath != h.new_relpath %}{{ h.old_relpath }} → {{ h.new_relpath }}{% else %}{{ h.new_relpath or h.old_relpath }}{% endif %}</td>
     <td>{{ h.evidence or '' }} {% if h.confidence %}<span class="tag">{{ h.confidence }}</span>{% endif %}</td></tr>

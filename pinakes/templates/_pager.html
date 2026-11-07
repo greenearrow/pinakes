@@ -11,3 +11,10 @@
 </nav>
 {% endif %}
 {% endmacro %}
+
+{# A column header that sorts list p by `key` (a name in the query's whitelist): a link that sorts ascending, or
+   descending when it is already the ascending sort, marked with the current direction. #}
+{% macro th(p, key, label, cls="") %}
+{%- set on = p.sort == key -%}
+<th{% if cls %} class="{{ cls }}"{% endif %}{% if on %} aria-sort="{{ 'ascending' if p.dir == 'asc' else 'descending' }}"{% endif %}><a class="sort{% if on %} on{% endif %}" href="{{ p.url(sort=key) }}">{{ label }}{% if on %} {{ '▲' if p.dir == 'asc' else '▼' }}{% endif %}</a></th>
+{%- endmacro %}

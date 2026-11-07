@@ -31,7 +31,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
-| Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
+| Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
 
 ## Next: before more machines join
 

@@ -25,10 +25,16 @@ LOGIN_WINDOW = 15 * 60   # seconds
 
 class Pager:
     """One paged list on a page: its page number comes from the query parameter `param`, the page size from `per`
-    (shared by every list on the page). Call done() with the rows the query returned."""
+    (shared by every list on the page), its sort from `sort` and `dir` (`<param>_sort` and `<param>_dir` for a list
+    with its own page parameter). `sorts` is the query's whitelist (queries.*_SORT): a column it doesn't name is no
+    sort, the query's default order. Call done() with the rows the query returned."""
 
-    def __init__(self, param="page", default_per=100):
+    def __init__(self, param="page", default_per=100, sorts=None):
         self.param = param
+        self.sort_param, self.dir_param = ("sort", "dir") if param == "page" else (param + "_sort", param + "_dir")
+        sort = request.args.get(self.sort_param)
+        self.sort = sort if sorts and sort in sorts else None
+        self.dir = "desc" if self.sort and request.args.get(self.dir_param) == "desc" else "asc"
         try:
             self.page = max(1, int(request.args.get(param, 1)))
         except ValueError:
@@ -58,11 +64,27 @@ class Pager:
     def last(self):
         return self.offset + self.shown
 
-    def url(self, page=None, per=None):
+    @property
+    def order(self):
+        """The query's sort arguments: sort=, direction=."""
+        return {"sort": self.sort, "direction": self.dir}
+
+    def url(self, page=None, per=None, sort=None):
+        """This page with another page, page size or sort of this list; the others stay. A new size or sort starts
+        at page 1. sort= a column: ascending, or descending if it is the current ascending sort."""
         args = request.args.to_dict()
         args[self.param] = page if page is not None else self.page
+        if self.sort:
+            args[self.sort_param], args[self.dir_param] = self.sort, self.dir
+        else:
+            args.pop(self.sort_param, None)
+            args.pop(self.dir_param, None)
         if per is not None:
             args["per"] = per
+            args[self.param] = 1
+        if sort is not None:
+            args[self.sort_param] = sort
+            args[self.dir_param] = "desc" if (self.sort, self.dir) == (sort, "asc") else "asc"
             args[self.param] = 1
         return request.path + "?" + urlencode(args)
 
@@ -199,8 +221,8 @@ def create_app(cfg, connect=None):
     @signed_in
     def find():
         q = request.args.get("q", "").strip()
-        pg = Pager()
-        results = pg.done(queries.find(g.db, q, pg.per, pg.offset)) if q else []
+        pg = Pager(sorts=queries.FILE_SORT)
+        results = pg.done(queries.find(g.db, q, pg.per, pg.offset, **pg.order)) if q else []
         audit_shown([r["file_id"] for r in results], "find")
         return render_template("find.html", q=q, results=results, pg=pg)
 
@@ -208,8 +230,8 @@ def create_app(cfg, connect=None):
     @app.route("/browse/<root>/<path:path>")
     @signed_in
     def browse(root, path):
-        pg = Pager()
-        entries = pg.done(queries.listing(g.db, "%s:%s" % (root, path), pg.per, pg.offset))
+        pg = Pager(sorts=queries.LISTING_SORT)
+        entries = pg.done(queries.listing(g.db, "%s:%s" % (root, path), pg.per, pg.offset, **pg.order))
         audit_shown([e["file_id"] for e in entries if e["file_id"]], "browse %s:%s" % (root, path))
         crumbs = []
         acc = ""
@@ -224,11 +246,13 @@ def create_app(cfg, connect=None):
         f = queries.file_by_id(g.db, file_id)
         if f is None:
             abort(404)  # not there, or not yours to see: the same answer
-        pc, pv, ph = Pager("copies", 50), Pager("versions", 50), Pager("history", 50)
-        copies = pc.done(queries.where(g.db, file_id, pc.per, pc.offset)) if f["content_id"] else []
+        pc = Pager("copies", 50, queries.FILE_SORT)
+        pv = Pager("versions", 50, queries.VERSIONS_SORT)
+        ph = Pager("history", 50, queries.HISTORY_SORT)
+        copies = pc.done(queries.where(g.db, file_id, pc.per, pc.offset, **pc.order)) if f["content_id"] else []
         page = {"f": f, "copies": copies, "pc": pc,
-                "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset)), "pv": pv,
-                "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset)), "ph": ph,
+                "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset, **pv.order)), "pv": pv,
+                "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset, **ph.order)), "ph": ph,
                 "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down")}
         audit_shown([file_id] + [c["file_id"] for c in copies], "file %d" % file_id)
         return render_template("file.html", **page)
@@ -238,19 +262,20 @@ def create_app(cfg, connect=None):
     def report(name):
         loc = request.args.get("loc", "").strip()
         rows, error = [], None
-        pg = Pager()
+        pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
+                          "changes": queries.CHANGES_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
         try:
             if name == "only-here" and loc:
-                rows = queries.only_here(g.db, loc, *lim)
+                rows = queries.only_here(g.db, loc, *lim, **pg.order)
             elif name == "safe-to-delete" and loc:
-                rows = queries.not_safe_to_delete(g.db, loc, *lim)
+                rows = queries.not_safe_to_delete(g.db, loc, *lim, **pg.order)
             elif name == "backed-up" and loc:
-                rows = queries.backed_up(g.db, loc, *lim)
+                rows = queries.backed_up(g.db, loc, *lim, **pg.order)
             elif name == "dupes":
-                rows = queries.dupes(g.db, *lim)
+                rows = queries.dupes(g.db, *lim, **pg.order)
             elif name == "changes":
-                rows = queries.changes(g.db, int(request.args.get("days", 7)), None, *lim)
+                rows = queries.changes(g.db, int(request.args.get("days", 7)), None, *lim, **pg.order)
             elif name not in ("only-here", "safe-to-delete", "backed-up"):
                 abort(404)
         except ValueError as e:
@@ -319,8 +344,8 @@ def create_app(cfg, connect=None):
     @app.route("/access")
     @signed_in
     def access():
-        pg = Pager()
-        rows = pg.done(queries.audit_mine(g.db, pg.per, pg.offset))
+        pg = Pager(sorts=queries.AUDIT_SORT)
+        rows = pg.done(queries.audit_mine(g.db, pg.per, pg.offset, **pg.order))
         return render_template("access.html", rows=rows, pg=pg)
 
     return app

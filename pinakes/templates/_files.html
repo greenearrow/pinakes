@@ -1,6 +1,9 @@
-{% macro file_table(rows, empty="Nothing.") %}
+{% from "_pager.html" import th with context %}
+{# A table of files; p, the list's pager, makes the headers sort it. #}
+{% macro file_table(rows, empty="Nothing.", p=None) %}
 <div class="scroll"><table>
-  <tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th></tr>
+  {% if p %}<tr>{{ th(p, "where", "Where") }}{{ th(p, "path", "Path") }}{{ th(p, "size", "Size", "num") }}{{ th(p, "modified", "Modified") }}{{ th(p, "snapshot", "Snapshot") }}</tr>
+  {% else %}<tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th></tr>{% endif %}
   {% for r in rows %}
   <tr><td>{{ r.host }} · {{ r.root }} <span class="tag">{{ r.kind }}</span></td>
       <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.gone_on %} <span class="tag">gone {{ r.gone_on }}</span>{% endif %}{% if r.same_inode and r.file_id != (f.file_id if f is defined else None) %} <span class="tag">hard link: same data</span>{% endif %}</td>
