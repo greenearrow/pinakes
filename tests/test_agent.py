@@ -121,6 +121,9 @@ class TestNames(unittest.TestCase):
         self.assertNotEqual(key("r.8.-2.mca"), key("r.8.2.mca"))
         self.assertEqual(key("r.-1.1.mca"), ("r -1 1", ".mca"))
         self.assertEqual(key("report-2.txt"), key("report 2.txt"))   # a hyphen inside a word is still a separator
+        # an AppleDouble sidecar is not the file it describes
+        self.assertNotEqual(key("._photo.jpg"), key("photo.jpg"))
+        self.assertEqual(key("._photo (2).jpg"), key("._photo.jpg"))
 
 
 class TestChunker(unittest.TestCase):

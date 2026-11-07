@@ -512,6 +512,20 @@ class TestNameLineage(ServerCase):
         self.assertEqual(self.edges(), [("worlds/a/region/r.-1.1.mca", "worlds/b/region/r.-1.1.mca",
                                          "similar name, same folder name")])
 
+    def test_similar_size_needs_a_rare_name(self):
+        """A fixed name in every package (DESCRIPTION, a .meta file) has namesakes of similar size by the dozen."""
+        t0 = time.time() - 86400
+        for i in range(6):
+            self.write("server-1", "store", "lib/pkg-%d/DESCRIPTION" % i, os.urandom(1000 + i), mtime=t0 + i)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", "lib/pkg-6/DESCRIPTION", os.urandom(1003), mtime=t0 + 10)
+        self.write("server-1", "store", "photos/2024/IMG_0420.JPG", os.urandom(20000), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", "photos/best of/IMG_0420.JPG", os.urandom(20100), mtime=t0 + 10)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [("photos/2024/IMG_0420.JPG", "photos/best of/IMG_0420.JPG",
+                                         "similar name, similar size")])
+
     def test_tidy_rekeys_and_drops_what_the_new_rules_reject(self):
         """Edges from 286c409: one between region files whose keys lost the sign, one in a structural folder."""
         t0 = time.time() - 86400

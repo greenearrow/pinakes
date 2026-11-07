@@ -28,6 +28,10 @@ def split_ext(name):
 
 def normalize(name, patterns):
     """A comparison key for a file name: (stem without markers, folded; extension)."""
+    if name.startswith("._") and len(name) > 2:
+        # a macOS AppleDouble sidecar (._photo.jpg holds photo.jpg's attributes): its own kind of file, kept apart
+        stem, ext = normalize(name[2:], patterns)
+        return "._" + stem, ext
     stem, ext = split_ext(name)
     for _ in range(10):  # markers can stack: "report - Copy (2) final"
         before = stem

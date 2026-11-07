@@ -52,6 +52,7 @@ class ServerConfig:
         self.name_size_within = float(lin.get("name_size_within", 0.05))
         self.name_window_days = int(lin.get("name_window_days", 7))
         self.name_folder_max = int(lin.get("name_folder_max", 5))   # "the same folder name" only if this few have it
+        self.name_size_namesakes = int(lin.get("name_size_namesakes", 5))  # "similar size" only if this few files
         self.web = d.get("web", {})
         self.base_dir = base_dir
 

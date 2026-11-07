@@ -131,6 +131,13 @@ were made while building, to keep going, and are open to change.
   copies, names held by fifty or more (a game's `region/`, `data/`, `html/`) were structure. The counts are one
   statement once a lineage pass (1.6 s on 450k files, desktop). A camera's `100CANON/` on two cards is still rare
   enough to link; a person rejects that.
+- **A similar size counts only for a rare name:** at most `name_size_namesakes` (5) present files outside backup
+  roots have the name. After the folder rule was tightened, "similar size" held 33,288 edges and a sample of 30 was
+  18 unrelated: fixed names inside software packages (`DESCRIPTION`, `NAMESPACE`, `.meta`), per-folder files and
+  camera counters; 10,454 of them on names more than 100 files have. Camera counters in two folders of similar size
+  still link; telling those apart needs dates from the files' metadata (METADATA.md).
+- **An AppleDouble `._` prefix stays in the name key:** `._photo.jpg` holds `photo.jpg`'s attributes and is not a
+  version of it.
 - **A minus sign before a number is kept in a name key** (at the start of a stem or after a separator): it folded to
   a separator, so a game's region `r.-1.1` matched `r.1.1`; 8 of 12 unrelated edges in that sample. `tidy` recomputes
   every stored name key by the current patterns.

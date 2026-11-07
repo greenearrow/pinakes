@@ -44,14 +44,15 @@ def _under(relpath, folder):
 
 # The file a file t most likely descends from by its name: the same name once copy markers, dates and versions are
 # off (names.normalize), another content, not in a backup root, and a second signal: sizes within name_size_within
-# of each other, the same parent folder name if few folders have it (t.rare_folder: name_folder_max or fewer; a
+# of each other if few files have the name (k.few: name_size_namesakes or fewer present outside backup roots; a fixed
+# name in every software package, a camera's counter, is not a sign), the same parent folder name if few folders have it (t.rare_folder: name_folder_max or fewer; a
 # name like region/ or data/ is structure, not a sign), the other changed, moved or went within name_window_days of
 # t appearing, or a drop root on either side. The most recent earlier one wins. Used for t in unnest(...) with
-# a.appeared, and parameters (size share, days, days).
+# a.appeared, and parameters (size share, days, days, namesakes, namesakes + 1).
 NAME_CANDIDATE = """
     SELECT s.file_id, 'similar name, ' || s.why AS evidence FROM (
         SELECT o.file_id, o.mtime, CASE
-            WHEN t.size > 0 AND o.size > 0 AND abs(o.size - t.size) <= %s * greatest(o.size, t.size)
+            WHEN k.few AND t.size > 0 AND o.size > 0 AND abs(o.size - t.size) <= %s * greatest(o.size, t.size)
                 THEN 'similar size'
             WHEN t.rare_folder
                  AND lower(substring(o.relpath from '([^/]+)/[^/]+$')) = lower(substring(t.relpath from '([^/]+)/[^/]+$'))
@@ -62,7 +63,10 @@ NAME_CANDIDATE = """
                            AND oh.seen_on BETWEEN a.appeared - %s::int AND a.appeared + %s::int)
                 THEN 'the other changed or went then'
             END AS why
-        FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
+        FROM (SELECT count(*) <= %s AS few FROM (SELECT 1 FROM pinakes.files x JOIN pinakes.roots xr USING (root_id)
+                                                 WHERE x.name_key = t.key AND x.ext = t.ext AND x.gone_on IS NULL
+                                                   AND xr.kind <> 'backup' LIMIT %s) c) k
+        CROSS JOIN pinakes.files o JOIN pinakes.roots r USING (root_id)
         WHERE o.name_key = t.key AND o.ext = t.ext AND o.file_id <> t.fid
           AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content) s
     WHERE s.why IS NOT NULL
@@ -585,7 +589,7 @@ class Ingester:
                 ([r[0] for r in named], [r[6] for r in named], [r[7] for r in named], [r[1] for r in named],
                  [r[2] for r in named], [r[8] for r in named], [r[9] for r in named], [r[10] for r in named],
                  self._rare(st, [r[9] for r in named]), on,
-                 self.cfg.name_size_within, self.cfg.name_window_days, self.cfg.name_window_days)).fetchall()}
+                 *self._name_params())).fetchall()}
         for file_id in ids:
             f = by_id.get(file_id)
             if f is not None:
@@ -678,6 +682,12 @@ class Ingester:
             src, evidence = by_name[file_id]
             self._edge(st, src, file_id, "derived_from", evidence, "possible", on)
 
+    def _name_params(self):
+        """NAME_CANDIDATE's parameters, in order."""
+        c = self.cfg
+        return (c.name_size_within, c.name_window_days, c.name_window_days, c.name_size_namesakes,
+                c.name_size_namesakes + 1)
+
     def _rare(self, st, relpaths):
         if st.rare_folders is None:
             st.rare_folders = {r[0] for r in self.q(RARE_FOLDERS, (self.cfg.name_folder_max,))}
@@ -728,8 +738,7 @@ class Ingester:
                    CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on), %s::date) AS appeared FROM pinakes.history h
                                        WHERE h.file_id = t.fid) a
                    CROSS JOIN LATERAL (""" + NAME_CANDIDATE + """) n""",
-                (part, self._rare(st, [paths[f] for f in part]), on, self.cfg.name_size_within,
-                 self.cfg.name_window_days, self.cfg.name_window_days)).fetchall()}
+                (part, self._rare(st, [paths[f] for f in part]), on) + self._name_params()).fetchall()}
             for to in part:
                 src, ev = new.get(to, (None, None))
                 for frm in old[to]:
