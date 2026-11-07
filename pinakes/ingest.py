@@ -5,6 +5,8 @@
   pinakes-ingest --config server.toml setup           seed people, hosts and settings (the schema must exist)
   pinakes-ingest --config server.toml passwd NAME     set a person's password at a hidden prompt (first sign-in)
   pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
+  pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, and redo name
+                                                      lineage by the current rules (after an upgrade)
 
 Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
 applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
@@ -38,6 +40,31 @@ def _ts(ns):
 
 def _under(relpath, folder):
     return folder == "" or relpath == folder or relpath.startswith(folder + "/")
+
+
+# The file a file t most likely descends from by its name: the same name once copy markers, dates and versions are
+# off (names.normalize), another content, not in a backup root, and a second signal: sizes within name_size_within
+# of each other, the same parent folder name, the other changed, moved or went within name_window_days of t
+# appearing, or a drop root on either side. The most recent earlier one wins. Used for t in unnest(...) with
+# a.appeared, and parameters (size share, days, days).
+NAME_CANDIDATE = """
+    SELECT s.file_id, 'similar name, ' || s.why AS evidence FROM (
+        SELECT o.file_id, o.mtime, CASE
+            WHEN t.size > 0 AND o.size > 0 AND abs(o.size - t.size) <= %s * greatest(o.size, t.size)
+                THEN 'similar size'
+            WHEN lower(substring(o.relpath from '([^/]+)/[^/]+$')) = lower(substring(t.relpath from '([^/]+)/[^/]+$'))
+                THEN 'same folder name'
+            WHEN r.kind = 'drop' OR t.kind = 'drop' THEN 'drop root'
+            WHEN EXISTS (SELECT 1 FROM pinakes.history oh WHERE oh.file_id = o.file_id
+                           AND oh.kind IN ('changed', 'moved', 'moved_changed', 'gone')
+                           AND oh.seen_on BETWEEN a.appeared - %s::int AND a.appeared + %s::int)
+                THEN 'the other changed or went then'
+            END AS why
+        FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
+        WHERE o.name_key = t.key AND o.ext = t.ext AND o.file_id <> t.fid
+          AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content) s
+    WHERE s.why IS NOT NULL
+    ORDER BY (s.mtime <= t.mtime) DESC, s.mtime DESC NULLS LAST, s.file_id LIMIT 1"""
 
 
 class _LineageState:
@@ -345,7 +372,8 @@ class Ingester:
             sets = ", ".join("%s = %%(%s)s" % (k, k) for k in cols)
             self.q("UPDATE pinakes.files SET %s, last_seen = now() WHERE file_id = %%(file_id)s" % sets,
                    dict(cols, file_id=file_id))
-            if content_id is not None and old_content is not None and content_id != old_content:
+            if (content_id is not None and old_content is not None and content_id != old_content
+                    and root["kind"] != "backup"):  # a backup root keeps no history of its own
                 self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, new_relpath, old_content_id, "
                        "new_content_id, old_mtime, new_mtime, old_ctime, new_ctime, old_btime, new_btime, "
                        "seen_after, seen_on) VALUES (%s, 'changed', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
@@ -375,7 +403,27 @@ class Ingester:
     # completing a scan: moves, gone, new, lineage --------------------------------------------------------------
     def _complete(self, ctx, gone_paths, host_id):
         root_id, scan, on, after = ctx["root"]["root_id"], ctx["scan"], ctx["on"], ctx["after"]
-        fields = "file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
+        if ctx["root"]["kind"] == "backup":
+            self._complete_backup(ctx, gone_paths)
+        else:
+            self._complete_tracked(ctx, gone_paths)
+        self.q("UPDATE pinakes.scans SET completed = true WHERE root_id = %s AND scan = %s", (root_id, scan))
+        self.q("UPDATE pinakes.roots SET last_complete_on = %s WHERE root_id = %s", (on, root_id))
+        self.q("UPDATE pinakes.hosts SET last_scan = now() WHERE host_id = %s", (host_id,))
+        self.q("DELETE FROM pinakes.scan_errors WHERE root_id = %s AND seen_on < %s", (root_id, on))
+
+    def _complete_backup(self, ctx, gone_paths):
+        """A backup root records what holds a copy now, not its own history: a gone path's row goes, nothing is
+        matched as a move (a pruned snapshot is not a move into the new one), and no history rows are written."""
+        root_id, scan = ctx["root"]["root_id"], ctx["scan"]
+        if gone_paths:
+            self.q("DELETE FROM pinakes.files WHERE root_id = %s AND relpath = ANY(%s)", (root_id, gone_paths))
+        self.q("UPDATE pinakes.files SET pending_scan = NULL, changed_scan = NULL "
+               "WHERE root_id = %s AND (pending_scan = %s OR changed_scan = %s)", (root_id, scan, scan))
+
+    def _complete_tracked(self, ctx, gone_paths):
+        root_id, scan, on, after = ctx["root"]["root_id"], ctx["scan"], ctx["on"], ctx["after"]
+        fields ="file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
         new = {}
         if gone_paths:  # only a scan that lost paths needs the new files in hand, to match moves
             new = {r[0]: r for r in self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
@@ -408,12 +456,7 @@ class Ingester:
                                          (root_id, scan)).fetchall()]
         self.q("UPDATE pinakes.files SET pending_scan = NULL, changed_scan = NULL "
                "WHERE root_id = %s AND (pending_scan = %s OR changed_scan = %s)", (root_id, scan, scan))
-        if ctx["root"]["kind"] != "backup":
-            self.lineage_many(list(dict.fromkeys(touched)), on)
-        self.q("UPDATE pinakes.scans SET completed = true WHERE root_id = %s AND scan = %s", (root_id, scan))
-        self.q("UPDATE pinakes.roots SET last_complete_on = %s WHERE root_id = %s", (on, root_id))
-        self.q("UPDATE pinakes.hosts SET last_scan = now() WHERE host_id = %s", (host_id,))
-        self.q("DELETE FROM pinakes.scan_errors WHERE root_id = %s AND seen_on < %s", (root_id, on))
+        self.lineage_many(list(dict.fromkeys(touched)), on)
 
     def _match_move(self, g, new):
         """The new file g most likely became: same content, same inode, or shared chunks."""
@@ -482,7 +525,8 @@ class Ingester:
 
     def _lineage_round(self, ids, on, st):
         st.new_round()
-        rows = self.q("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext
+        rows = self.q("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext,
+                                f.size, f.relpath, r.kind
                          FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
                          WHERE f.file_id = ANY(%s) AND f.content_id IS NOT NULL""", (ids,)).fetchall()
         by_id = {r[0]: r for r in rows}
@@ -513,15 +557,16 @@ class Ingester:
         named = [r for r in rows if r[6]]
         by_name = {}
         if named:
-            by_name = dict(self.q(
-                """SELECT t.fid, (SELECT o.file_id FROM pinakes.files o JOIN pinakes.roots r USING (root_id)
-                                  WHERE o.name_key = t.key AND o.ext = t.ext AND o.file_id <> t.fid
-                                    AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content
-                                  ORDER BY (o.mtime <= t.mtime) DESC, o.mtime DESC NULLS LAST, o.file_id LIMIT 1)
-                   FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::bigint[], %s::timestamptz[])
-                        AS t(fid, key, ext, content, mtime)""",
+            by_name = {fid: (src, evidence) for fid, src, evidence in self.q(
+                """SELECT t.fid, n.file_id, n.evidence
+                   FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::bigint[], %s::timestamptz[], %s::bigint[],
+                               %s::text[], %s::text[]) AS t(fid, key, ext, content, mtime, size, relpath, kind)
+                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on), %s::date) AS appeared FROM pinakes.history h
+                                       WHERE h.file_id = t.fid) a
+                   CROSS JOIN LATERAL (""" + NAME_CANDIDATE + """) n""",
                 ([r[0] for r in named], [r[6] for r in named], [r[7] for r in named], [r[1] for r in named],
-                 [r[2] for r in named])).fetchall())
+                 [r[2] for r in named], [r[8] for r in named], [r[9] for r in named], [r[10] for r in named], on,
+                 self.cfg.name_size_within, self.cfg.name_window_days, self.cfg.name_window_days)).fetchall()}
         for file_id in ids:
             f = by_id.get(file_id)
             if f is not None:
@@ -571,7 +616,7 @@ class Ingester:
         st.queue.append((src, dst, kind, evidence, confidence, on))
 
     def _lineage_one(self, f, on, st, changed, chunked, by_name):
-        file_id, content, mtime, dev, ino, host_id, name_key, ext = f
+        file_id, content, mtime, dev, ino, host_id, name_key, ext = f[:8]
         # 1. identical content elsewhere (not a backup copy, not another link to the same inode)
         others = [h for h in st.holders.get(content, ()) if h[0] != file_id and _other_inode(h, host_id, dev, ino)]
         if others:
@@ -609,8 +654,61 @@ class Ingester:
                                "likely", on)
                     return
         # 3. the same name once copy markers, dates and versions are taken off
+        #    and a second signal (NAME_CANDIDATE): a name alone links unrelated files (camera names, README)
         if name_key and by_name.get(file_id):
-            self._edge(st, by_name[file_id], file_id, "derived_from", "similar name", "possible", on)
+            src, evidence = by_name[file_id]
+            self._edge(st, src, file_id, "derived_from", evidence, "possible", on)
+
+    # tidying what older releases left ---------------------------------------------------------------------------
+    def tidy(self, on):
+        """Bring a catalog built by an older release in line with the current rules; returns counts. Backup roots:
+        their history rows, gone rows and any lineage edges go. Name lineage: every undecided edge by name alone is
+        worked out again by NAME_CANDIDATE (the same source kept, another taken, or none). Decided edges stay."""
+        n = {}
+        backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
+        n["backup history rows"] = self.q("DELETE FROM pinakes.history WHERE file_id IN (%s)" % backup).rowcount
+        n["backup lineage edges"] = self.q("DELETE FROM pinakes.lineage WHERE from_file_id IN (%s) OR to_file_id IN "
+                                           "(%s)" % (backup, backup)).rowcount
+        n["backup gone rows"] = self.q("DELETE FROM pinakes.files WHERE gone_on IS NOT NULL AND root_id IN "
+                                       "(SELECT root_id FROM pinakes.roots WHERE kind = 'backup')").rowcount
+        edges = self.q("SELECT from_file_id, to_file_id FROM pinakes.lineage WHERE evidence = 'similar name' "
+                       "AND decision IS NULL ORDER BY to_file_id").fetchall()
+        old = {}
+        for frm, to in edges:
+            old.setdefault(to, []).append(frm)
+        kept = moved = dropped = 0
+        ids = list(old)
+        for i in range(0, len(ids), self.lineage_round):
+            part = ids[i:i + self.lineage_round]
+            new = {fid: (src, ev) for fid, src, ev in self.q(
+                """SELECT t.fid, n.file_id, n.evidence
+                   FROM (SELECT f.file_id AS fid, f.name_key AS key, f.ext, f.content_id AS content, f.mtime, f.size,
+                                f.relpath, r.kind
+                         FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE f.file_id = ANY(%s)) t
+                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on), %s::date) AS appeared FROM pinakes.history h
+                                       WHERE h.file_id = t.fid) a
+                   CROSS JOIN LATERAL (""" + NAME_CANDIDATE + """) n""",
+                (part, on, self.cfg.name_size_within, self.cfg.name_window_days,
+                 self.cfg.name_window_days)).fetchall()}
+            for to in part:
+                src, ev = new.get(to, (None, None))
+                for frm in old[to]:
+                    if frm == src:
+                        self.q("UPDATE pinakes.lineage SET evidence = %s WHERE from_file_id = %s AND to_file_id = %s "
+                               "AND kind = 'derived_from'", (ev, frm, to))
+                        kept += 1
+                    else:
+                        self.q("DELETE FROM pinakes.lineage WHERE from_file_id = %s AND to_file_id = %s "
+                               "AND evidence = 'similar name' AND decision IS NULL", (frm, to))
+                if src is not None and src not in old[to]:
+                    self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, found_on) "
+                           "VALUES (%s, %s, 'derived_from', %s, 'possible', %s) ON CONFLICT DO NOTHING",
+                           (src, to, ev, on))
+                    moved += 1
+                elif src is None:
+                    dropped += 1
+        n["name edges kept"], n["name edges to another source"], n["name edges removed"] = kept, moved, dropped
+        return n
 
     # setup -----------------------------------------------------------------------------------------------------
     def seed(self):
@@ -662,8 +760,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
-    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute"))
+    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy"))
     ap.add_argument("dir", nargs="?")
+    ap.add_argument("--dry-run", action="store_true", help="tidy: count what would change, change nothing")
     args = ap.parse_args(argv)
     cfg = load_server_config(args.config)
     with psycopg.connect(**cfg.connect_kwargs(), autocommit=True) as conn:
@@ -702,6 +801,14 @@ def main(argv=None):
                 return 1
             with conn.transaction():
                 print("%d file(s) reassigned" % ing.recompute_root(r[0]))
+            return 0
+        if args.cmd == "tidy":
+            with conn.transaction():
+                for k, v in ing.tidy(datetime.date.today()).items():
+                    print("%s: %d" % (k, v))
+                if args.dry_run:
+                    print("dry run: nothing changed")
+                    raise psycopg.Rollback()
             return 0
         if args.cmd == "inbox":
             rc = 0

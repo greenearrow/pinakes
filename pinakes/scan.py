@@ -205,8 +205,11 @@ class Scanner:
         same_meta = (prev is not None and prev["size"] == fi.size and prev["mtime_ns"] == fi.mtime_ns
                      and prev["dev"] == fi.dev and prev["ino"] == fi.ino)
         if same_meta and prev["chunk_params"] == rec["chunk_params"]:
-            if prev["ctime_ns"] == fi.ctime_ns and prev["nlink"] == fi.nlink and prev["uid"] == fi.uid:
-                return None, None  # unchanged: nothing to send
+            if prev["uid"] == fi.uid and (root.kind == "backup" or (prev["ctime_ns"] == fi.ctime_ns
+                                                                     and prev["nlink"] == fi.nlink)):
+                # unchanged: nothing to send. In a backup root a new hard-linked snapshot changes every shared
+                # inode's link count and ctime; that says nothing about the copy, so it isn't sent
+                return None, None
             rec["sha256"] = prev["sha256"]  # metadata only (permissions, links): no rehash
             return rec, rec
 

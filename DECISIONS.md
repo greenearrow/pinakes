@@ -111,3 +111,16 @@ were made while building, to keep going, and are open to change.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.
+- **Backup roots record the present only** (ROADMAP 28): a gone path's row is deleted, no history rows, no move
+  matching; the agent ignores link-count and ctime changes there (a uid or mtime change is still sent). Versions and
+  `backed-up` come from the source's history and the copies' content. A backup root's own "what was in snapshot X
+  last month" is the backup tool's question, not the catalog's.
+- **A similar name needs a second signal** (ROADMAP 29), any one of: sizes within `name_size_within` (5%) of each
+  other, the same parent folder name (compared case-insensitively; a file at the top of a root has none), the other
+  file changed, moved or went within `name_window_days` (7) of this one first appearing, or a drop root on either
+  side. The edge's evidence names the signal ("similar name, same folder name"). The parent folder name still links
+  generic names in folders that share one by structure (a game's `region/`, a camera's `100CANON/`); a person rejects
+  those, and a rejection outranks every heuristic.
+- **`pinakes-ingest tidy`** brings a catalog built by an older release in line: backup roots' history rows, gone rows
+  and lineage edges go; every undecided edge by name alone is worked out again (kept with the signal named, moved to
+  another source, or removed). Decided edges stay. `--dry-run` counts and changes nothing. It is idempotent.

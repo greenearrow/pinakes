@@ -25,6 +25,7 @@ class Tree(unittest.TestCase):
     """A root with files, an agent config and state in a temporary directory."""
 
     root_extra = ""
+    root_kind = "primary"
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="pinakes-test-")
@@ -41,10 +42,10 @@ path = "%(t)s/inbox"
 [[root]]
 label = "r"
 path = "%(top)s"
-kind = "primary"
+kind = "%(kind)s"
 exclude = ["**/cache", "**/*.part"]
 %(extra)s
-""" % {"t": self.tmp, "top": self.top, "extra": self.root_extra})
+""" % {"t": self.tmp, "top": self.top, "extra": self.root_extra, "kind": self.root_kind})
         self.state = State(self.cfg.state)
         self.scanner = Scanner(self.cfg, self.state)
 
@@ -481,6 +482,34 @@ class TestScan(Tree):
         self.scan(full=True)
         recs = self.drain()
         self.assertEqual([r["path"] for r in recs if r.get("resend")], ["a"])
+
+
+class TestBackupRoot(Tree):
+    """A new hard-linked snapshot changes the link count and ctime of every inode it shares (ROADMAP 28)."""
+
+    root_kind = "backup"
+    root_extra = 'mirrors = { root = "store", layout = "*/{relpath}" }'
+
+    def test_new_snapshot_sends_only_its_own_paths(self):
+        p = self.write("2026-01-01/f.bin", b"x" * 1000)
+        self.scan()
+        self.drain()
+        os.makedirs(os.path.join(self.top, "2026-01-02"))
+        os.link(p, os.path.join(self.top, "2026-01-02/f.bin"))
+        self.scan()
+        self.assertEqual([(r["t"], r["path"]) for r in self.drain()], [("file", "2026-01-02/f.bin")])
+        shutil.rmtree(os.path.join(self.top, "2026-01-01"))                 # pruned: its path goes
+        self.scan()
+        self.assertEqual([(r["t"], r["path"]) for r in self.drain()], [("gone", "2026-01-01/f.bin")])
+
+    def test_primary_root_still_sends_link_changes(self):
+        self.cfg.roots[0].kind = "primary"
+        p = self.write("a/f.bin", b"x" * 1000)
+        self.scan()
+        self.drain()
+        os.link(p, os.path.join(self.top, "a/g.bin"))
+        self.scan()
+        self.assertEqual(sorted(r["path"] for r in self.drain()), ["a/f.bin", "a/g.bin"])
 
 
 class TestArchivesAndChunks(Tree):

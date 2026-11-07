@@ -47,6 +47,10 @@ class ServerConfig:
         lin = d.get("lineage", {})
         self.chunk_overlap = float(lin.get("chunk_overlap", 0.6))
         self.name_patterns_file = lin.get("name_patterns")
+        # a name match alone is not evidence: it also needs sizes within this share of each other, the same parent
+        # folder name, the other file changing or going within this many days, or a drop root on either side
+        self.name_size_within = float(lin.get("name_size_within", 0.05))
+        self.name_window_days = int(lin.get("name_window_days", 7))
         self.web = d.get("web", {})
         self.base_dir = base_dir
 

@@ -4,6 +4,8 @@ Needs PINAKES_TEST_PGHOST (a socket directory or host of a throwaway server wher
 default postgres, is a superuser) and psycopg. Each test class gets a fresh database. Skipped otherwise.
 """
 
+import datetime
+import hashlib
 import os
 import random
 import shutil
@@ -304,7 +306,7 @@ class TestLineage(ServerCase):
     def test_chunks_and_names(self):
         extra = 'chunks = { enabled = true, min_size = "1", average = "4KiB" }'
         self.agent("server-1", "store", extra=extra)
-        self.agent("laptop-1", "downloads", extra=extra)
+        self.agent("laptop-1", "downloads", kind="drop", extra=extra)
         base = os.urandom(200000)
         t0 = time.time() - 3600
         self.write("server-1", "store", "report.txt", base, mtime=t0)
@@ -315,7 +317,7 @@ class TestLineage(ServerCase):
         self.scan("laptop-1", "downloads")
         e = {(a, b): (k, c) for a, b, k, c in self.edges()}
         self.assertEqual(e[("report.txt", "report - new.txt")], ("derived_from", "likely"))
-        # by name only: the most recent earlier file with the same name once markers are off
+        # by name and a drop root: the most recent earlier file with the same name once markers are off
         self.assertEqual(e[("report - new.txt", "Report (2) final.txt")], ("derived_from", "possible"))
 
 
@@ -355,6 +357,169 @@ class TestHardLinks(ServerCase):
         self.assertEqual(same, {"a.bin": True, "a-link.bin": True, "a-copy.bin": False})
 
 
+class TestBackupRoots(ServerCase):
+    """A backup root records what holds a copy now (ROADMAP 28): hard-linked snapshots rotating through it send only
+    the new snapshot's paths, and leave no gone rows or history of their own."""
+
+    KEEP = 3
+
+    def snap(self, k):
+        return "2026-01-%02d_0140" % k
+
+    def scan_records(self, host, label):
+        """Scan, apply, and return the records sent (all batches)."""
+        st, cfg, _ = self.agent(host, label)
+        Scanner(cfg, st).scan(cfg.roots[0])
+        sent = []
+        for seq, p in outbox.pending(cfg.outbox):
+            header, recs = outbox.read(p)
+            self.assertEqual(self.ing.apply(header, recs, host), "applied")
+            outbox.ack(cfg.outbox, seq)
+            sent += recs
+        return sent
+
+    def test_rotating_hard_linked_snapshots(self):
+        from pinakes import queries
+        names = ["people/user-1/a.txt", "people/user-1/b.txt", "people/user-1/c.txt"]
+        data = {n: os.urandom(3000) for n in names}
+        for n in names:
+            self.write("server-1", "store", n, data[n])
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        b = names[1]
+        for k in range(1, 11):
+            if k == 6:  # b changes at the source; the next snapshot holds the new version, the rest stays linked
+                data[b] = os.urandom(3500)
+                self.write("server-1", "store", b, data[b])
+                self.scan("server-1", "store")
+            for n in names:
+                if k == 1 or (k == 6 and n == b):
+                    self.write("server-2", "snapshots", "%s/%s" % (self.snap(k), n), data[n])
+                else:
+                    os.makedirs(os.path.dirname(self.path("server-2", "snapshots", "%s/%s" % (self.snap(k), n))),
+                                exist_ok=True)
+                    os.link(self.path("server-2", "snapshots", "%s/%s" % (self.snap(k - 1), n)),
+                            self.path("server-2", "snapshots", "%s/%s" % (self.snap(k), n)))
+            if k > self.KEEP:
+                shutil.rmtree(self.path("server-2", "snapshots", self.snap(k - self.KEEP)))
+            recs = self.scan_records("server-2", "snapshots")
+            files = sorted(r["path"] for r in recs if r["t"] == "file")
+            gone = sorted(r["path"] for r in recs if r["t"] == "gone")
+            self.assertEqual(files, sorted("%s/%s" % (self.snap(k), n) for n in names), "snapshot %d" % k)
+            self.assertEqual(gone, sorted("%s/%s" % (self.snap(k - self.KEEP), n) for n in names)
+                             if k > self.KEEP else [], "snapshot %d" % k)
+        backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.label = 'snapshots'"
+        self.assertEqual(self.q("SELECT count(*), count(gone_on) FROM pinakes.files WHERE file_id IN (%s)" % backup),
+                         [(self.KEEP * len(names), 0)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.history WHERE file_id IN (%s)" % backup), [(0,)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage WHERE from_file_id IN (%s) OR to_file_id IN (%s)"
+                                % (backup, backup)), [(0,)])
+        # the source files still answer: every one held by the three snapshots kept, as one physical copy
+        rows = {r["relpath"]: r for r in queries.backed_up(self.conn, "store:people/user-1/")}
+        for n in names:
+            self.assertEqual((rows[n]["backup_copies"], rows[n]["snapshots"], str(rows[n]["newest"])),
+                             (1, self.KEEP, "2026-01-10"), n)
+        v = queries.versions(self.conn, self.file("store", b))
+        old_sha, new_sha = (hashlib.sha256(d).hexdigest() for d in (b"", data[b]))
+        self.assertEqual(len({r["sha256"] for r in v}), 2)                       # both versions of b
+        held = sorted(str(r["snapshot"]) for r in v if r["sha256"] == new_sha)
+        self.assertEqual(held, ["2026-01-08", "2026-01-09", "2026-01-10"])       # the new one in the kept snapshots
+        self.assertEqual([r["backup_root"] for r in v if r["sha256"] != new_sha], [None])  # the old one: pruned
+
+    def test_tidy_clears_what_older_releases_left(self):
+        """A catalog built before ROADMAP 28: a backup root with gone rows and history rows. tidy removes them."""
+        self.write("server-1", "store", "a.txt", b"alpha")
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/a.txt", b"alpha")
+        self.write("server-2", "snapshots", "2026-01-02_0140/a.txt", b"alpha")
+        self.scan("server-2", "snapshots")
+        kept, pruned = self.file("snapshots", "2026-01-02_0140/a.txt"), self.file("snapshots", "2026-01-01_0140/a.txt")
+        # what the older release wrote: history for every backup path, a pruned snapshot kept as a gone row
+        self.q("INSERT INTO pinakes.history (file_id, kind, new_relpath, seen_on) SELECT file_id, 'new', relpath, "
+               "current_date FROM pinakes.files WHERE file_id IN (%s, %s) RETURNING 1", (kept, pruned))
+        self.q("UPDATE pinakes.files SET gone_on = current_date WHERE file_id = %s RETURNING 1", (pruned,))
+        src = self.file("store", "a.txt")
+        src_history = self.history(src)
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual((n["backup history rows"], n["backup gone rows"]), (2, 1))
+        self.assertEqual(self.q("SELECT file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
+                                "WHERE r.label = 'snapshots'"), [(kept,)])
+        self.assertEqual(self.history(kept), [])
+        self.assertEqual(self.history(src), src_history)                          # a primary root's history stays
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())                            # a second run finds nothing
+        self.assertEqual(set(n.values()), {0})
+
+
+class TestNameLineage(ServerCase):
+    """A similar name links two files only with a second signal (ROADMAP 29)."""
+
+    def edges(self):
+        return sorted(self.q("""SELECT fr.relpath, ft.relpath, l.evidence FROM pinakes.lineage l
+                                JOIN pinakes.files fr ON fr.file_id = l.from_file_id
+                                JOIN pinakes.files ft ON ft.file_id = l.to_file_id"""))
+
+    def test_generic_names_in_unrelated_folders_link_nothing(self):
+        t0 = time.time() - 86400
+        generic = {"projects/alpha/README.md": 400, "projects/beta/README.md": 900,
+                   "imports/2024-01-01/IMG_0001.JPG": 20000, "imports/2024-02-01/IMG_0001.JPG": 26000,
+                   "games/world-1/level.dat": 1500, "games/world-2/level.dat": 1800}
+        for i, (rel, size) in enumerate(sorted(generic.items())):
+            self.write("server-1", "store", rel, os.urandom(size), mtime=t0 + i)
+        self.scan("server-1", "store")
+        # and the same names arriving later, on another machine
+        self.write("laptop-1", "downloads", "gamma/README.md", os.urandom(2000), mtime=t0 + 100)
+        self.write("laptop-1", "downloads", "card/IMG_0001.JPG", os.urandom(31000), mtime=t0 + 100)
+        self.scan("laptop-1", "downloads")
+        self.assertEqual(self.edges(), [])
+
+    def test_copy_out_and_back_still_links(self):
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "people/user-1/Thesis/chapter.odt", os.urandom(5000), mtime=t0)
+        self.write("server-1", "store", "people/user-1/notes.txt", os.urandom(1000), mtime=t0)
+        self.write("server-1", "store", "people/user-1/plan.odt", os.urandom(4000), mtime=t0)
+        self.scan("server-1", "store")
+        os.remove(self.path("server-1", "store", "people/user-1/plan.odt"))      # taken to the laptop: gone here
+        self.scan("server-1", "store")
+        # on the laptop (a primary root), each edited: other sizes, other contents
+        self.write("laptop-1", "downloads", "work/Thesis/chapter edited.odt", os.urandom(2000), mtime=t0 + 600)
+        self.write("laptop-1", "downloads", "work/notes - Copy.txt", os.urandom(1010), mtime=t0 + 600)
+        self.write("laptop-1", "downloads", "work/plan v2.odt", os.urandom(9000), mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.assertEqual(self.edges(), [
+            ("people/user-1/Thesis/chapter.odt", "work/Thesis/chapter edited.odt", "similar name, same folder name"),
+            ("people/user-1/notes.txt", "work/notes - Copy.txt", "similar name, similar size"),
+            ("people/user-1/plan.odt", "work/plan v2.odt", "similar name, the other changed or went then"),
+        ])
+
+    def test_tidy_redoes_name_edges(self):
+        """Edges by name alone from an older release: the unrelated ones go, a decided one stays."""
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "a/README.md", os.urandom(400), mtime=t0)
+        self.write("server-1", "store", "b/README.md", os.urandom(900), mtime=t0 + 1)
+        self.write("server-1", "store", "c/level.dat", os.urandom(1500), mtime=t0)
+        self.write("server-1", "store", "d/level.dat", os.urandom(1800), mtime=t0 + 1)
+        self.write("server-1", "store", "x/notes.txt", os.urandom(1000), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", "y/notes.txt", os.urandom(1010), mtime=t0 + 1)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [("x/notes.txt", "y/notes.txt", "similar name, similar size")])
+        self.q("DELETE FROM pinakes.lineage RETURNING 1")
+        old = [("a/README.md", "b/README.md", None), ("c/level.dat", "d/level.dat", "confirmed"),
+               ("x/notes.txt", "y/notes.txt", None)]
+        for frm, to, decision in old:  # as the older release wrote them
+            self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, decision) "
+                   "VALUES (%s, %s, 'derived_from', 'similar name', 'possible', %s) RETURNING 1",
+                   (self.file("store", frm), self.file("store", to), decision))
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual((n["name edges kept"], n["name edges removed"], n["name edges to another source"]), (1, 1, 0))
+        self.assertEqual(self.edges(), [("c/level.dat", "d/level.dat", "similar name"),        # decided: a person's
+                                        ("x/notes.txt", "y/notes.txt", "similar name, similar size")])
+
+
 class TestLineageRounds(ServerCase):
     """Lineage worked out in rounds of many files gives the same catalog as one file at a time."""
 
@@ -391,7 +556,7 @@ class TestLineageRounds(ServerCase):
             return rnd.randbytes(rnd.randrange(10, 200))
         t0 = 1700000000
         self.agent("server-1", "store", extra=self.CHUNKS)
-        self.agent("laptop-1", "downloads", extra=self.CHUNKS)
+        self.agent("laptop-1", "downloads", kind="drop", extra=self.CHUNKS)  # a drop root: names count there
         for i in range(40):  # mtimes from a few values: ties between copies are common (cp -p)
             self.write("server-1", "store", "d%d/%s" % (i % 7, self.NAMES[i % len(self.NAMES)]) if i < 10 else
                        "d%d/%d-%s" % (i % 7, i, rnd.choice(self.NAMES)), content(), mtime=t0 + 60 * rnd.randint(0, 5))
@@ -437,7 +602,8 @@ class TestLineageRounds(ServerCase):
         one_edges, one_history = self.scenario(1)
         kinds = {e[5] for e in one_edges}
         # the scenario exercises every kind of evidence and a rejected edge
-        self.assertTrue({"same sha256", "similar name"} <= kinds and any(k.startswith("chunks") for k in kinds), kinds)
+        self.assertTrue("same sha256" in kinds and any(k.startswith("chunks") for k in kinds)
+                        and any(k.startswith("similar name, ") for k in kinds), kinds)
         self.assertIn("rejected", {e[7] for e in one_edges})
         for n in (3, 2000):
             edges, history = self.scenario(n)

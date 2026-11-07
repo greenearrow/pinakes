@@ -72,6 +72,10 @@ expected_every = "never"               # often off: shown as stale, never alerte
 [lineage]
 name_patterns = "/etc/pinakes/name-patterns.toml"   # added to the project's patterns/names.toml
 chunk_overlap = 0.6                    # "derived from" at or above this share of chunks
+# a similar name links two files ("possible") only with a second signal: sizes within this share of each other,
+# the same parent folder name, the other file changed or gone within this many days, or a drop root on either side
+name_size_within = 0.05
+name_window_days = 7
 
 [audit]
 notify_people = true                   # tell people when an administrator saw their records

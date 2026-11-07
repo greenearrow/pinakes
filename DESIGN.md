@@ -207,6 +207,12 @@ dates against backup roots, which the catalog does (`versions` below); restoring
 
 History starts when a root is first scanned. Earlier states are not reconstructed.
 
+Backup roots keep no history of their own: they record what holds a copy now. A snapshot's path is a row while it
+exists and goes when the snapshot is pruned, with no "gone" row, no move matching (a pruned snapshot is not a move into
+the new one) and no history rows; versions are the source file's history, matched to the copies by content. A new
+hard-linked snapshot changes the link count and ctime of every inode it shares, so in a backup root the agent ignores
+those and sends only the new snapshot's paths.
+
 ### Lineage across machines
 
 A file taken to a laptop to work on, and brought back, gets a new inode and new hashes on the way: no single-host rule
@@ -225,8 +231,10 @@ can follow it. Lineage is a graph of file ids, built from four kinds of evidence
 4. **Names**, normalized by a list of patterns before comparing: copy markers (` - Copy`, ` copy`, ` (1)`,
    `Copy of `), dates in common formats, version marks (`v2`, `_final`, ` - new`, ` - old`), case and separators.
    The project ships the list (`pinakes/patterns/names.toml`) with defaults for common systems and programs; a site adds its
-   own in config. A normalized-name match with the same extension is weak alone (possible); with chunk overlap, or
-   appearing in the window the original changed, it is likely.
+   own in config. A normalized-name match with the same extension is no evidence alone: generic names (camera
+   numbers, `README`, a game's `level.dat`) match across unrelated folders by the thousand. It links (possible) only
+   with a second signal: sizes within 5% of each other, the same parent folder name, the other file changing, moving
+   or going within a week of this one appearing, or a drop root on either side (`[lineage]` in server.toml).
 
 Lineage breaks only where content is never seen identical on both sides and no other evidence survives: a laptop
 copy edited and deleted before the laptop was ever scanned, with no identity field, no chunks and a new name.

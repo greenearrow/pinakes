@@ -30,23 +30,14 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 | Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with an empty batch only |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
+| Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal; `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
 | Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
 
 ## Next: before more machines join
 
-Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins:
+Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
+(28, backup roots without churn, and 29, name lineage with a second signal, are built):
 
-28. **Backup roots without churn.** A snapshot root that grows by hard-linked copies changes every shared inode's
-    link count and ctime each time a snapshot is added, so the agent resends nearly every path daily (102k records for
-    an 88k-path root); pruned snapshots are matched as "moves" into new ones and leave "gone" rows and history kept
-    forever. In backup roots: ignore link-count and ctime-only changes, no move matching, no history rows, and remove
-    a path's row once it is gone (backups record what holds a copy now, not their own history). *Done when:* a test
-    rotating ten hard-linked snapshots sends only the new snapshot's paths, keeps no gone rows or history for the
-    backup root, and `backed-up` and `versions` still answer for the source files.
-29. **Name lineage needs a second signal.** A normalized-name match alone gave 90k "possible" edges between unrelated
-    files (camera names, `README`, `level.dat`). Require a name match plus one of: similar size, the same parent folder
-    name, appearing in the window the other changed or disappeared, or a drop root on either side. *Done when:* tests
-    show generic names across unrelated folders link nothing, and the copy-out-and-back cases still link.
 30. **A walk check with the agent's own rights,** for comparing the catalog with the disk: run under the same unit
     settings (`CAP_DAC_READ_SEARCH`), print per-root counts and sizes, so a mismatch means a bug, not missing rights.
 
