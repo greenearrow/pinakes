@@ -576,6 +576,41 @@ class TestNameLineage(ServerCase):
                                         ("x/notes.txt", "y/notes.txt", "similar name, similar size")])
 
 
+class TestEmptyFiles(ServerCase):
+    """Every empty file has the same hash: not a duplicate, and no line of descent."""
+
+    def test_not_dupes_and_no_lineage(self):
+        from pinakes import queries
+        t0 = time.time() - 86400
+        for i in range(5):
+            self.write("server-1", "store", "world/entities/r.%d.0.mca" % i, b"", mtime=t0 + i)
+        self.write("server-1", "store", "world/level.dat", b"x" * 100, mtime=t0)
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "copy/r.0.0.mca", b"", mtime=t0 + 60)
+        self.write("laptop-1", "downloads", "copy/level.dat", b"x" * 100, mtime=t0 + 60)
+        self.scan("laptop-1", "downloads")
+        self.assertEqual([d["size"] for d in queries.dupes(self.conn)], [100])
+        self.assertEqual(self.q("""SELECT ft.relpath, l.evidence FROM pinakes.lineage l
+                                   JOIN pinakes.files ft ON ft.file_id = l.to_file_id"""),
+                         [("copy/level.dat", "same sha256")])
+
+    def test_tidy_removes_empty_file_edges(self):
+        self.write("server-1", "store", "a/empty.txt", b"")
+        self.write("server-1", "store", "b/empty.txt", b"")
+        self.write("server-1", "store", "c/kept.txt", b"kept")
+        self.write("server-1", "store", "d/kept.txt", b"kept")
+        self.scan("server-1", "store")
+        e1, e2 = self.file("store", "a/empty.txt"), self.file("store", "b/empty.txt")
+        self.q("DELETE FROM pinakes.lineage RETURNING 1")
+        self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence) VALUES "
+               "(%s, %s, 'copied_from', 'same sha256', 'certain'), (%s, %s, 'copied_from', 'same sha256', 'certain') "
+               "RETURNING 1", (e1, e2, self.file("store", "c/kept.txt"), self.file("store", "d/kept.txt")))
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual(n["empty-file edges"], 1)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage"), [(1,)])
+
+
 class TestLineageRounds(ServerCase):
     """Lineage worked out in rounds of many files gives the same catalog as one file at a time."""
 

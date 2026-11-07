@@ -144,3 +144,7 @@ were made while building, to keep going, and are open to change.
 - **`pinakes-ingest tidy`** brings a catalog built by an older release in line: backup roots' history rows, gone rows
   and lineage edges go; name keys are recomputed; every undecided edge by name is worked out again (kept with the signal named, moved to
   another source, or removed). Decided edges stay. `--dry-run` counts and changes nothing. It is idempotent.
+- **Empty files are not duplicates and have no lineage:** every empty file has the same hash, takes no space and
+  reclaims nothing, so `dupes` leaves them out (the first deployment's top row by copies was 4,467 empty game data
+  files), and lineage neither starts nor ends at one. `tidy` removes undecided edges to or from an empty file. A file's
+  own page still lists where else its content is, empty or not.

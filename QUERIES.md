@@ -120,7 +120,7 @@ ORDER BY backup_copies, f.relpath;                 -- unprotected files first
 ## dupes [HOST:PATH]
 
 Hard links share their storage, so they are paths, not copies, and reclaim nothing: copies are distinct (host,
-device, inode).
+device, inode). Empty files all have the same hash and take no space: they are not duplicates.
 
 ```sql
 -- pinakes dupes
@@ -133,6 +133,7 @@ FROM present f
 JOIN contents c USING (content_id)
 JOIN roots r USING (root_id)
 WHERE r.kind <> 'backup'                           -- backups are meant to be copies
+  AND c.size > 0                                   -- every empty file has the same hash
 GROUP BY c.content_id
 HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1
 ORDER BY reclaimable DESC

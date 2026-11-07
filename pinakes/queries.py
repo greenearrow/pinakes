@@ -146,7 +146,8 @@ def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
 
 def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
     """The same content stored more than once. copies counts physical copies (host, device, inode): hard links share
-    their storage, so they are paths, not copies, and reclaim nothing."""
+    their storage, so they are paths, not copies, and reclaim nothing. Empty files are not duplicates: they all have
+    the same hash, take no space and reclaim nothing."""
     return rows(conn, """SELECT encode(c.sha256, 'hex') AS sha256, c.size,
                                 count(DISTINCT (r.host_id, f.dev, f.ino)) AS copies, count(*) AS paths_count,
                                 c.size * (count(DISTINCT (r.host_id, f.dev, f.ino)) - 1) AS reclaimable,
@@ -154,7 +155,7 @@ def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
                                 """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.contents c USING (content_id)
                          JOIN pinakes.roots r USING (root_id)
-                         WHERE r.kind <> 'backup' GROUP BY c.content_id
+                         WHERE r.kind <> 'backup' AND c.size > 0 GROUP BY c.content_id
                          HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1"""
                 + order(DUPES_SORT, sort, direction, "reclaimable DESC, c.content_id") + PAGE, (limit, offset))
 

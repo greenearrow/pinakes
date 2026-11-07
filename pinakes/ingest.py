@@ -43,12 +43,15 @@ def _under(relpath, folder):
 
 
 # The file a file t most likely descends from by its name: the same name once copy markers, dates and versions are
-# off (names.normalize), another content, not in a backup root, and a second signal: sizes within name_size_within
-# of each other if few files have the name (k.few: name_size_namesakes or fewer present outside backup roots; a fixed
-# name in every software package, a camera's counter, is not a sign), the same parent folder name if few folders have it (t.rare_folder: name_folder_max or fewer; a
-# name like region/ or data/ is structure, not a sign), the other changed, moved or went within name_window_days of
-# t appearing, or a drop root on either side. The most recent earlier one wins. Used for t in unnest(...) with
-# a.appeared, and parameters (size share, days, days, namesakes, namesakes + 1).
+# off (names.normalize), another content, not empty, not in a backup root, and a second signal:
+# - sizes within name_size_within of each other, if few files have the name (k.few: name_size_namesakes or fewer
+#   present outside backup roots; a fixed name in every software package, a camera's counter, is not a sign);
+# - the same parent folder name, if few folders have it (t.rare_folder: name_folder_max or fewer; region/ or data/
+#   is structure, not a sign);
+# - the other changed, moved or went within name_window_days of t appearing;
+# - a drop root on either side.
+# The most recent earlier one wins. Used for t in unnest(...) with a.appeared, and parameters (size share, days,
+# days, namesakes, namesakes + 1).
 NAME_CANDIDATE = """
     SELECT s.file_id, 'similar name, ' || s.why AS evidence FROM (
         SELECT o.file_id, o.mtime, CASE
@@ -68,7 +71,7 @@ NAME_CANDIDATE = """
                                                    AND xr.kind <> 'backup' LIMIT %s) c) k
         CROSS JOIN pinakes.files o JOIN pinakes.roots r USING (root_id)
         WHERE o.name_key = t.key AND o.ext = t.ext AND o.file_id <> t.fid
-          AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content) s
+          AND r.kind <> 'backup' AND o.content_id IS DISTINCT FROM t.content AND o.size > 0) s
     WHERE s.why IS NOT NULL
     ORDER BY (s.mtime <= t.mtime) DESC, s.mtime DESC NULLS LAST, s.file_id LIMIT 1"""
 
@@ -549,7 +552,8 @@ class Ingester:
         rows = self.q("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext,
                                 f.size, f.relpath, r.kind
                          FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
-                         WHERE f.file_id = ANY(%s) AND f.content_id IS NOT NULL""", (ids,)).fetchall()
+                         WHERE f.file_id = ANY(%s) AND f.content_id IS NOT NULL
+                           AND f.size > 0""", (ids,)).fetchall()  # an empty file descends from nothing
         by_id = {r[0]: r for r in rows}
         if not by_id:
             return
@@ -696,14 +700,19 @@ class Ingester:
     # tidying what older releases left ---------------------------------------------------------------------------
     def tidy(self, on):
         """Bring a catalog built by an older release in line with the current rules; returns counts. Backup roots:
-        their history rows, gone rows and any lineage edges go. Name keys are recomputed by the current patterns.
-        Name lineage: every undecided edge by name is worked out again by NAME_CANDIDATE (the same source kept,
-        another taken, or none). Decided edges stay. Run it again after an upgrade; a second run changes nothing."""
+        their history rows, gone rows and any lineage edges go. Undecided edges to or from an empty file go (it
+        descends from nothing). Name keys are recomputed by the current patterns. Name lineage: every undecided edge
+        by name is worked out again by NAME_CANDIDATE (the same source kept, another taken, or none). Decided edges
+        stay. Run it again after an upgrade; a second run changes nothing."""
         n = {}
         backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
         n["backup history rows"] = self.q("DELETE FROM pinakes.history WHERE file_id IN (%s)" % backup).rowcount
         n["backup lineage edges"] = self.q("DELETE FROM pinakes.lineage WHERE from_file_id IN (%s) OR to_file_id IN "
                                            "(%s)" % (backup, backup)).rowcount
+        n["empty-file edges"] = self.q(
+            "DELETE FROM pinakes.lineage l WHERE decision IS NULL AND (EXISTS (SELECT 1 FROM pinakes.files f "
+            "WHERE f.file_id = l.to_file_id AND f.size = 0) OR EXISTS (SELECT 1 FROM pinakes.files f "
+            "WHERE f.file_id = l.from_file_id AND f.size = 0))").rowcount
         n["backup gone rows"] = self.q("DELETE FROM pinakes.files WHERE gone_on IS NOT NULL AND root_id IN "
                                        "(SELECT root_id FROM pinakes.roots WHERE kind = 'backup')").rowcount
         # name keys by the current patterns (a release may change normalize): every file, read in a server cursor
