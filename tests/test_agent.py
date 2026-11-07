@@ -258,6 +258,44 @@ class TestScan(Tree):
         self.assertFalse(any(r["t"] == "gone" for r in recs))
         self.assertTrue(any(r["t"] == "error" and r["path"] == "locked" for r in recs))
 
+    def test_name_not_utf8_reported_not_fatal(self):
+        top = os.fsencode(self.top)
+        self.write("ok.txt", b"ok")
+        self.write("dir\\xfe", b"a real name with a backslash")   # what the bad folder's report looks like
+        with open(os.path.join(top, b"bad\xff.txt"), "wb") as f:
+            f.write(b"bad")
+        os.makedirs(os.path.join(top, b"dir\xfe"))
+        with open(os.path.join(top, b"dir\xfe", b"inner.txt"), "wb") as f:
+            f.write(b"inner")
+        self.scan()
+        recs = self.drain()
+        self.assertEqual({r["path"] for r in recs if r["t"] == "file"}, {"ok.txt", "dir\\xfe"})
+        errors = {r["path"]: r["error"] for r in recs if r["t"] == "error"}
+        self.assertEqual(set(errors), {"bad\\xff.txt", "dir\\xfe"})
+        self.assertIn("not valid UTF-8", errors["bad\\xff.txt"])
+        # a bad name shields nothing from being reported gone, even a real file its report collides with
+        os.remove(os.path.join(self.top, "dir\\xfe"))
+        self.scan()
+        self.assertIn(("gone", "dir\\xfe"), {(r["t"], r["path"]) for r in self.drain()})
+        # renamed, it is catalogued
+        os.rename(os.path.join(top, b"bad\xff.txt"), os.path.join(top, b"good.txt"))
+        self.scan()
+        self.assertIn("good.txt", {r["path"] for r in self.drain() if r["t"] == "file"})
+
+    def test_time_out_of_range_is_unknown(self):
+        p = self.write("far.txt", b"far")
+        far = 10_000_000_000 * 10**9                               # the year 2286: past what an int64 of ns holds
+        os.utime(p, ns=(far, far))
+        if os.stat(p).st_mtime_ns != far:
+            self.skipTest("this filesystem can't store a time that far off")
+        self.assertIsNone(fsinfo.info(p).mtime_ns)
+        self.scan()
+        rec = self.by_path(self.drain())["far.txt"]
+        self.assertIsNone(rec["mtime_ns"])
+        self.assertEqual(rec["sha256"], sha(b"far"))
+        self.scan()
+        self.assertNotIn("far.txt", self.by_path(self.drain()))      # unchanged: not resent, not rehashed
+
     def test_mount_points_not_crossed(self):
         self.write("own/a", b"a")
         self.write("other-fs/secret", b"plaintext")

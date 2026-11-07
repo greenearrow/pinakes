@@ -109,13 +109,24 @@ class MountPoint(OSError):
     """A folder that is another filesystem's mount point: not crossed (like restic --one-file-system)."""
 
 
+class BadName(OSError):
+    """A name that isn't valid UTF-8: the catalog can't hold it, so it is reported (as the bytes, escaped), not
+    catalogued, and a folder so named is not entered. Renaming it catalogues it at the next scan."""
+
+
+def _printable(rel):
+    """rel with any undecodable bytes as \\xNN escapes (for an error report only: it can collide with a real name)."""
+    return os.fsencode(rel).decode("utf-8", "backslashreplace")
+
+
 def _dev_of(entry):
     return entry.stat(follow_symlinks=False).st_dev
 
 
 def _walk(top, exclude, root_dev=None):
     """(relpath, abspath, error) for every non-directory under top, sorted, excluded paths pruned. With root_dev,
-    a folder on another filesystem is not entered: it comes back once, with a MountPoint error."""
+    a folder on another filesystem is not entered: it comes back once, with a MountPoint error. A name that isn't
+    valid UTF-8 comes back once, printable, with a BadName error."""
     stack = [""]
     while stack:
         rel_dir = stack.pop()
@@ -130,6 +141,11 @@ def _walk(top, exclude, root_dev=None):
         for e in entries:
             rel = rel_dir + "/" + e.name if rel_dir else e.name
             if exclude and exclude(rel):
+                continue
+            try:
+                e.name.encode("utf-8")
+            except UnicodeEncodeError:
+                yield _printable(rel), e.path, BadName("name is not valid UTF-8: rename it to catalog it")
                 continue
             try:
                 is_dir = e.is_dir(follow_symlinks=False)
@@ -279,7 +295,8 @@ class Scanner:
                     self.progress("%s: %d paths walked, %d sent, %d hashed, at %s"
                                   % (root.label, seen, summary["sent"], self.counter.get("hashed", 0), relpath))
                 if err is not None:
-                    unreadable.append(relpath)
+                    if not isinstance(err, BadName):  # nothing under a bad name was ever catalogued
+                        unreadable.append(relpath)
                     w = ensure_writer()
                     w.add({"t": "error", "path": relpath or ".", "error": "%s: %s" % (type(err).__name__, err)})
                     summary["errors"] += 1

@@ -52,12 +52,21 @@ def _load_statx():
 _statx = _load_statx()
 
 
+_NS_MIN, _NS_MAX = -2**63, 2**63 - 1  # what the catalog can hold (SQLite and PostgreSQL integers): 1677 to 2262
+
+
+def _fit(ns):
+    """ns, or None (unknown) if it is outside what the catalog can hold: a clock or filesystem gone wrong."""
+    return ns if ns is not None and _NS_MIN <= ns <= _NS_MAX else None
+
+
 def _ns(ts):
-    return ts.sec * 1_000_000_000 + ts.nsec
+    return _fit(ts.sec * 1_000_000_000 + ts.nsec)
 
 
 def info(path):
-    """Metadata of path without following a final symlink. btime_ns is None where the filesystem has none."""
+    """Metadata of path without following a final symlink. btime_ns is None where the filesystem has none; any time
+    is None where it is outside 1677 to 2262."""
     if _statx is not None:
         buf = _Statx()
         if _statx(_AT_FDCWD, os.fsencode(path), _AT_SYMLINK_NOFOLLOW, _STATX_BASIC_STATS | _STATX_BTIME,
@@ -69,8 +78,8 @@ def info(path):
         if err not in (38,):  # ENOSYS: the kernel has no statx; fall back
             raise OSError(err, os.strerror(err), path)
     st = os.lstat(path)
-    return Info(st.st_size, st.st_mtime_ns, st.st_ctime_ns, None, st.st_dev, st.st_ino, st.st_nlink, st.st_uid,
-                st.st_mode)
+    return Info(st.st_size, _fit(st.st_mtime_ns), _fit(st.st_ctime_ns), None, st.st_dev, st.st_ino, st.st_nlink,
+                st.st_uid, st.st_mode)
 
 
 def has_statx():

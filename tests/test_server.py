@@ -178,6 +178,17 @@ class TestIngest(ServerCase):
         self.assertEqual(self.history(c), ["new", "gone"])
         self.assertEqual(self.q("SELECT gone_on IS NOT NULL FROM pinakes.files WHERE file_id = %s", (c,))[0][0], True)
 
+    def test_bad_name_and_far_time(self):
+        far = self.write("server-1", "store", "far.txt", b"far")
+        os.utime(far, ns=(10_000_000_000 * 10**9,) * 2)                  # the year 2286
+        with open(os.path.join(os.fsencode(self.path("server-1", "store", "")), b"bad\xff.txt"), "wb") as f:
+            f.write(b"bad")
+        self.scan("server-1", "store")
+        self.assertEqual(self.q("SELECT relpath FROM pinakes.scan_errors"), [("bad\\xff.txt",)])
+        f = self.file("store", "far.txt")
+        if os.stat(far).st_mtime_ns == 10_000_000_000 * 10**9:            # the filesystem kept it
+            self.assertEqual(self.q("SELECT mtime FROM pinakes.files WHERE file_id = %s", (f,)), [(None,)])
+
     def test_moved_and_changed_by_inode(self):
         p = self.write("server-1", "store", "draft.txt", b"x" * 5000)
         self.scan("server-1", "store")
