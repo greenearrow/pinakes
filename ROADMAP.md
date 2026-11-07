@@ -34,6 +34,22 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 
 ## Next: before more machines join
 
+Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins:
+
+28. **Backup roots without churn.** A snapshot root that grows by hard-linked copies changes every shared inode's
+    link count and ctime each time a snapshot is added, so the agent resends nearly every path daily (102k records for
+    an 88k-path root); pruned snapshots are matched as "moves" into new ones and leave "gone" rows and history kept
+    forever. In backup roots: ignore link-count and ctime-only changes, no move matching, no history rows, and remove
+    a path's row once it is gone (backups record what holds a copy now, not their own history). *Done when:* a test
+    rotating ten hard-linked snapshots sends only the new snapshot's paths, keeps no gone rows or history for the
+    backup root, and `backed-up` and `versions` still answer for the source files.
+29. **Name lineage needs a second signal.** A normalized-name match alone gave 90k "possible" edges between unrelated
+    files (camera names, `README`, `level.dat`). Require a name match plus one of: similar size, the same parent folder
+    name, appearing in the window the other changed or disappeared, or a drop root on either side. *Done when:* tests
+    show generic names across unrelated folders link nothing, and the copy-out-and-back cases still link.
+30. **A walk check with the agent's own rights,** for comparing the catalog with the disk: run under the same unit
+    settings (`CAP_DAC_READ_SEARCH`), print per-root counts and sizes, so a mismatch means a bug, not missing rights.
+
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
