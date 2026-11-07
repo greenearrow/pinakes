@@ -12,6 +12,7 @@
   pinakes ... changes [--days N] [--host NAME]
   pinakes ... meta SCHEMA.FIELD=VALUE
   pinakes ... stale
+  pinakes ... roots                    every root you can see: host, kind, files, last complete scan
   Add --json for JSON. The CLI never steps up: it shows only what NAME may see.
 """
 
@@ -133,6 +134,8 @@ def main(argv=None):
                 rows = queries.meta(conn, schema, field, value)
             elif a.cmd == "stale":
                 rows = queries.stale(conn)
+            elif a.cmd == "roots":
+                rows = queries.roots(conn)
             else:
                 ap.error("unknown command %r" % a.cmd)
         except ValueError as e:

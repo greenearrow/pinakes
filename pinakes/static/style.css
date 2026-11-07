@@ -36,3 +36,4 @@ form.stack { display: grid; gap: .6rem; max-width: 26rem; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
 dl.facts dt { color: var(--muted); }
 @media (max-width: 40rem) { header form.search { margin-left: 0; width: 100%; } header form.search input { flex: 1; } }
+nav.pager { display: flex; gap: .6rem; flex-wrap: wrap; align-items: baseline; margin: .5rem 0; font-size: .9rem; }

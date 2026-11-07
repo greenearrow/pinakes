@@ -1,0 +1,13 @@
+{# One list's pager: "41-80 of 312", previous and next, the page size. Shown only when there is more than a page. #}
+{% macro pager(p, what="") %}
+{% if p.needed %}
+<nav class="pager" aria-label="pages{% if what %} of {{ what }}{% endif %}">
+  <span>{{ p.first }}–{{ p.last }} of {{ p.total }}{% if what %} {{ what }}{% endif %}</span>
+  {% if p.page > 1 %}<a href="{{ p.url(1) }}" aria-label="first page">«</a> <a href="{{ p.url(p.page - 1) }}" rel="prev">‹ Previous</a>{% endif %}
+  <span class="muted">page {{ p.page }} of {{ p.pages }}</span>
+  {% if p.page < p.pages %}<a href="{{ p.url(p.page + 1) }}" rel="next">Next ›</a> <a href="{{ p.url(p.pages) }}" aria-label="last page">»</a>{% endif %}
+  <span class="muted">per page:</span>
+  {% for n in per_page %}{% if n == p.per %}<strong>{{ n }}</strong>{% else %}<a href="{{ p.url(per=n) }}">{{ n }}</a>{% endif %} {% endfor %}
+</nav>
+{% endif %}
+{% endmacro %}

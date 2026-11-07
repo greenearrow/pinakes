@@ -25,13 +25,24 @@ def rows(conn, sql, args=()):
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
-def find(conn, pattern, limit=200):
+# Paging: a paged query selects TOTAL among its columns (the number of rows the whole query has, counted after any
+# grouping) and ends with PAGE (limit and offset; a limit of None is no limit). page_total() reads the total back.
+TOTAL = "count(*) OVER () AS total_rows"
+PAGE = " LIMIT %s OFFSET %s"
+
+
+def page_total(result):
+    """The whole query's row count, from a page of it (0 for an empty page)."""
+    return result[0]["total_rows"] if result else 0
+
+
+def find(conn, pattern, limit=None, offset=0):
     like = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%").replace("?", "_")
     if "%" not in like and "_" not in like:
         like = "%" + like + "%"
-    return rows(conn, """SELECT %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %%s
-                         ORDER BY f.name, h.name LIMIT %%s""" % FILE_COLS, (like, limit))
+                         ORDER BY f.name, h.name, f.file_id""" % (FILE_COLS, TOTAL) + PAGE, (like, limit, offset))
 
 
 def file_at(conn, loc):
@@ -52,100 +63,103 @@ def file_by_id(conn, file_id):
     return r[0] if r else None
 
 
-def where(conn, file_id):
+def where(conn, file_id, limit=None, offset=0):
     """Every copy; same_inode marks hard links of this very file (the same data on the same disk, not a copy)."""
-    return rows(conn, """SELECT %s, (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode
+    return rows(conn, """SELECT %s, (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode, %s
                          FROM pinakes.files t JOIN pinakes.roots tr ON tr.root_id = t.root_id
                          JOIN pinakes.present f ON f.content_id = t.content_id
                          JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
                          WHERE t.file_id = %%s
-                         ORDER BY r.kind, h.name, f.relpath""" % FILE_COLS, (file_id,))
+                         ORDER BY r.kind, h.name, f.relpath, f.file_id""" % (FILE_COLS, TOTAL) + PAGE,
+                (file_id, limit, offset))
 
 
-def only_here(conn, loc):
+def only_here(conn, loc, limit=None, offset=0):
     root, path = split_location(loc)
     pre = _prefix(path)
-    return rows(conn, """SELECT %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id)
                          WHERE r.label = %%s AND f.relpath LIKE %%s
                            AND NOT EXISTS (SELECT 1 FROM pinakes.present o WHERE o.content_id = f.content_id
                                            AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s))
-                         ORDER BY f.relpath""" % FILE_COLS, (root, pre, pre))
+                         ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL) + PAGE, (root, pre, pre, limit, offset))
 
 
-def not_safe_to_delete(conn, loc):
+def not_safe_to_delete(conn, loc, limit=None, offset=0):
     """The files under loc with no copy in a primary or backup root outside it. Empty: safe."""
     root, path = split_location(loc)
     pre = _prefix(path)
-    return rows(conn, """SELECT %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id)
                          WHERE r.label = %%s AND f.relpath LIKE %%s
                            AND NOT EXISTS (SELECT 1 FROM pinakes.present o JOIN pinakes.roots ro
                                              ON ro.root_id = o.root_id
                                            WHERE o.content_id = f.content_id AND ro.kind IN ('primary', 'backup')
                                              AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s))
-                         ORDER BY f.relpath""" % FILE_COLS, (root, pre, pre))
+                         ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL) + PAGE, (root, pre, pre, limit, offset))
 
 
-def backed_up(conn, loc):
+def backed_up(conn, loc, limit=None, offset=0):
     """Per file: physical backup copies (distinct host, device and inode: hard-linked snapshots are one copy), the
     snapshots that hold the current version, and the newest of them."""
     root, path = split_location(loc)
     return rows(conn, """SELECT f.file_id, f.relpath,
                                 count(DISTINCT (br.host_id, b.dev, b.ino)) FILTER (WHERE b.file_id IS NOT NULL)
                                     AS backup_copies,
-                                count(b.file_id) AS snapshots, max(b.snapshot) AS newest
+                                count(b.file_id) AS snapshots, max(b.snapshot) AS newest, """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
                          LEFT JOIN pinakes.roots br ON br.root_id = b.root_id
                          WHERE r.label = %s AND f.relpath LIKE %s
-                         GROUP BY f.file_id, f.relpath ORDER BY backup_copies, f.relpath""", (root, _prefix(path)))
+                         GROUP BY f.file_id, f.relpath ORDER BY backup_copies, f.relpath, f.file_id""" + PAGE,
+                (root, _prefix(path), limit, offset))
 
 
-def dupes(conn, limit=50):
+def dupes(conn, limit=None, offset=0):
     """The same content stored more than once. copies counts physical copies (host, device, inode): hard links share
     their storage, so they are paths, not copies, and reclaim nothing."""
     return rows(conn, """SELECT encode(c.sha256, 'hex') AS sha256, c.size,
                                 count(DISTINCT (r.host_id, f.dev, f.ino)) AS copies, count(*) AS paths_count,
                                 c.size * (count(DISTINCT (r.host_id, f.dev, f.ino)) - 1) AS reclaimable,
-                                array_agg(r.label || ':' || f.relpath ORDER BY r.label, f.relpath) AS paths
+                                array_agg(r.label || ':' || f.relpath ORDER BY r.label, f.relpath) AS paths,
+                                """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.contents c USING (content_id)
                          JOIN pinakes.roots r USING (root_id)
                          WHERE r.kind <> 'backup' GROUP BY c.content_id
                          HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1
-                         ORDER BY reclaimable DESC LIMIT %s""", (limit,))
+                         ORDER BY reclaimable DESC, c.content_id""" + PAGE, (limit, offset))
 
 
-def history(conn, file_id):
+def history(conn, file_id, limit=None, offset=0):
     return rows(conn, """SELECT h.seen_after, h.seen_on, h.kind, h.old_relpath, h.new_relpath,
                                 encode(oc.sha256, 'hex') AS old_sha256, encode(nc.sha256, 'hex') AS new_sha256,
-                                h.old_mtime, h.new_mtime, h.evidence, h.confidence
+                                h.old_mtime, h.new_mtime, h.evidence, h.confidence, """ + TOTAL + """
                          FROM pinakes.history h
                          LEFT JOIN pinakes.contents oc ON oc.content_id = h.old_content_id
                          LEFT JOIN pinakes.contents nc ON nc.content_id = h.new_content_id
-                         WHERE h.file_id = %s ORDER BY h.seen_on, h.history_id""", (file_id,))
+                         WHERE h.file_id = %s ORDER BY h.seen_on, h.history_id""" + PAGE, (file_id, limit, offset))
 
 
-def changes(conn, days=7, host=None, limit=500):
+def changes(conn, days=7, host=None, limit=None, offset=0):
     since = datetime.date.today() - datetime.timedelta(days=days)
     return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
-                                coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.kind, hi.file_id
+                                coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.kind, hi.file_id, """ + TOTAL + """
                          FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                          WHERE hi.seen_on >= %s AND (%s::text IS NULL OR h.name = %s)
-                         ORDER BY hi.seen_on DESC, path LIMIT %s""", (since, host, host, limit))
+                         ORDER BY hi.seen_on DESC, path, hi.history_id""" + PAGE, (since, host, host, limit, offset))
 
 
-def versions(conn, file_id):
+def versions(conn, file_id, limit=None, offset=0):
     return rows(conn, """WITH v AS (SELECT new_content_id AS content_id, min(seen_on) AS first_seen_on
                                     FROM pinakes.history WHERE file_id = %s AND new_content_id IS NOT NULL
                                     GROUP BY new_content_id)
                          SELECT encode(c.sha256, 'hex') AS sha256, v.first_seen_on, r.label AS backup_root,
-                                b.snapshot, b.relpath AS backup_path
+                                b.snapshot, b.relpath AS backup_path, """ + TOTAL + """
                          FROM v JOIN pinakes.contents c USING (content_id)
                          LEFT JOIN (pinakes.present b JOIN pinakes.roots r ON r.root_id = b.root_id
                                     AND r.kind = 'backup') ON b.content_id = v.content_id
-                         ORDER BY v.first_seen_on, b.snapshot""", (file_id,))
+                         ORDER BY v.first_seen_on, b.snapshot, b.file_id""" + PAGE, (file_id, limit, offset))
 
 
 def lineage(conn, file_id, direction="up", depth=50):
@@ -168,11 +182,11 @@ def lineage(conn, file_id, direction="up", depth=50):
                          ORDER BY w.depth, h.name""" % (nxt, nxt, join, nxt, FILE_COLS), (file_id, file_id, depth))
 
 
-def meta(conn, schema, field, value, limit=200):
-    return rows(conn, """SELECT %s, m.vals FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
+def meta(conn, schema, field, value, limit=None, offset=0):
+    return rows(conn, """SELECT %s, m.vals, %s FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         WHERE m.schema = %%s AND m.vals ->> %%s = %%s ORDER BY f.relpath LIMIT %%s""" % FILE_COLS,
-                (schema, field, value, limit))
+                         WHERE m.schema = %%s AND m.vals ->> %%s = %%s ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL)
+                + PAGE, (schema, field, value, limit, offset))
 
 
 def stale(conn):
@@ -187,7 +201,7 @@ def roots(conn):
                          FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""")
 
 
-def listing(conn, loc, limit=1000):
+def listing(conn, loc, limit=None, offset=0):
     """The folders and files directly in a folder that the person can see."""
     root, path = split_location(loc)
     pre = _prefix(path)
@@ -202,8 +216,16 @@ def listing(conn, loc, limit=1000):
                          SELECT entry, bool_or(deeper) AS is_folder, count(*) AS files,
                                 (SELECT sum(s.size) FROM (SELECT DISTINCT ON (x.dev, x.ino) x.size FROM e x
                                                           WHERE x.entry = e.entry) s) AS size,
-                                max(mtime) AS newest, min(file_id) FILTER (WHERE NOT deeper) AS file_id
-                         FROM e GROUP BY entry ORDER BY 2 DESC, 1 LIMIT %s""", (depth, depth, root, pre, limit))
+                                max(mtime) AS newest, min(file_id) FILTER (WHERE NOT deeper) AS file_id, """ + TOTAL + """
+                         FROM e GROUP BY entry ORDER BY 2 DESC, 1""" + PAGE, (depth, depth, root, pre, limit, offset))
+
+
+def audit_mine(conn, limit=None, offset=0):
+    """Audit entries that concern the current person or were made by them (row-level security picks them)."""
+    return rows(conn, """SELECT a.at, a.action, p.display AS actor, a.detail,
+                                a.actor = pinakes.current_person() AS mine, """ + TOTAL + """
+                         FROM pinakes.audit a LEFT JOIN pinakes.people p ON p.person_id = a.actor
+                         ORDER BY a.at DESC, a.audit_id DESC""" + PAGE, (limit, offset))
 
 
 def owners_of(conn, file_ids):

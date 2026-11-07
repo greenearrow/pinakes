@@ -1,12 +1,15 @@
 {% extends "base.html" %}
+{% from "_pager.html" import pager with context %}
 {% block title %}Access to your records · pinakes{% endblock %}
 {% block body %}
 <h1>Access to your records</h1>
 <p class="muted">Every time an administrator stepped up, and what they saw of yours. Your own step-ups are listed too.</p>
+{{ pager(pg, "entries") }}
 <div class="scroll"><table>
   <tr><th>When</th><th>Who</th><th>What</th><th>Detail</th></tr>
   {% for r in rows %}<tr><td>{{ r.at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ r.actor }}{% if r.mine %} (you){% endif %}</td>
     <td>{{ r.action.replace('_', ' ') }}</td><td>{% for k, v in r.detail.items() %}{{ k }}: {{ v }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
   {% else %}<tr><td colspan="4" class="muted">Nobody has stepped up to see your records.</td></tr>{% endfor %}
 </table></div>
+{{ pager(pg, "entries") }}
 {% endblock %}

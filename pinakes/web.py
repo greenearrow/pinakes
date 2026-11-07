@@ -6,6 +6,7 @@ factor, and the administrator's step-up.
 
 import argparse
 import functools
+from urllib.parse import urlencode
 import os
 import secrets
 import sys
@@ -18,7 +19,56 @@ from . import auth, queries
 from .server_config import load as load_server_config
 
 LOGIN_LIMIT = 5          # failed sign-ins per address
+PER_PAGE = (50, 100, 250, 500)   # the page sizes offered; the first after 50 is the default
 LOGIN_WINDOW = 15 * 60   # seconds
+
+
+class Pager:
+    """One paged list on a page: its page number comes from the query parameter `param`, the page size from `per`
+    (shared by every list on the page). Call done() with the rows the query returned."""
+
+    def __init__(self, param="page", default_per=100):
+        self.param = param
+        try:
+            self.page = max(1, int(request.args.get(param, 1)))
+        except ValueError:
+            self.page = 1
+        try:
+            per = int(request.args.get("per", default_per))
+        except ValueError:
+            per = default_per
+        self.per = per if per in PER_PAGE else default_per
+        self.offset = (self.page - 1) * self.per
+        self.total = self.shown = 0
+
+    def done(self, result):
+        self.total = queries.page_total(result)
+        self.shown = len(result)
+        return result
+
+    @property
+    def pages(self):
+        return max(1, -(-self.total // self.per))
+
+    @property
+    def first(self):
+        return self.offset + 1 if self.shown else 0
+
+    @property
+    def last(self):
+        return self.offset + self.shown
+
+    def url(self, page=None, per=None):
+        args = request.args.to_dict()
+        args[self.param] = page if page is not None else self.page
+        if per is not None:
+            args["per"] = per
+            args[self.param] = 1
+        return request.path + "?" + urlencode(args)
+
+    @property
+    def needed(self):
+        return self.total > self.per or self.page > 1
 
 
 def create_app(cfg, connect=None):
@@ -87,7 +137,8 @@ def create_app(cfg, connect=None):
         if "csrf" not in session:
             session["csrf"] = secrets.token_urlsafe(24)
         return {"csrf": session["csrf"], "person": g.get("person"), "display": g.get("display"),
-                "stepped_up": g.get("stepped_up"), "roles": g.get("roles", []), "fmt_size": fmt_size}
+                "stepped_up": g.get("stepped_up"), "roles": g.get("roles", []), "fmt_size": fmt_size,
+                "per_page": PER_PAGE}
 
     def signed_in(view):
         @functools.wraps(view)
@@ -148,22 +199,24 @@ def create_app(cfg, connect=None):
     @signed_in
     def find():
         q = request.args.get("q", "").strip()
-        results = queries.find(g.db, q) if q else []
+        pg = Pager()
+        results = pg.done(queries.find(g.db, q, pg.per, pg.offset)) if q else []
         audit_shown([r["file_id"] for r in results], "find")
-        return render_template("find.html", q=q, results=results)
+        return render_template("find.html", q=q, results=results, pg=pg)
 
     @app.route("/browse/<root>/", defaults={"path": ""})
     @app.route("/browse/<root>/<path:path>")
     @signed_in
     def browse(root, path):
-        entries = queries.listing(g.db, "%s:%s" % (root, path))
+        pg = Pager()
+        entries = pg.done(queries.listing(g.db, "%s:%s" % (root, path), pg.per, pg.offset))
         audit_shown([e["file_id"] for e in entries if e["file_id"]], "browse %s:%s" % (root, path))
         crumbs = []
         acc = ""
         for part in [p for p in path.split("/") if p]:
             acc = acc + "/" + part if acc else part
             crumbs.append((part, acc))
-        return render_template("browse.html", root=root, path=path, entries=entries, crumbs=crumbs)
+        return render_template("browse.html", root=root, path=path, entries=entries, crumbs=crumbs, pg=pg)
 
     @app.route("/file/<int:file_id>")
     @signed_in
@@ -171,10 +224,12 @@ def create_app(cfg, connect=None):
         f = queries.file_by_id(g.db, file_id)
         if f is None:
             abort(404)  # not there, or not yours to see: the same answer
-        copies = queries.where(g.db, file_id) if f["content_id"] else []
-        page = {"f": f, "copies": copies, "versions": queries.versions(g.db, file_id),
-                "history": queries.history(g.db, file_id), "up": queries.lineage(g.db, file_id, "up"),
-                "down": queries.lineage(g.db, file_id, "down")}
+        pc, pv, ph = Pager("copies", 50), Pager("versions", 50), Pager("history", 50)
+        copies = pc.done(queries.where(g.db, file_id, pc.per, pc.offset)) if f["content_id"] else []
+        page = {"f": f, "copies": copies, "pc": pc,
+                "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset)), "pv": pv,
+                "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset)), "ph": ph,
+                "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down")}
         audit_shown([file_id] + [c["file_id"] for c in copies], "file %d" % file_id)
         return render_template("file.html", **page)
 
@@ -183,23 +238,26 @@ def create_app(cfg, connect=None):
     def report(name):
         loc = request.args.get("loc", "").strip()
         rows, error = [], None
+        pg = Pager()
+        lim = (pg.per, pg.offset)
         try:
             if name == "only-here" and loc:
-                rows = queries.only_here(g.db, loc)
+                rows = queries.only_here(g.db, loc, *lim)
             elif name == "safe-to-delete" and loc:
-                rows = queries.not_safe_to_delete(g.db, loc)
+                rows = queries.not_safe_to_delete(g.db, loc, *lim)
             elif name == "backed-up" and loc:
-                rows = queries.backed_up(g.db, loc)
+                rows = queries.backed_up(g.db, loc, *lim)
             elif name == "dupes":
-                rows = queries.dupes(g.db)
+                rows = queries.dupes(g.db, *lim)
             elif name == "changes":
-                rows = queries.changes(g.db, days=int(request.args.get("days", 7)))
+                rows = queries.changes(g.db, int(request.args.get("days", 7)), None, *lim)
             elif name not in ("only-here", "safe-to-delete", "backed-up"):
                 abort(404)
         except ValueError as e:
             error = str(e)
+        pg.done(rows)
         audit_shown([r["file_id"] for r in rows if r.get("file_id")], "report %s %s" % (name, loc))
-        return render_template("report.html", name=name, loc=loc, rows=rows, error=error)
+        return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg)
 
     # second factor and step-up -------------------------------------------------------------------------------
     @app.route("/account", methods=["GET", "POST"])
@@ -261,11 +319,9 @@ def create_app(cfg, connect=None):
     @app.route("/access")
     @signed_in
     def access():
-        rows = queries.rows(g.db, """SELECT a.at, a.action, p.display AS actor, a.detail,
-                                            a.actor = pinakes.current_person() AS mine
-                                     FROM pinakes.audit a LEFT JOIN pinakes.people p ON p.person_id = a.actor
-                                     ORDER BY a.at DESC LIMIT 500""")
-        return render_template("access.html", rows=rows)
+        pg = Pager()
+        rows = pg.done(queries.audit_mine(g.db, pg.per, pg.offset))
+        return render_template("access.html", rows=rows, pg=pg)
 
     return app
 

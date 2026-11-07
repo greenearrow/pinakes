@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pager.html" import pager with context %}
 {% block title %}{{ root }}:{{ path }} · pinakes{% endblock %}
 {% block body %}
 <h1><a href="{{ url_for('browse', root=root, path='') }}">{{ root }}</a>{% for name, p in crumbs %} / <a href="{{ url_for('browse', root=root, path=p) }}">{{ name }}</a>{% endfor %}</h1>
@@ -7,6 +8,7 @@
   <a href="{{ url_for('report', name='only-here', loc=root ~ ':' ~ path) }}">Only here</a> ·
   <a href="{{ url_for('report', name='backed-up', loc=root ~ ':' ~ path) }}">Backed up?</a>
 </p>
+{{ pager(pg, "entries") }}
 <div class="scroll"><table>
   <tr><th>Name</th><th class="num">Files</th><th class="num">Size</th><th>Newest</th></tr>
   {% for e in entries %}
@@ -16,4 +18,5 @@
       <td>{{ e.newest.date() if e.newest else '' }}</td></tr>
   {% else %}<tr><td colspan="4" class="muted">Nothing here that you can see.</td></tr>{% endfor %}
 </table></div>
+{{ pager(pg, "entries") }}
 {% endblock %}

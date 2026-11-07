@@ -146,6 +146,65 @@ class TestBehindProxy(TestWeb):
         self.assertEqual(fail("192.0.2.11", 1), 200)     # another visitor behind the same proxy is not
 
 
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestPaging(ServerCase):
+    def setUp(self):
+        super().setUp()
+        for i in range(120):
+            self.write("server-1", "store", "people/user-1/many/f%03d.txt" % i, b"only here %d" % i)
+        self.scan("server-1", "store")
+        pid = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0]
+        self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) VALUES (%s, %s)",
+                          (pid, auth.hash_password("correct horse battery")))
+        app = web.create_app(server_config.loads(TestWeb.SERVER_WEB),
+                             connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db))
+        app.testing = True
+        self.c = app.test_client()
+        tok = re.search(r'name="csrf" value="([^"]+)"', self.c.get("/login").get_data(as_text=True)).group(1)
+        self.c.post("/login", data={"csrf": tok, "name": "user-1", "password": "correct horse battery"})
+
+    def rows_on(self, html):
+        return len(re.findall(r'href="/file/\d+">(?:[^<]*/)?f\d{3}\.txt<', html))   # a name, or a path to it
+
+    def test_browse_pages(self):
+        p1 = self.c.get("/browse/store/people/user-1/many?per=50").get_data(as_text=True)
+        self.assertEqual(self.rows_on(p1), 50)
+        self.assertIn("1–50 of 120 entries", p1)
+        self.assertIn("page 1 of 3", p1)
+        self.assertIn('rel="next"', p1)
+        p3 = self.c.get("/browse/store/people/user-1/many?per=50&page=3").get_data(as_text=True)
+        self.assertEqual(self.rows_on(p3), 20)
+        self.assertIn("101–120 of 120", p3)
+        self.assertNotIn('rel="next"', p3)
+        names = lambda h: re.findall(r'>(f\d{3})\.txt<', h)
+        p2 = self.c.get("/browse/store/people/user-1/many?per=50&page=2").get_data(as_text=True)
+        self.assertEqual(len(set(names(p1)) | set(names(p2)) | set(names(p3))), 120)   # no overlap, none missing
+
+    def test_bad_page_arguments_fall_back(self):
+        r = self.c.get("/browse/store/people/user-1/many?per=7&page=x")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.rows_on(r.get_data(as_text=True)), 100)      # the default size, page 1
+
+    def test_find_and_report_totals(self):
+        f = self.c.get("/find?q=f0&per=50").get_data(as_text=True)
+        self.assertIn("of 100 files", f)                                   # f000-f099
+        r = self.c.get("/reports/safe-to-delete?loc=store:people/user-1/many/&per=50").get_data(as_text=True)
+        self.assertIn("These 120 file(s)", r)                              # the total, not the page
+        self.assertEqual(self.rows_on(r), 50)
+        self.assertIn("per=50", r)
+
+    def test_page_links_keep_the_other_arguments(self):
+        r = self.c.get("/reports/only-here?loc=store:people/user-1/many/&per=50").get_data(as_text=True)
+        nxt = re.search(r'href="([^"]+)" rel="next"', r).group(1).replace("&amp;", "&")
+        self.assertIn("loc=store%3Apeople%2Fuser-1%2Fmany%2F", nxt)
+        self.assertIn("page=2", nxt)
+
+    def test_cli_queries_are_unlimited(self):
+        from pinakes import queries
+        self.assertEqual(len(queries.find(self.conn, "f*.txt")), 120)
+        self.assertEqual(queries.page_total(queries.find(self.conn, "f*.txt", 10, 0)), 120)
+
+
 class TestAuth(unittest.TestCase):
     def test_password_and_totp(self):
         from pinakes import auth
