@@ -36,8 +36,9 @@ were made while building, to keep going, and are open to change.
 - **Walk order** is sorted by name, so batches are deterministic and tests are stable.
 - **Hard links:** a file with more than one link is hashed once per (device, inode) in a scan, and its hash is reused
   while size, mtime and ctime are unchanged.
-- **Niceness, I/O class and the sleep inhibitor** are set by the systemd unit (`Nice=`, `IOSchedulingClass=`,
-  `systemd-inhibit`), not by the agent, which only checks `only_on_ac` and `busy_command`.
+- **Niceness, I/O class and staying awake** are the systemd unit's and the site's (`Nice=`, `IOSchedulingClass=`;
+  `systemd-inhibit`, or a busy check that whatever suspends the machine asks first), not the agent's, which only
+  checks `only_on_ac` and `busy_command`.
 - **Batches** are gzip-compressed JSON lines with a header line (host, sequence number, root, scan id, whether the scan
   completed). The agent deletes a batch only after the ingester acknowledges its sequence number.
 - **Batch sequence numbers** are reserved and committed before a batch is written, so a crash leaves a gap, never a

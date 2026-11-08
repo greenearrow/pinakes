@@ -41,8 +41,12 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (28, backup roots without churn, 29, name lineage with a second signal, 30, a walk check with the agent's rights,
 31, an ingester stopping when its agent gives up, and 4, a health endpoint, are built; see the table above;
-3, `inhibit_sleep`, is gone, as the unit holds the inhibitor):
+3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake). The first deployment found its backup
+roots on the same disk as their source, so 5 comes first:
 
+5. **Same-disk copies.** `safe-to-delete` and `only-here` accept any other copy; show separately how many copies are on
+   other disks (other host or device), so "safe" can't rest on a copy that dies with the same disk. *Done when:*
+   tests cover a copy on the same disk, one on another disk, and a hard link (not a copy at all).
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
@@ -57,17 +61,19 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
    - *Done:* matching a scan's gone paths against its new ones is indexed. It was one pass over the new files per
      gone path, so a reorganisation (42k gone, 37k new) never finished. `TestMovesSameAsBefore` finds the same moves
      as the old code on 12 random trees; 40k gone and 37k new complete in about 5 s on that desktop.
-   - *Left:* the board's time and peak memory for a 300k-file first ingest; batching the per-record queries of
-     ordinary batches, with the test that batched and unbatched give the same catalog.
+   - *Done:* the board's time. On a 4+4-core ARM board (Cortex-A76 and A55, 8 GB, PostgreSQL 18), 140 real batches:
+     a 5000-record batch took about 6-10 s from one to the next, transfer included (430-820 records a second over
+     back-to-back stretches; the longest gap 35.7 s), far inside the agent's send timeout.
+   - *Left:* the board's peak memory, at the next first ingest. Batching the per-record queries of ordinary batches
+     (with the test that batched and unbatched give the same catalog) only if a measurement asks for it.
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
+   The first deployment's shares all write as one account, so uids decide nothing there yet; they will once people
+   write as themselves (per-person Samba accounts, no `force user`). Keep `uid_map`; build this then.
 
 ## Correctness gaps found while building
 
-5. **Same-disk copies.** `safe-to-delete` and `only-here` accept any other copy; show separately how many copies are on
-   other disks (other host or device), so "safe" can't rest on a copy that dies with the same disk. *Done when:*
-   tests cover a copy on the same disk, one on another disk, and a hard link (not a copy at all).
 6. **Protection by inode.** A file under a protected root that is hard-linked elsewhere is protected at every path.
    *Done when:* a test links a protected file into a normal root and finds no archive listing, no metadata, no chunks
    policy override, and the UI shows only names, sizes, times and hashes there.
