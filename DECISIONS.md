@@ -98,7 +98,21 @@ were made while building, to keep going, and are open to change.
 - **Measured on a desktop (12th-gen Intel, ext4, warm cache), a 3.0 GB tree of 383,985 entries:** first scan 44 s
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
   database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
-  completing a scan and matching moves have since gone to bulk; the board's time and memory are in ROADMAP.md item 1.
+  completing a scan and matching moves have since gone to bulk (below).
+- **Completing a scan works in bulk, and moves are matched by an index** (ROADMAP 1). On the board, the batch
+  completing a first scan of ~340k files ran past the agent's 10-minute send timeout: completing worked per file (a
+  history row and 5-7 lineage queries each, about 2M round trips). Now the new files' history is one statement, and
+  lineage runs in rounds of 2000 files with a handful of queries each (chunk sharing still per chunked file);
+  `TestLineageRounds` proves rounds of 3 and 2000 give the same catalog as rounds of 1. Matching a scan's gone paths
+  against its new ones was one pass over the new files per gone path, so a reorganisation (42k gone, 37k new) never
+  finished; `TestMovesSameAsBefore` finds the same moves as the old code on 12 random trees. On a desktop
+  (i7-12700KF, PostgreSQL 16 on a local socket, synthetic 300k files): that batch 68.7 s before, 18.7 s after; an
+  ordinary batch of 5000 files 1.3 s; 40k gone and 37k new matched in about 5 s.
+- **Measured on a 4+4-core ARM board (Cortex-A76 and A55, 8 GB, PostgreSQL 18), real batches:** over 140 batches a
+  5000-record batch took about 6-10 s from one to the next, transfer included (430-820 records a second over
+  back-to-back stretches; the longest gap 35.7 s), far inside the agent's send timeout. Over 202 batches from the
+  backup server's first ingest the ingester's peak RSS was 65 MB, mean 52 MB, none failed. So the per-record queries
+  of ordinary batches stay per record.
 - **`/health` answers 503 for a stale host, not only for a database that's down.** Most monitors check the status
   code alone, and a host that stopped reporting is what it is for; the body says which. Its newest batch comes from
   `ingested`, which `pinakes_app` may now read (host, sequence, time, record count: no names): an agent that keeps

@@ -29,6 +29,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 | Schema: people, groups, ACLs, step-ups, append-only audit, hosts, roots, scans, contents, files, chunks, members, history, lineage, metadata (table only) | Tested on 16; applied on 18 |
 | Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with real batches (a first deployment, two scans) |
 | Ingester stopping a batch whose sender hung up (its stdout closed) or that runs past `[ingest] max_batch_time`: the running statement cancelled, the transaction rolled back, exit 3 | Tested on 16 (the forced ingester as a subprocess, blocked on a lock) |
+| Ingester at scale (1): completing a scan in bulk (the new files' history in one statement, lineage in rounds of 2000 files), a scan's gone paths matched to its new ones by an index; ordinary batches still per record, as the board's time and memory don't ask for more | Tested on 16 (`TestLineageRounds`, `TestMovesSameAsBefore`); run on 18 on a 4+4-core ARM board (DECISIONS.md): 5000-record batches every 6-10 s, peak RSS 65 MB over 202 batches, none failed |
 | A walk check for comparing the catalog with the disk: `pinakes-agent check` counts each root with the scan's own walk and the running process's rights, beside the last scan, with what changed since it started and errors by kind; `pinakes-ingest totals` gives the catalog's per root, every owner's; no file names in either | Tested (3.12; the comparison on 16); done by hand on one server before it was built: every root matched its last scan |
 | `/health` without sign-in for monitoring (database reachable; per host its newest batch, last complete scan and staleness; 200 or 503; host names only), also alone on `[web] health_listen` | Tested with the test client on 16; served by waitress on both listeners on the desktop |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
@@ -41,31 +42,11 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 ## Next: before more machines join
 
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
-(28, backup roots without churn, 29, name lineage with a second signal, 30, a walk check with the agent's rights,
-31, an ingester stopping when its agent gives up, and 4, a health endpoint, are built; see the table above;
-3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake; 5, same-disk copies, found when the
-first deployment's backup roots turned out to share their source's disk, is built):
+(1, the ingester on a small server, 28, backup roots without churn, 29, name lineage with a second signal, 30, a
+walk check with the agent's rights, 31, an ingester stopping when its agent gives up, and 4, a health endpoint, are
+built; see the table above; 3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake; 5, same-disk
+copies, found when the first deployment's backup roots turned out to share their source's disk, is built):
 
-1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
-   slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
-   *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
-   unbatched ingest give the same catalog.
-   - *Done:* completing a scan works in bulk. On the board, the batch completing a first scan of ~340k files ran past
-     the agent's 10-minute send timeout, because completing worked per file (a history row and 5-7 lineage queries
-     each, about 2M round trips). Now the new files' history is one statement, and lineage runs in rounds of 2000
-     files with a handful of queries each (chunk sharing still per chunked file). `TestLineageRounds` proves rounds
-     of 3 and 2000 give the same catalog as rounds of 1 (the per-file order). On a desktop (i7-12700KF, PostgreSQL 16
-     on a local socket, synthetic 300k files): that batch 68.7 s before, 18.7 s after; an ordinary batch of 5000
-     files 1.3 s.
-   - *Done:* matching a scan's gone paths against its new ones is indexed. It was one pass over the new files per
-     gone path, so a reorganisation (42k gone, 37k new) never finished. `TestMovesSameAsBefore` finds the same moves
-     as the old code on 12 random trees; 40k gone and 37k new complete in about 5 s on that desktop.
-   - *Done:* the board's time. On a 4+4-core ARM board (Cortex-A76 and A55, 8 GB, PostgreSQL 18), 140 real batches:
-     a 5000-record batch took about 6-10 s from one to the next, transfer included (430-820 records a second over
-     back-to-back stretches; the longest gap 35.7 s), far inside the agent's send timeout.
-   - *Done:* the board's peak memory. 202 batches from the backup server's first ingest: the ingester's peak RSS
-     65 MB, mean 52 MB, none failed. Neither time nor memory asks for batching the per-record queries of ordinary
-     batches, so they stay per record.
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
