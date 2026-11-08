@@ -190,34 +190,121 @@ def _kinds(kinds):
     return k or None
 
 
-def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None):
-    """History in the last `days`, optionally only some kinds and only what touched a folder (ROOT:PATH; a move
-    counts at both ends)."""
+REVIEWABLE = ("gone", "moved", "moved_changed")         # the kinds a review marks (ROADMAP 32)
+REVIEWS = ("unreviewed", "reviewed")
+
+
+def _review(review):
+    return review if review in REVIEWS else None
+
+
+# The review filter on history hi with its mark m: unreviewed is a gone file or a move with no mark.
+_REVIEW_WHERE = """(%s::text IS NULL OR (%s = 'reviewed' AND m.history_id IS NOT NULL)
+                     OR (%s = 'unreviewed' AND m.history_id IS NULL
+                         AND hi.kind IN ('gone', 'moved', 'moved_changed')))"""
+
+
+def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None,
+            review=None, until=None, elsewhere=False):
+    """History in the last `days` (and up to `until`, a date), optionally only some kinds, only what touched a folder
+    (ROOT:PATH; a move counts at both ends), only unreviewed or reviewed changes, and only gone files whose last
+    content is still in a kept root you can see (`elsewhere`). Each row has its review mark, and for a gone file the
+    copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in `elsewhere_at`) and
+    `backups`."""
     since = datetime.date.today() - datetime.timedelta(days=days)
     root, pre = (None, None)
     if loc:
         root, path = split_location(loc)
         pre = _prefix(path)
+    rv = _review(review)
     return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
                                 coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
-                                hi.file_id, """ + TOTAL + """
+                                hi.file_id, hi.history_id, hi.kind IN ('gone', 'moved', 'moved_changed') AS reviewable,
+                                m.mark, m.marked_at, mp.display AS marked_by,
+                                c.elsewhere, c.elsewhere_at, c.backups, """ + TOTAL + """
                          FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         WHERE hi.seen_on >= %s AND (%s::text IS NULL OR h.name = %s)
+                         LEFT JOIN pinakes.review_marks m ON m.history_id = hi.history_id
+                         LEFT JOIN pinakes.people mp ON mp.person_id = m.marked_by
+                         LEFT JOIN LATERAL (
+                             SELECT count(*) FILTER (WHERE ro.kind <> 'backup') AS elsewhere,
+                                    min(oh.name || ' · ' || ro.label || ':' || o.relpath)
+                                        FILTER (WHERE ro.kind <> 'backup') AS elsewhere_at,
+                                    count(DISTINCT (ro.host_id, o.dev, o.ino)) FILTER (WHERE ro.kind = 'backup')
+                                        AS backups
+                             FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
+                             JOIN pinakes.hosts oh ON oh.host_id = ro.host_id
+                             WHERE hi.kind = 'gone' AND o.content_id = hi.old_content_id) c ON true
+                         WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
+                           AND (%s::text IS NULL OR h.name = %s)
                            AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
-                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s))"""
+                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s))
+                           AND """ + _REVIEW_WHERE + """
+                           AND (NOT %s OR hi.kind = 'gone' AND c.elsewhere > 0)"""
                 + order(CHANGES_SORT, sort, direction, "hi.seen_on DESC, path, hi.history_id") + PAGE,
-                (since, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, limit, offset))
+                (since, until, until, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, rv, rv, rv,
+                 bool(elsewhere), limit, offset))
+
+
+def mark_changes(conn, history_ids, mark):
+    """Mark changes 'intended' or 'restore' (None clears). The database decides who may: changes the person may not
+    mark are skipped. Returns how many were marked."""
+    if mark not in ("intended", "restore", None):
+        raise ValueError("a mark is intended or restore")
+    return conn.execute("SELECT pinakes.mark_changes(%s::bigint[], %s)", (list(history_ids), mark)).fetchone()[0]
+
+
+RESTORE_SORT = {"marked": ("m.marked_at",), "where": ("h.name", "r.label"), "path": ("hi.old_relpath",),
+                "backups": ("b.backups",)}
+
+
+def restores(conn, loc=None, back=False, limit=None, offset=0, sort=None, direction="asc"):
+    """Changes marked 'restore', and where their last content is: the backup copies holding it (the newest few in
+    `held_in`, each root, snapshot and path), or none. A restore is `back`, and leaves the list unless `back` is
+    asked for, once that content is present again in the file's root (a moved file: at its old path). Pinakes
+    points at the copy; it never restores it."""
+    root, pre = (None, None)
+    if loc:
+        root, path = split_location(loc)
+        pre = _prefix(path)
+    return rows(conn, """SELECT hi.history_id, hi.file_id, hi.kind, hi.seen_on, h.name AS host, r.label AS root,
+                                hi.old_relpath, hi.new_relpath, m.marked_at, mp.display AS marked_by,
+                                encode(ct.sha256, 'hex') AS sha256, b.backups, b.held_in, k.back, """ + TOTAL + """
+                         FROM pinakes.review_marks m JOIN pinakes.history hi USING (history_id)
+                         JOIN pinakes.files f ON f.file_id = hi.file_id
+                         JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
+                         LEFT JOIN pinakes.people mp ON mp.person_id = m.marked_by
+                         LEFT JOIN pinakes.contents ct ON ct.content_id = hi.old_content_id
+                         CROSS JOIN LATERAL (
+                             SELECT EXISTS (SELECT 1 FROM pinakes.present o
+                                            WHERE o.root_id = f.root_id AND o.content_id = hi.old_content_id
+                                              AND (hi.kind = 'gone' OR o.relpath = hi.old_relpath)) AS back) k
+                         CROSS JOIN LATERAL (
+                             SELECT count(*) AS backups,
+                                    (array_agg(jsonb_build_object('root', x.label, 'snapshot', x.snapshot,
+                                                                  'path', x.relpath)
+                                               ORDER BY x.snapshot DESC NULLS LAST, x.label, x.relpath))[1:5]
+                                        AS held_in
+                             FROM (SELECT DISTINCT ON (bh.host_id, bo.dev, bo.ino) br.label, bo.snapshot, bo.relpath
+                                   FROM pinakes.present bo JOIN pinakes.roots br ON br.root_id = bo.root_id
+                                   JOIN pinakes.hosts bh ON bh.host_id = br.host_id
+                                   WHERE br.kind = 'backup' AND bo.content_id = hi.old_content_id
+                                   ORDER BY bh.host_id, bo.dev, bo.ino, bo.snapshot DESC NULLS LAST) x) b
+                         WHERE m.mark = 'restore' AND (%s OR NOT k.back)
+                           AND (%s::text IS NULL OR r.label = %s AND (hi.old_relpath LIKE %s OR hi.new_relpath LIKE %s))"""
+                + order(RESTORE_SORT, sort, direction, "m.marked_at DESC, hi.history_id") + PAGE,
+                (bool(back), root, root, pre, pre, limit, offset))
 
 
 TREE_LIMIT = 2000
 
 
-def change_tree(conn, days=7, loc=None, depth=3, kinds=None):
+def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
     """Per folder, what happened under it in the last `days`: files new, changed, moved in (destination), moved out
     (source) and gone. A tracked move counts at both ends, never as new and gone; a move inside a folder counts
     there as both in and out. From the folder `loc` (ROOT:PATH; None: every root) down `depth` levels, in tree order.
-    `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
+    `unreviewed` counts the gone files and moves under it with no review mark (a move once), and `review` filters
+    as in changes(). `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
     since = datetime.date.today() - datetime.timedelta(days=days)
     root, pre, base = None, "%", 0
     if loc:
@@ -225,10 +312,13 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None):
         pre = _prefix(path)
         base = len([p for p in path.split("/") if p])
     return rows(conn, """WITH ev AS (
-                             SELECT h.name AS host, r.label AS root, f.owner_id, x.role,
+                             SELECT h.name AS host, r.label AS root, f.owner_id, x.role, hi.history_id,
+                                    (m.history_id IS NULL AND hi.kind IN ('gone', 'moved', 'moved_changed'))
+                                        AS unreviewed,
                                     string_to_array(x.path, '/') AS parts
                              FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                              JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                             LEFT JOIN pinakes.review_marks m ON m.history_id = hi.history_id
                              CROSS JOIN LATERAL (VALUES
                                  (CASE WHEN hi.kind IN ('moved', 'moved_changed') THEN hi.new_relpath END, 'in'),
                                  (CASE WHEN hi.kind IN ('moved', 'moved_changed') THEN hi.old_relpath END, 'out'),
@@ -237,9 +327,10 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None):
                                  (CASE WHEN hi.kind = 'gone' THEN hi.old_relpath END, 'gone')) AS x (path, role)
                              WHERE hi.seen_on >= %s AND x.path IS NOT NULL AND x.path LIKE %s
                                AND (%s::text IS NULL OR r.label = %s)
-                               AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))),
+                               AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
+                               AND """ + _REVIEW_WHERE + """),
                          t AS (
-                             SELECT host, root, owner_id, role, parts[1:i] AS folder
+                             SELECT host, root, owner_id, role, history_id, unreviewed, parts[1:i] AS folder
                              FROM ev, generate_series(%s, least(array_length(parts, 1) - 1, %s)) AS i)
                          SELECT host, root, array_to_string(folder, '/') AS folder,
                                 coalesce(array_length(folder, 1), 0) AS level,
@@ -248,9 +339,11 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None):
                                 count(*) FILTER (WHERE role = 'in') AS moved_in,
                                 count(*) FILTER (WHERE role = 'out') AS moved_out,
                                 count(*) FILTER (WHERE role = 'gone') AS gone,
+                                count(DISTINCT history_id) FILTER (WHERE unreviewed) AS unreviewed,
                                 array_agg(DISTINCT owner_id) FILTER (WHERE owner_id IS NOT NULL) AS owners
                          FROM t GROUP BY host, root, folder ORDER BY host, root, folder LIMIT %s""",
-                (since, pre, root, root, _kinds(kinds), _kinds(kinds), base, base + depth, TREE_LIMIT + 1))
+                (since, pre, root, root, _kinds(kinds), _kinds(kinds), _review(review), _review(review),
+                 _review(review), base, base + depth, TREE_LIMIT + 1))
 
 
 def versions(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):

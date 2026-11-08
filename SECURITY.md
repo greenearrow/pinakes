@@ -106,6 +106,10 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - Never a file: no download, upload, opening or editing, by any route (DESIGN.md "Principles"). The only thing
   shown that is rendered from content is a preview, where a root enables it; never for a protected root.
 - Rate limits on sign-in and search.
+- Review marks (a gone file or a move marked intended or restore) are records about files: seen only with the file
+  (row-level security), written only through `mark_changes()`, which lets the file's owner and co-owners mark it, an
+  administrator only in a step-up (audited for the owners), and nobody else; readers and annotators can't. The web
+  role has no write on the table itself.
 - `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
   batch, last complete scan and whether it is stale. It names hosts and nothing else (no root, person or file, no
   error text), through `pinakes_app` with no person set, so row-level security would hide any file it touched. A

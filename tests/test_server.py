@@ -410,6 +410,171 @@ class TestSameDisk(ServerCase):
                          {"people/user-1/old/same.jpg": 0, "people/user-1/keep/same.jpg": 0})
 
 
+class TestReview(ServerCase):
+    """Reviewing a clean-up (ROADMAP 32): gone files and moves marked intended or restore, by row or in bulk, under
+    row-level security; marks written only through mark_changes()."""
+
+    U = "people/user-1/"
+
+    def setUp(self):
+        super().setUp()
+        for n in ("a", "b", "c", "moved"):
+            self.write("server-1", "store", self.U + "cleanup/%s.txt" % n, b"content " + n.encode())
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
+        self.write("server-1", "store", "people/user-2/hers.txt", b"hers")
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "b.txt", b"content b")          # b went to another disk first
+        self.scan("laptop-1", "downloads")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/" + self.U + "cleanup/c.txt", b"content c")
+        self.scan("server-2", "snapshots")
+        for n in ("a", "b", "c"):
+            os.remove(self.path("server-1", "store", self.U + "cleanup/%s.txt" % n))
+        os.makedirs(self.path("server-1", "store", self.U + "kept"))
+        os.rename(self.path("server-1", "store", self.U + "cleanup/moved.txt"),
+                  self.path("server-1", "store", self.U + "kept/moved.txt"))
+        os.remove(self.path("server-1", "store", "people/user-1/shared-with-2/plan.txt"))
+        os.remove(self.path("server-1", "store", "people/user-2/hers.txt"))
+        self.scan("server-1", "store")
+        self.today = datetime.date.today()
+
+    def unreviewed(self, c, loc="store:people/user-1/cleanup/"):
+        from pinakes import queries
+        return sorted(r["path"] for r in queries.changes(c, 7, loc=loc, review="unreviewed"))
+
+    def test_bulk_intended_then_a_later_gone_is_unreviewed(self):
+        from pinakes import queries
+        with self.as_person("user-1") as c:
+            self.assertEqual(self.unreviewed(c), [self.U + "cleanup/%s.txt" % n for n in "abc"]
+                             + [self.U + "kept/moved.txt"])                  # a move counts at its source too
+            (tree,) = [t for t in queries.change_tree(c, 7, "store:" + self.U, 1) if t["folder"] == self.U + "cleanup"]
+            self.assertEqual(tree["unreviewed"], 4)
+            ids = [r["history_id"] for r in queries.changes(c, 7, loc="store:" + self.U + "cleanup/",
+                                                            review="unreviewed", until=self.today)]
+            self.assertEqual(queries.mark_changes(c, ids, "intended"), 4)
+            c.commit()
+            self.assertEqual(self.unreviewed(c), [])
+            (tree,) = [t for t in queries.change_tree(c, 7, "store:" + self.U, 1) if t["folder"] == self.U + "cleanup"]
+            self.assertEqual(tree["unreviewed"], 0)
+            reviewed = queries.changes(c, 7, loc="store:" + self.U + "cleanup/", review="reviewed")
+            self.assertEqual({(r["mark"], r["marked_by"]) for r in reviewed}, {("intended", "User One")})
+            # nothing after the date given is marked
+            self.assertEqual(queries.changes(c, 7, loc="store:" + self.U, review="unreviewed",
+                                             until=self.today - datetime.timedelta(days=1)), [])
+        self.write("server-1", "store", self.U + "cleanup/d.txt", b"content d")
+        self.scan("server-1", "store")
+        os.remove(self.path("server-1", "store", self.U + "cleanup/d.txt"))
+        self.scan("server-1", "store")
+        with self.as_person("user-1") as c:
+            self.assertEqual(self.unreviewed(c), [self.U + "cleanup/d.txt"])   # the gone; its "new" needs no review
+
+    def test_a_disk_move_is_recognised_by_its_copy(self):
+        from pinakes import queries
+        with self.as_person("user-1") as c:
+            gone = {r["path"].rsplit("/", 1)[1]: r for r in
+                    queries.changes(c, 7, kinds=["gone"], loc="store:" + self.U + "cleanup/")}
+            self.assertEqual((gone["b.txt"]["elsewhere"], gone["b.txt"]["elsewhere_at"]),
+                             (1, "laptop-1 · downloads:b.txt"))
+            self.assertEqual((gone["a.txt"]["elsewhere"], gone["a.txt"]["backups"]), (0, 0))   # may be lost
+            self.assertEqual((gone["c.txt"]["elsewhere"], gone["c.txt"]["backups"]), (0, 1))   # in a backup only
+            moved = [r["history_id"] for r in queries.changes(c, 7, loc="store:" + self.U, review="unreviewed",
+                                                              until=self.today, elsewhere=True)]
+            self.assertEqual(queries.mark_changes(c, moved, "intended"), 1)
+            c.commit()
+            self.assertEqual(self.unreviewed(c), [self.U + "cleanup/%s.txt" % n for n in "ac"]
+                             + [self.U + "kept/moved.txt"])
+
+    def test_restore_names_the_snapshot_and_clears_when_back(self):
+        from pinakes import queries
+        with self.as_person("user-1") as c:
+            want = {r["path"]: r["history_id"] for r in queries.changes(c, 7, loc="store:" + self.U)}
+            self.assertEqual(queries.mark_changes(c, [want[self.U + "cleanup/c.txt"], want[self.U + "cleanup/a.txt"],
+                                                      want[self.U + "kept/moved.txt"]], "restore"), 3)
+            c.commit()
+            rs = {r["old_relpath"]: r for r in queries.restores(c)}
+            self.assertEqual(set(rs), {self.U + "cleanup/%s.txt" % n for n in ("a", "c", "moved")})
+            (held,) = rs[self.U + "cleanup/c.txt"]["held_in"]
+            self.assertEqual((held["root"], held["snapshot"], held["path"]),
+                             ("snapshots", "2026-01-01", "2026-01-01_0140/" + self.U + "cleanup/c.txt"))
+            self.assertEqual(rs[self.U + "cleanup/a.txt"]["backups"], 0)              # nothing holds it
+            self.assertEqual(rs[self.U + "cleanup/moved.txt"]["back"], False)        # its content is elsewhere
+        self.write("server-1", "store", self.U + "restored/c.txt", b"content c")      # back, in another folder
+        self.write("server-1", "store", self.U + "cleanup/moved.txt", b"content moved")   # back at its old path
+        self.scan("server-1", "store")
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["old_relpath"] for r in queries.restores(c)], [self.U + "cleanup/a.txt"])
+            back = {r["old_relpath"]: r["back"] for r in queries.restores(c, back=True)}
+            self.assertEqual(back, {self.U + "cleanup/a.txt": False, self.U + "cleanup/c.txt": True,
+                                    self.U + "cleanup/moved.txt": True})
+            self.assertEqual(len(queries.restores(c, "store:" + self.U + "kept/")), 0)   # a's folder isn't kept/
+
+    def test_others_neither_see_nor_make_marks(self):
+        from pinakes import queries
+        with self.as_person("user-1") as c:
+            ids = [r["history_id"] for r in queries.changes(c, 7)]
+            mine = [r["history_id"] for r in queries.changes(c, 7, loc="store:" + self.U + "cleanup/")]
+            queries.mark_changes(c, mine, "restore")
+            c.commit()
+        with self.as_person("user-2", "s2") as c:
+            self.assertEqual(queries.changes(c, 7, loc="store:" + self.U + "cleanup/"), [])
+            self.assertEqual(queries.restores(c), [])
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.review_marks").fetchone()[0], 0)
+            self.assertEqual(queries.mark_changes(c, ids, "intended"), 0)       # not hers: skipped
+            self.assertEqual(queries.mark_changes(c, mine, None), 0)            # nor can she clear them
+            c.commit()
+            shared = [r for r in queries.changes(c, 7, kinds=["gone"]) if r["path"].endswith("plan.txt")]
+            self.assertEqual(len(shared), 1)                                     # she reads it, as an enrolled reader
+            self.assertEqual(queries.mark_changes(c, [shared[0]["history_id"]], "intended"), 0)   # but can't mark
+            (her,) = [r["history_id"] for r in queries.changes(c, 7, kinds=["gone"]) if r["path"].endswith("hers.txt")]
+            self.assertEqual(queries.mark_changes(c, [her], "intended"), 1)      # her own
+            c.commit()
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("INSERT INTO pinakes.review_marks (history_id, mark, marked_by) VALUES (%s, 'intended', 1)",
+                          (mine[0],))
+            c.rollback()
+        self.assertEqual({r[0] for r in self.q("SELECT mark FROM pinakes.review_marks WHERE history_id = ANY (%s)",
+                                               (mine,))}, {"restore"})
+
+    def test_an_administrator_marks_others_only_in_a_step_up_audited(self):
+        from pinakes import queries
+        (her,) = [r[0] for r in self.q("SELECT history_id FROM pinakes.history WHERE old_relpath = "
+                                       "'people/user-2/hers.txt' AND kind = 'gone'")]
+        (new,) = [r[0] for r in self.q("SELECT history_id FROM pinakes.history WHERE kind = 'new' LIMIT 1")]
+        with self.as_person("user-1") as c:
+            self.assertEqual(queries.mark_changes(c, [her], "intended"), 0)
+            c.execute("SELECT pinakes.begin_step_up('reviewing the clean-up', 15)")
+            c.commit()
+            self.assertEqual(queries.mark_changes(c, [her, new], "intended"), 1)   # a new file is never marked
+            c.commit()
+            with self.assertRaises(psycopg.errors.RaiseException):
+                c.execute("SELECT pinakes.mark_changes(%s, 'bogus')", ([her],))
+            c.rollback()
+        two = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]
+        (audit,) = self.q("SELECT affects, detail FROM pinakes.audit WHERE action = 'review'")
+        self.assertEqual(audit, ([two], {"mark": "intended", "changes": 1}))
+
+    def test_upgrade_file_matches_the_schema(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades",
+                            "review-marks.sql")
+        defs = ("SELECT pg_get_functiondef('pinakes.mark_changes(bigint[], text)'::regprocedure), "
+                "(SELECT array_agg(pg_get_expr(polqual, polrelid)) FROM pg_policy "
+                " WHERE polrelid = 'pinakes.review_marks'::regclass), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' "
+                " AND table_name = 'review_marks'), "
+                "has_function_privilege('pinakes_app', 'pinakes.mark_changes(bigint[], text)', 'EXECUTE'), "
+                "has_function_privilege('public', 'pinakes.mark_changes(bigint[], text)', 'EXECUTE')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP FUNCTION pinakes.mark_changes(bigint[], text); DROP TABLE pinakes.review_marks")
+            with open(path) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")                  # the file sets its own; compare as before
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertEqual(fresh[3:], (True, False))
+
+
 class TestBackupRoots(ServerCase):
     """A backup root records what holds a copy now (ROADMAP 28): hard-linked snapshots rotating through it send only
     the new snapshot's paths, and leave no gone rows or history of their own."""

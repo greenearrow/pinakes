@@ -26,4 +26,4 @@ pinakes-web = "pinakes.web:main"
 packages = ["pinakes"]
 
 [tool.setuptools.package-data]
-pinakes = ["schema.sql", "patterns/*.toml", "templates/*.html", "static/*"]
+pinakes = ["schema.sql", "upgrades/*.sql", "patterns/*.toml", "templates/*.html", "static/*"]

@@ -1,5 +1,6 @@
 """The web UI through Flask's test client, on a catalog built by real scans, under row-level security."""
 
+import datetime
 import os
 import re
 import time
@@ -179,6 +180,61 @@ class TestWeb(ServerCase):
         r = c2.post("/account", data={"csrf": tok, "action": "confirm-totp", "code": auth.totp(secret)})
         self.assertIn("Second factor saved", r.get_data(as_text=True))
         self.assertIn("A second factor is set up", c2.get("/account").get_data(as_text=True))
+
+    def test_mark_by_row_in_bulk_and_restore(self):
+        """Marking by row and in bulk, with the session's CSRF token; the restore page names the backup; a second
+        person's marks of the owner's changes are skipped and said so."""
+        from pinakes import queries
+        u = "people/user-1/cleanup/"
+        for n in ("a", "b", "c"):
+            self.write("server-1", "store", u + n + ".txt", b"cleanup " + n.encode())
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/" + u + "a.txt", b"cleanup a")
+        self.scan("server-2", "snapshots")
+        for n in ("a", "b", "c"):
+            os.remove(self.path("server-1", "store", u + n + ".txt"))
+        self.scan("server-1", "store")
+        ids = {r[1]: r[0] for r in self.q("SELECT history_id, old_relpath FROM pinakes.history WHERE kind = 'gone'")}
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/reports/changes?loc=store:" + u).get_data(as_text=True)
+        self.assertIn('name="id" value="%d"' % ids[u + "a.txt"], page)
+        self.assertIn("may be lost (1 backup copy)", page)
+        self.assertIn("Mark in bulk", page)
+        tok = self.csrf(c1, "/reports/changes")
+        self.assertEqual(c1.post("/reports/changes/mark", data={"mark": "restore", "id": ids[u + "a.txt"]}).status_code,
+                         400)                                                 # no token
+        self.assertEqual(c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "keep"}).status_code, 400)
+        r = c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "restore", "id": ids[u + "a.txt"],
+                                                   "loc": "store:" + u, "days": "7", "review": "unreviewed"})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("marked=1", r.headers["Location"])
+        self.assertIn("review=unreviewed", r.headers["Location"])
+        page = c1.get(r.headers["Location"]).get_data(as_text=True)
+        self.assertIn("1 of 1 change(s) marked.", page)
+        self.assertNotIn(u + "a.txt", page)                                  # reviewed now: filtered out
+        restore = c1.get("/reports/restore").get_data(as_text=True)
+        self.assertIn("snapshots · 2026-01-01: 2026-01-01_0140/" + u + "a.txt", restore)
+        # in bulk: the rest, seen up to today; a mark already made stays
+        r = c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "intended", "scope": "all", "loc": "store:" + u,
+                                                   "days": "7", "until": datetime.date.today().isoformat()})
+        self.assertIn("marked=2", r.headers["Location"])
+        marks = dict(self.q("SELECT h.old_relpath, m.mark FROM pinakes.review_marks m JOIN pinakes.history h "
+                            "USING (history_id)"))
+        self.assertEqual(marks, {u + "a.txt": "restore", u + "b.txt": "intended", u + "c.txt": "intended"})
+        self.assertEqual(c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "clear", "scope": "all",
+                                                                "until": "2026-01-01"}).status_code, 400)
+        self.assertEqual(c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "intended", "scope": "all",
+                                                                "until": "soon"}).status_code, 400)
+        # user-2 can't mark them, and is told
+        c2, _ = self.login("user-2", "staple pony 12345")
+        tok2 = self.csrf(c2, "/reports/changes")
+        r = c2.post("/reports/changes/mark", data={"csrf": tok2, "mark": "clear", "id": list(ids.values())})
+        self.assertIn("marked=0", r.headers["Location"])
+        self.assertIn("not yours to mark", c2.get(r.headers["Location"]).get_data(as_text=True))
+        self.assertNotIn("cleanup", c2.get("/reports/restore").get_data(as_text=True))
+        self.assertEqual(len(self.q("SELECT 1 FROM pinakes.review_marks")), 3)
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")
@@ -504,6 +560,7 @@ class TestSorting(ServerCase):
                                   (page % "only-here", "", queries.COPY_SORT),
                                   (page % "safe-to-delete", "", queries.COPY_SORT),
                                   (page % "backed-up", "", queries.BACKED_UP_SORT),
+                                  ("/reports/restore?", "", queries.RESTORE_SORT),
                                   ("/reports/dupes?", "", queries.DUPES_SORT),
                                   ("/reports/changes?", "", queries.CHANGES_SORT),
                                   ("/access?", "", queries.AUDIT_SORT),

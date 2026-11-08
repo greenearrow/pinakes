@@ -104,6 +104,17 @@ were made while building, to keep going, and are open to change.
   `ingested`, which `pinakes_app` may now read (host, sequence, time, record count: no names): an agent that keeps
   sending but never completes a scan, as the first large scan did, shows a recent batch and an old scan.
   A catalog built before this needs `GRANT SELECT ON pinakes.ingested TO pinakes_app;` once, as the schema's owner.
+- **A review marks a history row** (ROADMAP 32), so a later change to the same file is a new row, unreviewed. Only
+  gone files and moves are marked: new and changed files need no restoring. The web role can't write the table;
+  `mark_changes()` (SECURITY DEFINER) skips what the person may not mark (not an owner or co-owner of the file, and
+  no step-up) and returns how many it marked, and an administrator's marks of other people's changes are audited for
+  their owners. A bulk mark takes only unreviewed changes, so a *restore* already set isn't overwritten; marks are
+  cleared only row by row. A restore is *back*, and leaves the list, once its last content is present again
+  anywhere in the file's root (a move: at its old path), whenever that happened, and whoever put it there: the
+  content is what was missing. "Still elsewhere" for a gone file counts copies in primary and drop roots (a disk move
+  or a copy kept somewhere); backups are counted apart, as they are what a restore comes from. A catalog built
+  before this needs `pinakes/upgrades/review-marks.sql` once, as the schema's owner; a test checks it creates what
+  `schema.sql` does.
 - **The walk check reports what changed since the scan.** On a live disk a plain count can't tell "changed since
   the scan" from "the scan missed it": the first server's check by hand came out higher than the catalog on two
   roots, and only counting files whose mtime or ctime is after the last complete scan's *start* (a file changed

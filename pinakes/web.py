@@ -9,6 +9,7 @@ person or file. [web] health_listen serves it alone on a second address, for a m
 """
 
 import argparse
+import datetime
 import functools
 import json
 from urllib.parse import urlencode
@@ -326,7 +327,8 @@ def create_app(cfg, connect=None):
         loc = request.args.get("loc", "").strip()
         rows, error, ch = [], None, None
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
-                          "changes": queries.CHANGES_SORT, "only-here": queries.COPY_SORT,
+                          "changes": queries.CHANGES_SORT, "restore": queries.RESTORE_SORT,
+                          "only-here": queries.COPY_SORT,
                           "safe-to-delete": queries.COPY_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
         try:
@@ -340,13 +342,21 @@ def create_app(cfg, connect=None):
                 rows = queries.dupes(g.db, *lim, **pg.order)
             elif name == "changes":
                 kinds = [k for k in request.args.getlist("what") if k in queries.KINDS]
-                ch = {"days": _int_arg("days", 7, 1, 3650), "depth": _int_arg("depth", 3, 1, 8), "kinds": kinds}
-                tree = queries.change_tree(g.db, ch["days"], loc or None, ch["depth"], kinds)
+                review = request.args.get("review") if request.args.get("review") in queries.REVIEWS else None
+                ch = {"days": _int_arg("days", 7, 1, 3650), "depth": _int_arg("depth", 3, 1, 8), "kinds": kinds,
+                      "review": review, "today": datetime.date.today().isoformat(),
+                      "marked": _int_arg("marked", None, 0, 10 ** 9), "asked": _int_arg("asked", None, 0, 10 ** 9)}
+                tree = queries.change_tree(g.db, ch["days"], loc or None, ch["depth"], kinds, review)
                 ch["tree_cut"] = len(tree) > queries.TREE_LIMIT
                 ch["tree"] = tree[:queries.TREE_LIMIT]
                 audit_people({o for t in ch["tree"] for o in t["owners"] or ()}, "report changes tree %s" % loc,
                              len(ch["tree"]))
-                rows = queries.changes(g.db, ch["days"], None, *lim, **pg.order, kinds=kinds, loc=loc or None)
+                rows = queries.changes(g.db, ch["days"], None, *lim, **pg.order, kinds=kinds, loc=loc or None,
+                                       review=review)
+                ch["unreviewed"] = queries.page_total(queries.changes(g.db, ch["days"], None, 1, kinds=kinds,
+                                                                      loc=loc or None, review="unreviewed"))
+            elif name == "restore":
+                rows = queries.restores(g.db, loc or None, bool(request.args.get("back")), *lim, **pg.order)
             elif name not in ("only-here", "safe-to-delete", "backed-up"):
                 abort(404)
         except ValueError as e:
@@ -355,6 +365,39 @@ def create_app(cfg, connect=None):
         audit_shown([r["file_id"] for r in rows if r.get("file_id")], "report %s %s" % (name, loc))
         return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
                                kinds=queries.KINDS)
+
+    @app.route("/reports/changes/mark", methods=["POST"])
+    @signed_in
+    def mark_changes():
+        """Mark changes reviewed: the ticked rows, or every unreviewed gone file and move the filters select, seen up
+        to a date. The database skips what the person may not mark, and audits an administrator's step-up marks."""
+        f = request.form
+        mark = {"intended": "intended", "restore": "restore", "clear": None}.get(f.get("mark"), "?")
+        if mark == "?":
+            abort(400, "a mark is intended, restore or clear")
+        kinds = [k for k in f.getlist("what") if k in queries.KINDS]
+        days = _int(f.get("days"), 7, 1, 3650)
+        loc = f.get("loc", "").strip()
+        back = {"days": days, "depth": _int(f.get("depth"), 3, 1, 8), "loc": loc, "what": kinds}
+        if f.get("review") in queries.REVIEWS:
+            back["review"] = f["review"]
+        if f.get("scope") == "all":
+            if mark is None:
+                abort(400, "marks are cleared row by row")
+            try:
+                until = datetime.date.fromisoformat(f.get("until", ""))
+                ids = [r["history_id"] for r in queries.changes(g.db, days, None, kinds=kinds, loc=loc or None,
+                                                                review="unreviewed", until=until,
+                                                                elsewhere=bool(f.get("elsewhere")))]
+            except ValueError as e:
+                abort(400, str(e))
+        else:
+            try:
+                ids = [int(x) for x in f.getlist("id")]
+            except ValueError:
+                abort(400, "a change is a number")
+        n = queries.mark_changes(g.db, ids, mark) if ids else 0
+        return redirect(url_for("report", name="changes", marked=n, asked=len(ids), **back))
 
     # second factor and step-up -------------------------------------------------------------------------------
     @app.route("/account", methods=["GET", "POST"])
@@ -425,9 +468,13 @@ def create_app(cfg, connect=None):
 
 def _int_arg(name, default, lo, hi):
     """An integer query parameter, clamped to lo..hi; the default when missing or not a number."""
+    return _int(request.args.get(name), default, lo, hi)
+
+
+def _int(value, default, lo, hi):
     try:
-        return min(hi, max(lo, int(request.args.get(name, default))))
-    except ValueError:
+        return min(hi, max(lo, int(value)))
+    except (TypeError, ValueError):
         return default
 
 

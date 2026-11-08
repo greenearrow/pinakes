@@ -246,6 +246,15 @@ CREATE INDEX metadata_content ON metadata (content_id, schema);
 CREATE INDEX metadata_file ON metadata (file_id, schema);
 CREATE INDEX metadata_vals ON metadata USING gin (vals jsonb_path_ops);
 
+-- A review of a change (ROADMAP 32): a gone file or a move, marked intended, or to restore. Written only through
+-- mark_changes(); a later change is a new history row, unreviewed.
+CREATE TABLE review_marks (
+    history_id  bigint PRIMARY KEY REFERENCES history ON DELETE CASCADE,
+    mark        text NOT NULL CHECK (mark IN ('intended', 'restore')),
+    marked_by   int NOT NULL REFERENCES people,
+    marked_at   timestamptz NOT NULL DEFAULT now()
+);
+
 -- who is asking -----------------------------------------------------------------------------------------------
 
 CREATE FUNCTION current_person() RETURNS int LANGUAGE sql STABLE AS $$
@@ -332,6 +341,48 @@ CREATE FUNCTION my_roles() RETURNS text[] LANGUAGE sql STABLE SECURITY DEFINER S
     SELECT roles FROM people WHERE person_id = current_person()
 $$;
 
+-- Mark changes reviewed: 'intended', 'restore', or NULL to clear. Only gone files and moves, only by the file's
+-- owner or a co-owner, or by an administrator in a step-up, which is audited for the owners. Changes the person
+-- may not mark are skipped; returns how many were marked or cleared.
+CREATE FUNCTION mark_changes(ids bigint[], what text) RETURNS int
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
+DECLARE
+    me int := current_person();
+    up boolean := stepped_up();
+    ok bigint[];
+    theirs int[];
+    others int;
+    n int;
+BEGIN
+    IF me IS NULL THEN RAISE EXCEPTION 'no person set'; END IF;
+    IF what IS NOT NULL AND what NOT IN ('intended', 'restore') THEN
+        RAISE EXCEPTION 'a mark is intended or restore';
+    END IF;
+    WITH t AS (
+        SELECT hi.history_id, f.acl_id,
+               EXISTS (SELECT 1 FROM acl_members am WHERE am.acl_id = f.acl_id AND am.person_id = me
+                                                      AND am.role IN ('owner', 'co-owner')) AS mine
+        FROM history hi JOIN files f USING (file_id)
+        WHERE hi.history_id = ANY (ids) AND hi.kind IN ('gone', 'moved', 'moved_changed'))
+    SELECT array_agg(history_id) FILTER (WHERE mine OR up), array_agg(DISTINCT acl_id) FILTER (WHERE NOT mine AND up),
+           count(*) FILTER (WHERE NOT mine AND up)
+    INTO ok, theirs, others FROM t;
+    IF what IS NULL THEN
+        DELETE FROM review_marks WHERE history_id = ANY (ok);
+    ELSE
+        INSERT INTO review_marks (history_id, mark, marked_by) SELECT unnest(ok), what, me
+        ON CONFLICT (history_id) DO UPDATE SET mark = EXCLUDED.mark, marked_by = EXCLUDED.marked_by, marked_at = now();
+    END IF;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF others > 0 THEN
+        INSERT INTO audit (actor, action, affects, detail)
+        SELECT me, 'review', coalesce(array_agg(DISTINCT am.person_id), '{}'),
+               jsonb_build_object('mark', coalesce(what, 'cleared'), 'changes', others)
+        FROM acl_members am WHERE am.acl_id = ANY (theirs) AND am.person_id <> me AND am.role IN ('owner', 'co-owner');
+    END IF;
+    RETURN n;
+END $$;
+
 -- row-level security ------------------------------------------------------------------------------------------
 
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
@@ -368,6 +419,10 @@ CREATE POLICY metadata_visible ON metadata FOR SELECT USING (
     (file_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = metadata.file_id))
     OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.content_id = metadata.content_id)));
 
+ALTER TABLE review_marks ENABLE ROW LEVEL SECURITY;
+CREATE POLICY review_marks_visible ON review_marks FOR SELECT USING (
+    EXISTS (SELECT 1 FROM history h WHERE h.history_id = review_marks.history_id));
+
 ALTER TABLE scan_errors ENABLE ROW LEVEL SECURITY;
 CREATE POLICY scan_errors_operators ON scan_errors FOR SELECT USING (stepped_up() OR has_role('operator'));
 
@@ -390,6 +445,8 @@ GRANT SELECT ON groups TO pinakes_app;
 GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visible_acls(), begin_step_up(text, int),
                           end_step_up(), audit_view(int[], jsonb), login_material(text), my_totp_secret(),
                           set_my_password(text), set_my_totp(text), my_roles() TO pinakes_app;
+GRANT SELECT ON review_marks TO pinakes_app;              -- written only through mark_changes()
+GRANT EXECUTE ON FUNCTION mark_changes(bigint[], text) TO pinakes_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pinakes TO pinakes_ingest;
 REVOKE UPDATE, DELETE ON audit FROM pinakes_ingest;

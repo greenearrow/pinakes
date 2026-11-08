@@ -261,7 +261,9 @@ waitress; server-rendered pages, with htmx (one vendored file) for partial updat
 - **A file's page**: every copy and backup, with ages; history (moves, edits); its lineage, with likely and possible
   relatives to confirm or reject; its bundle; metadata by schema, with where each value came from (extracted,
   sidecar, a person); shares.
-- **Reports**: only here, safe to delete, duplicates, not backed up, stale hosts, a root's growth.
+- **Reports**: only here, safe to delete, duplicates, not backed up, stale hosts, a root's growth; changes as a folder
+  tree, with a review: gone files and moves marked intended or to restore, and a list of what to restore from which
+  backup (restoring itself is done on the machine that holds the backup).
 - **Managing**: edit metadata; tag; share; change a folder's owner or enroll people (above); mark "keep" or "drop";
   request file operations (below).
 - **Administration**: people, groups, hosts and roots; the audit log. Administrator views of other people's records
