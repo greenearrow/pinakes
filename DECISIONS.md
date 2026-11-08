@@ -98,6 +98,13 @@ were made while building, to keep going, and are open to change.
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
   database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
   completing a scan and matching moves have since gone to bulk, and what is left is in ROADMAP.md item 1.
+- **The walk check reports what changed since the scan.** On a live disk a plain count can't tell "changed since
+  the scan" from "the scan missed it": the first server's check by hand came out higher than the catalog on two
+  roots, and only counting files whose mtime or ctime is after the last complete scan's *start* (a file changed
+  mid-scan, after its folder was walked, is missed too) showed that was all. So `pinakes-agent check` prints that
+  count and a verdict beside the disk's and the state's totals. It compares with the agent's state, not the
+  catalog, which the agent can't read; `pinakes-ingest totals` (the ingest role, every owner's files, totals only)
+  is the other half, and the state and the catalog should agree exactly when no scan is unfinished.
 - **A batch whose sender gave up is stopped.** The forced ingester reads its whole batch before applying it, so a
   closed stdin says nothing; a watchdog thread instead watches stdout, which reports an error once sshd closes it
   (the agent's ssh exited, as it does when its send times out). It then cancels the running statement and exits 3;

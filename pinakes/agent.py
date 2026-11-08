@@ -4,6 +4,8 @@
   pinakes-agent [--config FILE] scan [--root LABEL] [--full] [--accept-gone]
   pinakes-agent [--config FILE] send
   pinakes-agent [--config FILE] status
+  pinakes-agent [--config FILE] check [--root LABEL]   count each root as a scan sees it, with this process's
+                                                      rights, beside the last scan (compare: pinakes-ingest totals)
 """
 
 import argparse
@@ -13,7 +15,7 @@ import subprocess
 import sys
 
 from . import config, fsinfo, outbox, transport
-from .scan import Scanner, TooManyGone
+from .scan import Scanner, TooManyGone, check, check_verdict
 from .state import State
 
 DEFAULT_CONFIGS = ("~/.config/pinakes/agent.toml", "/etc/pinakes/agent.toml")
@@ -102,6 +104,32 @@ def cmd_status(cfg, args):
     return 0
 
 
+def cmd_check(cfg, args):
+    st = State(cfg.state)
+    rc = 0
+    try:
+        for r in [cfg.root(args.root)] if args.root else cfg.roots:
+            try:
+                c = check(r, st)
+            except OSError as e:
+                print("%s: %s" % (r.label, e), file=sys.stderr)
+                rc = 2
+                continue
+            errs = ", ".join("%s %d" % kv for kv in sorted(c["errors"].items())) or "none"
+            print("%s: disk %d files %d bytes; last scan (started %s UTC) %d files %d bytes; changed since %d files "
+                  "%d bytes; errors %s: %s"
+                  % (r.label, c["files"], c["bytes"], _utc(c["since"]), c["state_files"], c["state_bytes"],
+                     c["changed"], c["changed_bytes"], errs, check_verdict(c)))
+    finally:
+        st.close()
+    return rc
+
+
+def _utc(t):
+    import time
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t)) if t else "never"
+
+
 def _fmt(t):
     import time
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else "never"
@@ -130,10 +158,13 @@ def main(argv=None):
     s.add_argument("--accept-gone", action="store_true", help="report files gone even if most of a root is missing")
     sub.add_parser("send")
     sub.add_parser("status")
+    c = sub.add_parser("check")
+    c.add_argument("--root")
     args = ap.parse_args(argv)
     cfg = config.load(find_config(args.config))
     os.makedirs(os.path.dirname(os.path.abspath(cfg.state)), exist_ok=True)
-    return {"run": cmd_run, "scan": cmd_scan, "send": cmd_send, "status": cmd_status}[args.cmd](cfg, args)
+    commands = {"run": cmd_run, "scan": cmd_scan, "send": cmd_send, "status": cmd_status, "check": cmd_check}
+    return commands[args.cmd](cfg, args)
 
 
 if __name__ == "__main__":

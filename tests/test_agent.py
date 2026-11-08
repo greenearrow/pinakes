@@ -1,5 +1,6 @@
 """Agent tests on generated trees in a temporary directory. Standard library only: python3 -m unittest."""
 
+import contextlib
 import gzip
 import hashlib
 import io
@@ -12,8 +13,8 @@ import time
 import unittest
 import zipfile
 
-from pinakes import chunker, config, fsinfo, globs, names, outbox
-from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone
+from pinakes import agent, chunker, config, fsinfo, globs, names, outbox
+from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone, check, check_verdict
 from pinakes.state import State
 
 
@@ -597,6 +598,80 @@ class TestBatchFormat(Tree):
             header = json.loads(f.readline())
         self.assertEqual((header["t"], header["host"], header["root"], header["seq"], header["complete"]),
                          ("batch", "test-1", "r", seq, True))
+
+
+class TestCheck(Tree):
+    """30: the check counts a root as a scan sees it, beside the last scan, and names no file."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("docs/a.txt", b"aaaa")
+        self.write("docs/b.txt", b"bb")
+        self.write("docs/cache/skipped", b"excluded")
+        self.write("docs/c.part", b"excluded too")
+        os.symlink("a.txt", os.path.join(self.top, "docs/link"))
+        os.mkfifo(os.path.join(self.top, "docs/fifo"))
+
+    def check(self):
+        return check(self.cfg.roots[0], self.state)
+
+    def test_before_any_scan(self):
+        c = self.check()
+        self.assertIsNone(c["since"])
+        self.assertEqual(check_verdict(c), "no complete scan yet")
+
+    def test_matches_the_scan(self):
+        self.scan()
+        c = self.check()
+        link = os.lstat(os.path.join(self.top, "docs/link")).st_size
+        self.assertEqual((c["files"], c["bytes"]), (3, 6 + link))     # two files and the link; no fifo, no excluded
+        self.assertEqual((c["state_files"], c["state_bytes"]), (c["files"], c["bytes"]))
+        self.assertEqual((c["changed"], c["errors"]), (0, {}))
+        self.assertEqual(check_verdict(c), "the disk matches the last scan")
+
+    def test_changed_since_the_scan(self):
+        self.scan()
+        self.write("docs/new.txt", b"new")
+        with open(os.path.join(self.top, "docs/b.txt"), "ab") as f:
+            f.write(b"grown")
+        c = self.check()
+        self.assertEqual((c["files"] - c["state_files"], c["bytes"] - c["state_bytes"]), (1, 8))
+        self.assertEqual((c["changed"], c["changed_bytes"]), (2, 10))
+        self.assertIn("2 file(s) changed since", check_verdict(c))
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads every folder")
+    def test_missing_rights(self):
+        self.write("private/p.txt", b"p")
+        self.scan()
+        d = os.path.join(self.top, "private")
+        os.chmod(d, 0)
+        try:
+            c = self.check()
+        finally:
+            os.chmod(d, 0o755)
+        self.assertEqual(c["errors"], {"PermissionError": 1})
+        self.assertEqual(c["files"], c["state_files"] - 1)
+        self.assertEqual(check_verdict(c), "differs from the last scan, with errors: missing rights?")
+
+    def test_a_file_the_scan_missed(self):
+        self.scan()
+        self.state.db.execute("DELETE FROM files WHERE relpath = 'docs/a.txt'")    # as if the scan had missed it
+        self.assertIn("a bug", check_verdict(self.check()))
+
+    def test_command_names_no_file(self):
+        self.scan()
+        path = os.path.join(self.tmp, "agent.toml")
+        with open(path, "w") as f:
+            f.write('[agent]\nhost = "test-1"\nstate = "%s"\noutbox = "%s"\n[[root]]\nlabel = "r"\npath = "%s"\n'
+                    'exclude = ["**/cache", "**/*.part"]\n' % (self.cfg.state, self.cfg.outbox, self.top))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(agent.main(["--config", path, "check"]), 0)
+        line = out.getvalue()
+        self.assertIn("r: disk 3 files", line)
+        self.assertIn("the disk matches the last scan", line)
+        for name in ("docs", "a.txt", "b.txt", "link", self.top):
+            self.assertNotIn(name, line)
 
 
 if __name__ == "__main__":

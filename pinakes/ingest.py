@@ -7,6 +7,8 @@
   pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
   pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, and redo name
                                                       lineage by the current rules (after an upgrade)
+  pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
+                                                      with pinakes-agent check
 
 Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
 applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
@@ -369,6 +371,15 @@ class Ingester:
         if root.get("mirrors_prefix"):
             rest = root["mirrors_prefix"] + "/" + rest
         return root["mirrors_root_id"], rest, snapshot
+
+    def totals(self):
+        """(host, root, files, bytes, pending) per root: present files, every owner's. Pending counts files new in
+        an unfinished scan, so it should be 0 when comparing with the agent's check."""
+        return self.conn.execute(
+            "SELECT h.name, r.label, count(f.file_id), coalesce(sum(f.size), 0), count(f.pending_scan) "
+            "FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) "
+            "LEFT JOIN pinakes.files f ON f.root_id = r.root_id AND f.gone_on IS NULL "
+            "GROUP BY 1, 2 ORDER BY 1, 2").fetchall()
 
     # applying a batch ------------------------------------------------------------------------------------------
     def apply(self, header, records, host):
@@ -943,7 +954,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
-    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy"))
+    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals"))
     ap.add_argument("dir", nargs="?")
     ap.add_argument("--dry-run", action="store_true", help="tidy: count what would change, change nothing")
     args = ap.parse_args(argv)
@@ -986,6 +997,11 @@ def main(argv=None):
                 return 1
             with conn.transaction():
                 print("%d file(s) reassigned" % ing.recompute_root(r[0]))
+            return 0
+        if args.cmd == "totals":
+            for host, label, n, size, pending in ing.totals():
+                print("%s %s: %d files %d bytes%s" % (host, label, n, size,
+                                                      "; %d pending (a scan is unfinished)" % pending if pending else ""))
             return 0
         if args.cmd == "tidy":
             with conn.transaction():

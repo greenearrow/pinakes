@@ -4,8 +4,10 @@ Needs PINAKES_TEST_PGHOST (a socket directory or host of a throwaway server wher
 default postgres, is a superuser) and psycopg. Each test class gets a fresh database. Skipped otherwise.
 """
 
+import contextlib
 import datetime
 import hashlib
+import io
 import os
 import random
 import shutil
@@ -21,8 +23,8 @@ except ImportError:
     psycopg = None
 
 from pinakes import config, outbox, server_config
-from pinakes.ingest import Ingester, Refused, apply_schema
-from pinakes.scan import Scanner
+from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
+from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
 
 PGHOST = os.environ.get("PINAKES_TEST_PGHOST")
@@ -791,6 +793,29 @@ class TestRowLevelSecurity(ServerCase):
             self.assertEqual(c.execute("SELECT count(*) FROM pinakes.files").fetchone()[0], 0)
         finally:
             c.close()
+
+
+class TestCheckAgainstCatalog(ServerCase):
+    """30: the agent's check and the catalog's totals agree on a root, every owner's files counted."""
+
+    def test_check_matches_totals(self):
+        self.write("server-1", "store", "people/user-1/a.txt", b"aaaa")
+        self.write("server-1", "store", "people/user-2/b.txt", b"bbbbbb")       # another owner's: counted too
+        self.write("server-1", "store", "shared/c.txt", b"c")
+        self.scan("server-1", "store")
+        st, cfg, _ = self.agent("server-1", "store")
+        c = check(cfg.roots[0], st)
+        self.assertEqual(self.ing.totals(), [("server-1", "store", c["files"], c["bytes"], 0)])
+        self.assertEqual((c["files"], c["bytes"]), (3, 11))
+        self.assertEqual(check_verdict(c), "the disk matches the last scan")
+        # the command prints the same totals, and no names
+        path = os.path.join(self.tmp, "server.toml")
+        with open(path, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s' % (PGHOST, self.db, SERVER))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ingest_main(["--config", path, "totals"]), 0)
+        self.assertEqual(out.getvalue(), "server-1 store: 3 files 11 bytes\n")
 
 
 class TestDurations(unittest.TestCase):

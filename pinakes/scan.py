@@ -166,6 +166,60 @@ def _walk(top, exclude, root_dev=None):
         stack.extend(reversed(subdirs))  # depth first, in name order
 
 
+def check(root, state):
+    """Count a root as a scan sees it, with this process's rights: files (regular and symlinks) and bytes, how many
+    of them changed since the last complete scan started, errors by kind, and the agent's state for the root.
+
+    For comparing the catalog with the disk (`pinakes-agent check`, then `pinakes-ingest totals` on the server).
+    The walk is the scan's own (exclusions, one filesystem, sockets and devices skipped), so a difference is a
+    change since the scan, missing rights (the errors) or a bug. No file names come out; nothing is sent
+    and the state is only read.
+    """
+    since = state.db.execute("SELECT max(started) FROM scans WHERE root = ? AND finished IS NOT NULL",
+                             (root.label,)).fetchone()[0]
+    unfinished = state.db.execute("SELECT count(*) FROM scans WHERE root = ? AND finished IS NULL",
+                                  (root.label,)).fetchone()[0] > 0
+    n = size = changed = changed_bytes = 0
+    errors = {}
+    top_dev = _root_dev(root.path)
+    for _, abspath, err in _walk(root.path, root.exclude, None if root.cross_mounts else top_dev):
+        if err is not None:
+            kind = type(err).__name__
+            errors[kind] = errors.get(kind, 0) + 1
+            continue
+        try:
+            st = os.lstat(abspath)
+        except FileNotFoundError:
+            continue
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+            continue
+        n += 1
+        size += st.st_size
+        if since is None or max(st.st_mtime, st.st_ctime) >= since:
+            changed += 1
+            changed_bytes += st.st_size
+    kept = state.db.execute("SELECT count(*), coalesce(sum(size), 0) FROM files WHERE root = ?",
+                            (root.label,)).fetchone()
+    return {"root": root.label, "files": n, "bytes": size, "since": since, "unfinished": unfinished,
+            "changed": changed, "changed_bytes": changed_bytes, "errors": errors,
+            "state_files": kept[0], "state_bytes": kept[1]}
+
+
+def check_verdict(c):
+    """One line on what a check's numbers mean."""
+    if c["since"] is None:
+        return "no complete scan yet"
+    if c["unfinished"]:
+        return "a scan is unfinished: the state is part old, part new; check again after it completes"
+    if (c["files"], c["bytes"]) == (c["state_files"], c["state_bytes"]):
+        return "the disk matches the last scan"
+    if c["changed"]:
+        return "differs from the last scan; %d file(s) changed since it started" % c["changed"]
+    if c["errors"]:
+        return "differs from the last scan, with errors: missing rights?"
+    return "differs from the last scan with nothing changed since: a bug, please report it"
+
+
 class Scanner:
     PROGRESS_EVERY = 60  # seconds between progress lines (to stdout: the journal under systemd)
 
