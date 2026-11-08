@@ -120,6 +120,57 @@ class TestWeb(ServerCase):
         for url in ("/reports/dupes", "/reports/changes", "/reports/backed-up?loc=store:", "/access", "/account"):
             self.assertEqual(c1.get(url).status_code, 200, url)
 
+    def test_changes_tree_and_what_filter(self):
+        """A clean-up: a folder emptied into another (moves, not new and gone), one file deleted, one added."""
+        from pinakes import queries
+        for i in range(3):
+            self.write("server-1", "store", "people/user-1/inbox/old/f%d.txt" % i, b"keep %d" % i)
+        self.write("server-1", "store", "people/user-1/inbox/junk.txt", b"junk")
+        self.scan("server-1", "store")
+        with admin_conn(self.db) as c:   # what was there before the clean-up was seen a month ago
+            c.execute("UPDATE pinakes.history SET seen_on = seen_on - 30, seen_after = seen_after - 30")
+        self.write("server-1", "store", "people/user-1/sorted/index.txt", b"index")  # before the delete: no inode reuse
+        os.makedirs(self.path("server-1", "store", "people/user-1/sorted/2026"), exist_ok=True)
+        for i in range(3):
+            os.rename(self.path("server-1", "store", "people/user-1/inbox/old/f%d.txt" % i),
+                      self.path("server-1", "store", "people/user-1/sorted/2026/f%d.txt" % i))
+        os.remove(self.path("server-1", "store", "people/user-1/inbox/junk.txt"))
+        self.scan("server-1", "store")
+        with self.as_person("user-1", "s-tree") as c:
+            tree = {(t["root"], t["folder"]): (t["new"], t["changed"], t["moved_in"], t["moved_out"], t["gone"])
+                    for t in queries.change_tree(c, 7, "store:people/user-1/", 3)}
+            u = "people/user-1"
+            self.assertEqual(tree[("store", u + "/inbox")], (0, 0, 0, 3, 1))
+            self.assertEqual(tree[("store", u + "/inbox/old")], (0, 0, 0, 3, 0))
+            self.assertEqual(tree[("store", u + "/sorted")], (1, 0, 3, 0, 0))
+            self.assertEqual(tree[("store", u + "/sorted/2026")], (0, 0, 3, 0, 0))
+            self.assertEqual(tree[("store", u)][2:], (3, 3, 1))                    # moves inside: in and out
+            self.assertNotIn(("store", "people"), tree)                            # above the folder asked for
+            self.assertEqual(len(queries.change_tree(c, 7, "store:people/user-1/", 1)), 3)   # depth: u, inbox, sorted
+            gone = {(t["folder"]): t for t in queries.change_tree(c, 7, "store:", 2, ["gone"])}
+            self.assertEqual(gone["people/user-1"]["gone"], 1)
+            self.assertEqual(gone["people/user-1"]["moved_out"], 0)
+            self.assertEqual(sum(t["new"] for t in gone.values()), 0)
+            moved = queries.changes(c, 7, kinds=["moved"], loc="store:" + u + "/inbox/")
+            self.assertEqual(sorted(r["old_relpath"] for r in moved), [u + "/inbox/old/f%d.txt" % i for i in range(3)])
+            self.assertEqual({r["kind"] for r in queries.changes(c, 7, kinds=["gone", "bogus"])}, {"gone"})
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/reports/changes?what=gone&loc=store:people/").get_data(as_text=True)
+        self.assertIn("junk.txt", page)
+        self.assertNotIn("index.txt", page)
+        self.assertIn('value="gone" checked', page)
+        page = c1.get("/reports/changes?what=moved&what=moved_changed&loc=store:people/user-1/sorted/").get_data(
+            as_text=True)
+        self.assertIn("from people/user-1/inbox/old/f0.txt", page)
+        self.assertIn('class="t1"', page)
+        # user-2 sees none of it: neither the folders nor the counts
+        c2, _ = self.login("user-2", "staple pony 12345")
+        page = c2.get("/reports/changes?loc=store:people/user-1/").get_data(as_text=True)
+        self.assertNotIn("sorted/", page)
+        self.assertNotIn("inbox", page)
+        for bad in ("days=x&depth=99", "loc=nocolon", "what=x%27"):
+            self.assertEqual(c1.get("/reports/changes?" + bad).status_code, 200, bad)
+
     def test_totp_enrollment(self):
         c2, _ = self.login("user-2", "staple pony 12345")
         tok = self.csrf(c2, "/account")

@@ -42,3 +42,10 @@ dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1r
 dl.facts dt { color: var(--muted); }
 @media (max-width: 40rem) { header form.search { margin-left: 0; width: 100%; } header form.search input { flex: 1; } }
 nav.pager { display: flex; gap: .6rem; flex-wrap: wrap; align-items: baseline; margin: .5rem 0; font-size: .9rem; }
+form.filters { display: flex; gap: .4rem 1rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+form.filters fieldset { border: 1px solid var(--line); border-radius: 4px; padding: .2rem .6rem; margin: 0; }
+form.filters legend { color: var(--muted); font-size: .85rem; }
+table.tree td.t1 { padding-left: 1.6rem; } table.tree td.t2 { padding-left: 2.6rem; }
+table.tree td.t3 { padding-left: 3.6rem; } table.tree td.t4 { padding-left: 4.6rem; }
+table.tree td.t5 { padding-left: 5.6rem; } table.tree td.t6 { padding-left: 6.6rem; }
+table.tree td.t7 { padding-left: 7.6rem; } table.tree td.t8 { padding-left: 8.6rem; }

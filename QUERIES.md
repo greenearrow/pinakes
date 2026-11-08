@@ -170,6 +170,25 @@ WHERE hi.seen_on >= current_date - 7
 ORDER BY hi.seen_on, path;
 ```
 
+## changes by folder (web UI)
+
+For a clean-up: per folder, what happened under it in the last N days, from a chosen folder down a few levels.
+A tracked move counts as moved in at its destination and moved out at its source, never as new and gone; a move
+within a folder counts there as both. Moves are matched within a root only. The changes page filters by kind (What)
+and by folder too; `queries.change_tree` and `queries.changes(kinds=, loc=)`.
+
+```sql
+-- each history row gives one or two (path, role): new, changed, gone, or a move's in (new path) and out (old path);
+-- each role counts at every folder above its path
+SELECT folder, count(*) FILTER (WHERE role = 'in') AS moved_in, count(*) FILTER (WHERE role = 'out') AS moved_out
+FROM (SELECT x.role, (string_to_array(x.path, '/'))[1:i] AS folder
+      FROM history hi
+      CROSS JOIN LATERAL (VALUES (hi.new_relpath, 'in'), (hi.old_relpath, 'out')) x (path, role),
+           generate_series(0, array_length(string_to_array(x.path, '/'), 1) - 1) i
+      WHERE hi.kind IN ('moved', 'moved_changed') AND hi.seen_on >= current_date - 7) t
+GROUP BY folder ORDER BY folder;
+```
+
 ## versions HOST:PATH
 
 Each version the catalog has seen at that file, and which backup copies hold it: the "which backup do I restore

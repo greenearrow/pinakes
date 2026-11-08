@@ -6,6 +6,7 @@ factor, and the administrator's step-up.
 
 import argparse
 import functools
+import json
 from urllib.parse import urlencode
 import os
 import secrets
@@ -174,10 +175,16 @@ def create_app(cfg, connect=None):
         """In a step-up, record whose records were just shown (the people affected see it on their page)."""
         if not g.stepped_up:
             return
-        others = [o for o in queries.owners_of(g.db, file_ids) if o != g.person]
+        audit_people(queries.owners_of(g.db, file_ids), page, len(file_ids))
+
+    def audit_people(owners, page, records):
+        """In a step-up, record that records of these owners were just shown."""
+        if not g.stepped_up:
+            return
+        others = sorted(o for o in owners if o != g.person)
         if others:
             g.db.execute("SELECT pinakes.audit_view(%s, %s::jsonb)",
-                         (others, '{"page": "%s", "records": %d}' % (page.replace('"', ""), len(file_ids))))
+                         (others, json.dumps({"page": page, "records": records})))
 
     # sign-in -------------------------------------------------------------------------------------------------
     @app.route("/login", methods=["GET", "POST"])
@@ -261,7 +268,7 @@ def create_app(cfg, connect=None):
     @signed_in
     def report(name):
         loc = request.args.get("loc", "").strip()
-        rows, error = [], None
+        rows, error, ch = [], None, None
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
                           "changes": queries.CHANGES_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
@@ -275,14 +282,22 @@ def create_app(cfg, connect=None):
             elif name == "dupes":
                 rows = queries.dupes(g.db, *lim, **pg.order)
             elif name == "changes":
-                rows = queries.changes(g.db, int(request.args.get("days", 7)), None, *lim, **pg.order)
+                kinds = [k for k in request.args.getlist("what") if k in queries.KINDS]
+                ch = {"days": _int_arg("days", 7, 1, 3650), "depth": _int_arg("depth", 3, 1, 8), "kinds": kinds}
+                tree = queries.change_tree(g.db, ch["days"], loc or None, ch["depth"], kinds)
+                ch["tree_cut"] = len(tree) > queries.TREE_LIMIT
+                ch["tree"] = tree[:queries.TREE_LIMIT]
+                audit_people({o for t in ch["tree"] for o in t["owners"] or ()}, "report changes tree %s" % loc,
+                             len(ch["tree"]))
+                rows = queries.changes(g.db, ch["days"], None, *lim, **pg.order, kinds=kinds, loc=loc or None)
             elif name not in ("only-here", "safe-to-delete", "backed-up"):
                 abort(404)
         except ValueError as e:
             error = str(e)
         pg.done(rows)
         audit_shown([r["file_id"] for r in rows if r.get("file_id")], "report %s %s" % (name, loc))
-        return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg)
+        return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
+                               kinds=queries.KINDS)
 
     # second factor and step-up -------------------------------------------------------------------------------
     @app.route("/account", methods=["GET", "POST"])
@@ -349,6 +364,14 @@ def create_app(cfg, connect=None):
         return render_template("access.html", rows=rows, pg=pg)
 
     return app
+
+
+def _int_arg(name, default, lo, hi):
+    """An integer query parameter, clamped to lo..hi; the default when missing or not a number."""
+    try:
+        return min(hi, max(lo, int(request.args.get(name, default))))
+    except ValueError:
+        return default
 
 
 def fmt_size(n):

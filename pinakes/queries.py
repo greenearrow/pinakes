@@ -171,15 +171,76 @@ def history(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
                 + order(HISTORY_SORT, sort, direction, "h.seen_on, h.history_id") + PAGE, (file_id, limit, offset))
 
 
-def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc"):
+KINDS = ("new", "changed", "moved", "moved_changed", "gone")
+
+
+def _kinds(kinds):
+    """The history kinds asked for, whitelisted; None (no filter) when none are."""
+    k = [x for x in (kinds or ()) if x in KINDS]
+    return k or None
+
+
+def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None):
+    """History in the last `days`, optionally only some kinds and only what touched a folder (ROOT:PATH; a move
+    counts at both ends)."""
     since = datetime.date.today() - datetime.timedelta(days=days)
+    root, pre = (None, None)
+    if loc:
+        root, path = split_location(loc)
+        pre = _prefix(path)
     return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
-                                coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.kind, hi.file_id, """ + TOTAL + """
+                                coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
+                                hi.file_id, """ + TOTAL + """
                          FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         WHERE hi.seen_on >= %s AND (%s::text IS NULL OR h.name = %s)"""
+                         WHERE hi.seen_on >= %s AND (%s::text IS NULL OR h.name = %s)
+                           AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
+                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s))"""
                 + order(CHANGES_SORT, sort, direction, "hi.seen_on DESC, path, hi.history_id") + PAGE,
-                (since, host, host, limit, offset))
+                (since, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, limit, offset))
+
+
+TREE_LIMIT = 2000
+
+
+def change_tree(conn, days=7, loc=None, depth=3, kinds=None):
+    """Per folder, what happened under it in the last `days`: files new, changed, moved in (destination), moved out
+    (source) and gone. A tracked move counts at both ends, never as new and gone; a move inside a folder counts
+    there as both in and out. From the folder `loc` (ROOT:PATH; None: every root) down `depth` levels, in tree order.
+    `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
+    since = datetime.date.today() - datetime.timedelta(days=days)
+    root, pre, base = None, "%", 0
+    if loc:
+        root, path = split_location(loc)
+        pre = _prefix(path)
+        base = len([p for p in path.split("/") if p])
+    return rows(conn, """WITH ev AS (
+                             SELECT h.name AS host, r.label AS root, f.owner_id, x.role,
+                                    string_to_array(x.path, '/') AS parts
+                             FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
+                             JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                             CROSS JOIN LATERAL (VALUES
+                                 (CASE WHEN hi.kind IN ('moved', 'moved_changed') THEN hi.new_relpath END, 'in'),
+                                 (CASE WHEN hi.kind IN ('moved', 'moved_changed') THEN hi.old_relpath END, 'out'),
+                                 (CASE WHEN hi.kind = 'new' THEN hi.new_relpath END, 'new'),
+                                 (CASE WHEN hi.kind = 'changed' THEN hi.new_relpath END, 'changed'),
+                                 (CASE WHEN hi.kind = 'gone' THEN hi.old_relpath END, 'gone')) AS x (path, role)
+                             WHERE hi.seen_on >= %s AND x.path IS NOT NULL AND x.path LIKE %s
+                               AND (%s::text IS NULL OR r.label = %s)
+                               AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))),
+                         t AS (
+                             SELECT host, root, owner_id, role, parts[1:i] AS folder
+                             FROM ev, generate_series(%s, least(array_length(parts, 1) - 1, %s)) AS i)
+                         SELECT host, root, array_to_string(folder, '/') AS folder,
+                                coalesce(array_length(folder, 1), 0) AS level,
+                                count(*) FILTER (WHERE role = 'new') AS new,
+                                count(*) FILTER (WHERE role = 'changed') AS changed,
+                                count(*) FILTER (WHERE role = 'in') AS moved_in,
+                                count(*) FILTER (WHERE role = 'out') AS moved_out,
+                                count(*) FILTER (WHERE role = 'gone') AS gone,
+                                array_agg(DISTINCT owner_id) FILTER (WHERE owner_id IS NOT NULL) AS owners
+                         FROM t GROUP BY host, root, folder ORDER BY host, root, folder LIMIT %s""",
+                (since, pre, root, root, _kinds(kinds), _kinds(kinds), base, base + depth, TREE_LIMIT + 1))
 
 
 def versions(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):

@@ -32,10 +32,34 @@
 {% else %}<tr><td colspan="3" class="muted">No duplicates.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "contents") }}
 {% elif name == 'changes' %}
+{% set labels = {'new': 'new', 'changed': 'changed', 'moved': 'moved', 'moved_changed': 'moved and changed', 'gone': 'gone'} %}
+<form class="filters">
+  <label>Last <input name="days" value="{{ ch.days }}" size="3" inputmode="numeric"> days</label>
+  <label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (all roots)" size="30"></label>
+  <label>Depth <input name="depth" value="{{ ch.depth }}" size="2" inputmode="numeric"></label>
+  <fieldset><legend>What</legend>{% for k in kinds %}<label><input type="checkbox" name="what" value="{{ k }}"{% if k in ch.kinds %} checked{% endif %}> {{ labels[k] }}</label> {% endfor %}</fieldset>
+  <button>Show</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% else %}
+<h2>By folder</h2>
+<p class="muted">Files under each folder. A tracked move counts as moved in at its destination and moved out at its source, not as new and gone; a move within a folder counts there as both. A move between roots is not tracked: it shows as gone and new.</p>
+{% macro n(t, count, what) %}{% if count %}<a href="{{ url_for('report', name='changes', days=ch.days, depth=ch.depth, loc=t.root ~ ':' ~ t.folder ~ ('/' if t.folder else ''), what=what) }}">{{ count }}</a>{% else %}<span class="muted">·</span>{% endif %}{% endmacro %}
+<div class="scroll"><table class="tree">
+<tr><th>Folder</th><th class="num">New</th><th class="num">Changed</th><th class="num">Moved in</th><th class="num">Moved out</th><th class="num">Gone</th></tr>
+{% set base = ch.tree[0].level if ch.tree else 0 %}
+{% for t in ch.tree %}<tr><td class="t{{ [t.level - base, 8]|min }}">{% set here = t.root ~ ':' ~ t.folder ~ ('/' if t.folder else '') %}<a href="{{ url_for('report', name='changes', days=ch.days, depth=ch.depth, loc=here, what=ch.kinds) }}">{% if t.folder %}{{ t.folder.split('/')[-1] }}/{% else %}{{ t.host }} · {{ t.root }}{% endif %}</a></td>
+  <td class="num">{{ n(t, t.new, ['new']) }}</td><td class="num">{{ n(t, t.changed, ['changed']) }}</td>
+  <td class="num">{{ n(t, t.moved_in, ['moved', 'moved_changed']) }}</td><td class="num">{{ n(t, t.moved_out, ['moved', 'moved_changed']) }}</td>
+  <td class="num">{{ n(t, t.gone, ['gone']) }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">Nothing changed{% if loc %} under {{ loc }}{% endif %} in the last {{ ch.days }} days.</td></tr>{% endfor %}
+</table></div>
+{% if ch.tree_cut %}<p class="muted">Only the first {{ ch.tree|length }} folders: pick a folder or a smaller depth.</p>{% endif %}
+<h2>Each change</h2>
 {{ pager(pg, "changes") }}
 <div class="scroll"><table><tr>{{ th(pg, "seen", "Seen") }}{{ th(pg, "where", "Where") }}{{ th(pg, "what", "What") }}{{ th(pg, "path", "Path") }}</tr>
-{% for r in rows %}<tr><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ r.kind }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a></td></tr>
-{% else %}<tr><td colspan="4" class="muted">Nothing changed in the last week.</td></tr>{% endfor %}</table></div>
+{% for r in rows %}<tr><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ labels[r.kind] }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a>{% if r.kind in ('moved', 'moved_changed') %}<br><span class="muted">from {{ r.old_relpath }}</span>{% endif %}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Nothing changed.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "changes") }}
+{% endif %}
 {% endif %}
 {% endblock %}
