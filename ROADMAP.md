@@ -62,8 +62,9 @@ first deployment's backup roots turned out to share their source's disk, is buil
    - *Done:* the board's time. On a 4+4-core ARM board (Cortex-A76 and A55, 8 GB, PostgreSQL 18), 140 real batches:
      a 5000-record batch took about 6-10 s from one to the next, transfer included (430-820 records a second over
      back-to-back stretches; the longest gap 35.7 s), far inside the agent's send timeout.
-   - *Left:* the board's peak memory, at the next first ingest. Batching the per-record queries of ordinary batches
-     (with the test that batched and unbatched give the same catalog) only if a measurement asks for it.
+   - *Done:* the board's peak memory. 202 batches from the backup server's first ingest: the ingester's peak RSS
+     65 MB, mean 52 MB, none failed. Neither time nor memory asks for batching the per-record queries of ordinary
+     batches, so they stay per record.
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.

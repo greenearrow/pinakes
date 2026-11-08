@@ -98,7 +98,7 @@ were made while building, to keep going, and are open to change.
 - **Measured on a desktop (12th-gen Intel, ext4, warm cache), a 3.0 GB tree of 383,985 entries:** first scan 44 s
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
   database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
-  completing a scan and matching moves have since gone to bulk, and what is left is in ROADMAP.md item 1.
+  completing a scan and matching moves have since gone to bulk; the board's time and memory are in ROADMAP.md item 1.
 - **`/health` answers 503 for a stale host, not only for a database that's down.** Most monitors check the status
   code alone, and a host that stopped reporting is what it is for; the body says which. Its newest batch comes from
   `ingested`, which `pinakes_app` may now read (host, sequence, time, record count: no names): an agent that keeps
