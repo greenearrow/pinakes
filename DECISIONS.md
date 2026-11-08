@@ -96,8 +96,8 @@ were made while building, to keep going, and are open to change.
   superuser applies it once; setup says how and stops (exit 2).
 - **Measured on a desktop (12th-gen Intel, ext4, warm cache), a 3.0 GB tree of 383,985 entries:** first scan 44 s
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
-  database 584 MB (about 1.5 KB a file, indexes included). The ingester does a few round trips per record; batching
-  them is the first optimization if a large first pass is too slow on a small server.
+  database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
+  completing a scan and matching moves have since gone to bulk, and what is left is in ROADMAP.md item 1.
 - **Behind a reverse proxy** (`[web] behind_proxy = true`), the visitor comes from `X-Forwarded-For`, trusting exactly
   one hop; otherwise every visitor is the proxy and the sign-in limit is one limit for everybody. The plain-http name
   should redirect to https: the session cookie is `Secure` and wouldn't stick over http.

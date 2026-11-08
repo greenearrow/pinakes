@@ -19,7 +19,7 @@ this repo.
   a test that a second person can't see or do it, and that a step-up is audited.
 
 Platforms so far: Python 3.12 (x86-64 desktop) for everything; Python 3.10 (ARM64 single-board server, kernel 5.10)
-for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the ingester's setup.
+for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployment (schema, setup and real batches).
 
 ## Built
 
@@ -27,7 +27,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 |---|---|
 | Agent: walk, state, hashing, birth time (statx), chunks, archive members, protected roots, resumable scans, mass-gone guard, one filesystem per root, progress lines, batches, ssh and directory transports | Tested (3.12, 3.10); run for real on one server |
 | Schema: people, groups, ACLs, step-ups, append-only audit, hosts, roots, scans, contents, files, chunks, members, history, lineage, metadata (table only) | Tested on 16; applied on 18 |
-| Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with an empty batch only |
+| Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with real batches (a first deployment, two scans) |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
@@ -36,10 +36,11 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 ## Next: before more machines join
 
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
-(28, backup roots without churn, and 29, name lineage with a second signal, are built):
+(28, backup roots without churn, and 29, name lineage with a second signal, are built; see the table above):
 
 30. **A walk check with the agent's own rights,** for comparing the catalog with the disk: run under the same unit
     settings (`CAP_DAC_READ_SEARCH`), print per-root counts and sizes, so a mismatch means a bug, not missing rights.
+    *Done when:* a test runs the check on a generated tree and its counts and sizes match the catalog's for that root.
 
 31. **An ingester outliving its agent.** When a send times out the agent closes SSH, but the forced ingester went on
     (three hours, old code, its transaction holding locks), and the next ingest and `setup` waited behind it. The
@@ -50,22 +51,24 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
    unbatched ingest give the same catalog.
-   *Found on the board:* the batch that completes a first scan of ~340k files ran past the agent's 10-minute send
-   timeout, so the scan never finished: completing did its work per file (a history row and 5-7 lineage queries
-   each, about 2M round trips). Now done in bulk: the new files' history in one statement, lineage in rounds of
-   2000 files with a handful of queries each (chunk sharing still per chunked file).
-   `TestLineageRounds` proves rounds of 3 and 2000 give the same catalog as rounds of 1 (the per-file order).
-   On a desktop (i7-12700KF, PostgreSQL 16 on a local socket, synthetic 300k files): that batch 68.7 s before,
-   18.7 s after, the same catalog; an ordinary batch of 5000 files 1.3 s. The per-record queries of ordinary
-   batches are not batched yet. Matching a scan's gone paths against its new ones was one pass over the new files
-   per gone path, so a reorganisation (42k gone, 37k new) never finished; now indexed (`TestMovesSameAsBefore`: the same
-   moves as the old code on 12 random trees; 40k gone and 37k new complete in about 5 s on that desktop).
+   - *Done:* completing a scan works in bulk. On the board, the batch completing a first scan of ~340k files ran past
+     the agent's 10-minute send timeout, because completing worked per file (a history row and 5-7 lineage queries
+     each, about 2M round trips). Now the new files' history is one statement, and lineage runs in rounds of 2000
+     files with a handful of queries each (chunk sharing still per chunked file). `TestLineageRounds` proves rounds
+     of 3 and 2000 give the same catalog as rounds of 1 (the per-file order). On a desktop (i7-12700KF, PostgreSQL 16
+     on a local socket, synthetic 300k files): that batch 68.7 s before, 18.7 s after; an ordinary batch of 5000
+     files 1.3 s.
+   - *Done:* matching a scan's gone paths against its new ones is indexed. It was one pass over the new files per
+     gone path, so a reorganisation (42k gone, 37k new) never finished. `TestMovesSameAsBefore` finds the same moves
+     as the old code on 12 random trees; 40k gone and 37k new complete in about 5 s on that desktop.
+   - *Left:* the board's time and peak memory for a 300k-file first ingest; batching the per-record queries of
+     ordinary batches, with the test that batched and unbatched give the same catalog.
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
-3. **`inhibit_sleep`:** listed in the example config, read by nothing. Implement it (the agent holds a
-   `systemd-inhibit` while scanning) or remove it. *Done when:* a test with a stand-in `systemd-inhibit` sees it held
-   for the scan and released after, or the option is gone from the example.
+3. **`inhibit_sleep`:** listed in the example config, read by nothing. The sleep inhibitor belongs to the systemd
+   unit, not the agent (DECISIONS.md, "Niceness, I/O class and the sleep inhibitor"), so the option goes.
+   *Done when:* it is gone from the example config and nothing in the repo mentions it.
 4. **A health endpoint** (`/health`: database reachable, newest batch per host, stale hosts) for monitoring that can't
    resolve the site's names or reach its loopback. *Done when:* the web tests cover healthy, database down and a
    stale host, and it reveals no file names.
