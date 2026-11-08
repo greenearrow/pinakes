@@ -357,7 +357,7 @@ folder safe to delete" or "where are the photos from that trip" from the catalog
 - Timer with `Persistent=true`, so a missed run happens soon after boot or wake.
 - Optional conditions: on AC power only; on a named network only (the transport's host answers); not while a
   configured "busy" command succeeds (a game running, a backup in progress).
-- Low priority: `nice` 19 and `ionice -c3`.
+- Low priority, set by the unit: `Nice=19` and `IOSchedulingClass=idle`.
 - Home folders that are only readable while the user is logged in (encrypted homes) need a user service started in
   the login session, not a system timer.
 - The outbox keeps batches until the ingester acknowledges them, so a laptop away from home just queues.

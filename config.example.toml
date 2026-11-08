@@ -10,8 +10,6 @@ outbox = "/var/lib/pinakes/outbox"
 [schedule]
 only_on_ac = false                     # laptops: true
 busy_command = ""                      # skip this run while the command exits 0, e.g. "pgrep -x some-game"
-nice = 19
-ionice_class = 3                       # idle
 
 [transport]
 # "ssh": send each batch to a command on the catalog server that accepts batches and nothing else.
