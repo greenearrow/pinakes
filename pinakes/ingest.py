@@ -10,6 +10,10 @@
 
 Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
 applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
+
+A batch is stopped and rolled back, and the ingester exits 3, when the agent that sent it hangs up (its stdout
+closes) or when it runs past [ingest] max_batch_time: an agent that gave up must not leave a transaction holding
+locks that the next batch and setup wait behind.
 """
 
 import argparse
@@ -18,7 +22,10 @@ import gzip
 import io
 import json
 import os
+import select
 import sys
+import threading
+import time
 
 import psycopg
 
@@ -871,6 +878,67 @@ def read_batch(stream):
     return lines[0], lines[1:]
 
 
+class Watchdog:
+    """Stops a batch whose sender hung up or that runs too long: cancels the running statement and exits.
+
+    Exiting closes the database connection, and PostgreSQL rolls back the open transaction, whether a statement was
+    running (cancelled) or not (idle in transaction). The batch is left as if never sent; the agent sends it again.
+    """
+
+    EXIT = 3
+
+    def __init__(self, conn, hangup_fd=None, limit=None, exit=os._exit):
+        self.conn, self.fd, self.limit, self._exit = conn, hangup_fd, limit, exit
+        self.end = None
+        self.stopping = threading.Event()
+        self.poll = select.poll()
+        if hangup_fd is not None:
+            # a pipe's write end reports POLLERR when its reader closes; a socket reports POLLHUP or POLLRDHUP
+            self.poll.register(hangup_fd, select.POLLERR | select.POLLHUP | getattr(select, "POLLRDHUP", 0))
+        if hangup_fd is not None or limit:
+            threading.Thread(target=self._run, name="pinakes-watchdog", daemon=True).start()
+
+    def batch(self):
+        """Time one batch against the limit: `with watchdog.batch(): ...`."""
+        dog = self
+
+        class _Batch:
+            def __enter__(self):
+                if dog.limit:
+                    dog.end = time.monotonic() + dog.limit
+
+            def __exit__(self, *exc):
+                dog.end = None
+                if dog.stopping.is_set():
+                    # the batch failed because it was cancelled: leave the exit, and its message, to the watchdog
+                    time.sleep(10)
+                    dog._exit(dog.EXIT)
+
+        return _Batch()
+
+    def _run(self):
+        while True:
+            if self.fd is not None and self.poll.poll(1000):
+                return self._stop("the sender hung up")
+            if self.fd is None:
+                time.sleep(1)
+            end = self.end
+            if end is not None and time.monotonic() >= end:
+                return self._stop("the batch ran past max_batch_time (%ds)" % self.limit)
+
+    def _stop(self, why):
+        self.stopping.set()
+        try:
+            os.write(2, ("pinakes-ingest: %s; stopping, the batch is rolled back\n" % why).encode())
+        except OSError:
+            pass                                    # stderr went with the sender
+        try:
+            self.conn.cancel_safe(timeout=5)
+        except Exception:
+            pass                                    # closing the connection rolls back all the same
+        self._exit(self.EXIT)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
@@ -893,6 +961,8 @@ def main(argv=None):
             print("seeded people, groups, hosts and settings")
             return 0
         ing = Ingester(conn, cfg)
+        if args.cmd in ("inbox", None):
+            dog = Watchdog(conn, hangup_fd=None if args.cmd else sys.stdout.fileno(), limit=cfg.max_batch_time)
         if args.cmd == "passwd":
             import getpass
             from . import auth
@@ -934,7 +1004,8 @@ def main(argv=None):
                 with open(path, "rb") as f:
                     header, records = read_batch(f)
                 try:
-                    result = ing.apply(header, records, header.get("host"))
+                    with dog.batch():
+                        result = ing.apply(header, records, header.get("host"))
                 except Refused as e:
                     print("%s: refused: %s" % (name, e), file=sys.stderr)
                     rc = 1
@@ -946,7 +1017,8 @@ def main(argv=None):
             ap.error("--host is required for a batch on stdin")
         try:
             header, records = read_batch(sys.stdin.buffer)
-            ing.apply(header, records, args.host)
+            with dog.batch():
+                ing.apply(header, records, args.host)
         except Refused as e:
             print("refused: %s" % e, file=sys.stderr)
             return 1

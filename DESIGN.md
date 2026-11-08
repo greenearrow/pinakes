@@ -165,7 +165,7 @@ pass, not 22. A snapshot root is scanned newest first; older snapshots are mostl
 store content in their own format (restic, borg) are not walked; their repositories can be added later as a
 `backup` source read through the tool (`restic ls --json`), giving paths and times but not whole-file hashes.
 
-A machine that sleeps on demand must not sleep mid-scan: the agent holds a sleep inhibitor while it runs, and runs
+A machine that sleeps on demand must not sleep mid-scan: its systemd unit runs the agent under `systemd-inhibit`,
 inside the machine's scheduled wake window.
 
 ## Matching moves and changes

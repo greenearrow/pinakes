@@ -98,6 +98,13 @@ were made while building, to keep going, and are open to change.
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
   database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
   completing a scan and matching moves have since gone to bulk, and what is left is in ROADMAP.md item 1.
+- **A batch whose sender gave up is stopped.** The forced ingester reads its whole batch before applying it, so a
+  closed stdin says nothing; a watchdog thread instead watches stdout, which reports an error once sshd closes it
+  (the agent's ssh exited, as it does when its send times out). It then cancels the running statement and exits 3;
+  the connection closing rolls the transaction back, whether a statement was running or the session sat idle in
+  it. `[ingest] max_batch_time` (default 1h, also for `inbox`) is the backstop for a sender sshd hasn't noticed is
+  gone (a dropped network, until its `ClientAliveInterval` fires). A batch committed just before the hang-up is
+  applied and not acknowledged: the agent sends it again and it is acknowledged as a duplicate.
 - **Behind a reverse proxy** (`[web] behind_proxy = true`), the visitor comes from `X-Forwarded-For`, trusting exactly
   one hop; otherwise every visitor is the proxy and the sign-in limit is one limit for everybody. The plain-http name
   should redirect to https: the session cookie is `Secure` and wouldn't stick over http.

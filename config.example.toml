@@ -10,7 +10,6 @@ outbox = "/var/lib/pinakes/outbox"
 [schedule]
 only_on_ac = false                     # laptops: true
 busy_command = ""                      # skip this run while the command exits 0, e.g. "pgrep -x some-game"
-inhibit_sleep = true                   # hold a sleep inhibitor while scanning (machines that sleep on demand)
 nice = 19
 ionice_class = 3                       # idle
 

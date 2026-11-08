@@ -19,6 +19,19 @@ def interval(value):
     return "%s %s" % (m.group(1), _UNITS[m.group(2)])
 
 
+_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def seconds(value):
+    """'90s', '1h', 'never' -> seconds, or None for never."""
+    if value in (None, "", "never"):
+        return None
+    m = _INTERVAL.match(str(value).strip())
+    if not m or int(m.group(1)) == 0:
+        raise ConfigError("not a duration: %r (use e.g. 30m, 1h, never)" % value)
+    return int(m.group(1)) * _SECONDS[m.group(2)]
+
+
 class ServerConfig:
     def __init__(self, d, base_dir="."):
         db = d.get("database", {})
@@ -53,6 +66,9 @@ class ServerConfig:
         self.name_window_days = int(lin.get("name_window_days", 7))
         self.name_folder_max = int(lin.get("name_folder_max", 5))   # "the same folder name" only if this few have it
         self.name_size_namesakes = int(lin.get("name_size_namesakes", 5))  # "similar size" only if this few files
+        # one batch may run this long before it is stopped and rolled back (a backstop: a sender that hangs up
+        # stops it sooner)
+        self.max_batch_time = seconds(d.get("ingest", {}).get("max_batch_time", "1h"))
         self.web = d.get("web", {})
         self.base_dir = base_dir
 

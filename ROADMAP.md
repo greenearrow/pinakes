@@ -28,6 +28,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 | Agent: walk, state, hashing, birth time (statx), chunks, archive members, protected roots, resumable scans, mass-gone guard, one filesystem per root, progress lines, batches, ssh and directory transports | Tested (3.12, 3.10); run for real on one server |
 | Schema: people, groups, ACLs, step-ups, append-only audit, hosts, roots, scans, contents, files, chunks, members, history, lineage, metadata (table only) | Tested on 16; applied on 18 |
 | Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with real batches (a first deployment, two scans) |
+| Ingester stopping a batch whose sender hung up (its stdout closed) or that runs past `[ingest] max_batch_time`: the running statement cancelled, the transaction rolled back, exit 3 | Tested on 16 (the forced ingester as a subprocess, blocked on a lock) |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
@@ -36,16 +37,12 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 ## Next: before more machines join
 
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
-(28, backup roots without churn, and 29, name lineage with a second signal, are built; see the table above):
+(28, backup roots without churn, 29, name lineage with a second signal, and 31, an ingester stopping when its agent
+gives up, are built; see the table above; 3, `inhibit_sleep`, is gone, as the unit holds the inhibitor):
 
 30. **A walk check with the agent's own rights,** for comparing the catalog with the disk: run under the same unit
     settings (`CAP_DAC_READ_SEARCH`), print per-root counts and sizes, so a mismatch means a bug, not missing rights.
     *Done when:* a test runs the check on a generated tree and its counts and sizes match the catalog's for that root.
-
-31. **An ingester outliving its agent.** When a send times out the agent closes SSH, but the forced ingester went on
-    (three hours, old code, its transaction holding locks), and the next ingest and `setup` waited behind it. The
-    ingester should stop when its stdin/stdout closes, or the server should cap one batch's run time.
-    *Done when:* a test kills the agent's side mid-batch and sees the ingester exit and its transaction roll back.
 
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
@@ -66,9 +63,6 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
-3. **`inhibit_sleep`:** listed in the example config, read by nothing. The sleep inhibitor belongs to the systemd
-   unit, not the agent (DECISIONS.md, "Niceness, I/O class and the sleep inhibitor"), so the option goes.
-   *Done when:* it is gone from the example config and nothing in the repo mentions it.
 4. **A health endpoint** (`/health`: database reachable, newest batch per host, stale hosts) for monitoring that can't
    resolve the site's names or reach its loopback. *Done when:* the web tests cover healthy, database down and a
    stale host, and it reveals no file names.

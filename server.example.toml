@@ -79,6 +79,9 @@ name_window_days = 7
 name_folder_max = 5                    # the folder name counts only if at most this many folders have it
 name_size_namesakes = 5                # a similar size counts only if at most this many files have the name
 
+[ingest]
+max_batch_time = "1h"                  # a longer batch is stopped and rolled back (a sender hanging up stops it sooner)
+
 [audit]
 notify_people = true                   # tell people when an administrator saw their records
 keep = "2y"

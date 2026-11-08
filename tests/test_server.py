@@ -9,6 +9,8 @@ import hashlib
 import os
 import random
 import shutil
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -789,6 +791,108 @@ class TestRowLevelSecurity(ServerCase):
             self.assertEqual(c.execute("SELECT count(*) FROM pinakes.files").fetchone()[0], 0)
         finally:
             c.close()
+
+
+class TestDurations(unittest.TestCase):
+    def test_seconds(self):
+        self.assertEqual(server_config.seconds("90s"), 90)
+        self.assertEqual(server_config.seconds("1h"), 3600)
+        self.assertIsNone(server_config.seconds("never"))
+        for bad in ("0s", "1 hour", "-5m"):
+            with self.assertRaises(config.ConfigError):
+                server_config.seconds(bad)
+        self.assertEqual(server_config.loads("").max_batch_time, 3600)
+
+
+class TestIngesterStops(ServerCase):
+    """31: a forced ingester whose agent gave up stops, and its batch is rolled back, not left holding locks."""
+
+    def setUp(self):
+        super().setUp()
+        for i in range(20):
+            self.write("server-1", "store", "docs/note-%02d.txt" % i, b"note %d" % i)
+        st, cfg, _ = self.agent("server-1", "store")
+        Scanner(cfg, st).scan(cfg.roots[0])
+        [(_, path)] = outbox.pending(cfg.outbox)
+        with open(path, "rb") as f:
+            self.batch = f.read()
+
+    def ingester(self, extra=""):
+        cfg = os.path.join(self.tmp, "server.toml")
+        with open(cfg, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s\n%s'
+                    % (PGHOST, self.db, extra, SERVER))
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, PYTHONPATH=repo)
+        p = subprocess.Popen([sys.executable, "-m", "pinakes.ingest", "--config", cfg, "--host", "server-1"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        p.stdin.write(self.batch)
+        p.stdin.close()
+        p.stdin = None                           # sent; communicate() has nothing more to write
+        return p
+
+    def blocker(self):
+        """Hold the history table so the batch, mid-transaction (its files written), waits on a lock."""
+        c = psycopg.connect(host=PGHOST, user=PGUSER, dbname=self.db)
+        c.execute("LOCK TABLE pinakes.history IN SHARE MODE")
+        return c
+
+    def others(self):
+        """The ingester's backends other than this test's own connection, and what each is waiting on."""
+        return self.q("SELECT state, wait_event_type FROM pg_stat_activity WHERE datname = %s "
+                      "AND usename = 'pinakes_ingest' AND pid <> pg_backend_pid()", (self.db,))
+
+    def wait_for(self, cond, what, timeout=20):
+        end = time.monotonic() + timeout
+        while not cond():
+            if time.monotonic() > end:
+                self.fail("timed out waiting for " + what)
+            time.sleep(0.1)
+
+    def assertRolledBack(self):
+        self.wait_for(lambda: not self.others(), "the ingester's backend to go")
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.roots")[0][0], 0)
+        self.assertEqual(self.q("SELECT coalesce(max(last_seq), 0) FROM pinakes.hosts")[0][0], 0)
+
+    def stuck(self, p):
+        self.wait_for(lambda: ("active", "Lock") in self.others() or p.poll() is not None, "the batch to block")
+        if p.poll() is not None:
+            self.fail("the ingester ended before blocking: %s" % p.stderr.read().decode())
+
+    def test_sender_hangs_up(self):
+        b = self.blocker()
+        try:
+            p = self.ingester()
+            self.stuck(p)
+            t0 = time.monotonic()
+            p.stdout.close()                     # the agent's ssh went away
+            self.assertEqual(p.wait(timeout=15), 3)
+            self.assertLess(time.monotonic() - t0, 5)
+            self.assertIn(b"hung up", p.stderr.read())
+            p.stderr.close()
+        finally:
+            b.rollback()
+            b.close()
+        self.assertRolledBack()
+        # nothing was left half-done: the same batch, sent again, applies and is acknowledged
+        p = self.ingester()
+        out, err = p.communicate(timeout=60)
+        self.assertEqual((p.returncode, out), (0, b"ack 1\n"), err)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 20)
+
+    def test_batch_past_its_time(self):
+        b = self.blocker()
+        try:
+            p = self.ingester('[ingest]\nmax_batch_time = "2s"\n')
+            self.stuck(p)
+            out, err = p.communicate(timeout=15)         # stdout stays open: only the cap stops it
+            self.assertEqual((p.returncode, out), (3, b""), err)
+            self.assertIn(b"max_batch_time", err)
+        finally:
+            b.rollback()
+            b.close()
+        self.assertRolledBack()
 
 
 if __name__ == "__main__":
