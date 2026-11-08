@@ -101,30 +101,40 @@ def where(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
                 (file_id, limit, offset))
 
 
-def only_here(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
+# Copies of a file f (in root r) outside a folder, counted physically: distinct (host, device, inode), never f's own
+# inode (a hard link of f is the same data, not a copy). A copy is on another disk when its host differs, or its
+# device does on the same host; a device the catalog doesn't know counts as the same disk. %%s: the folder's pattern.
+_COPIES = """CROSS JOIN LATERAL (
+        SELECT count(DISTINCT (ro.host_id, o.dev, o.ino))
+                   FILTER (WHERE NOT coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS same_disk,
+               count(DISTINCT (ro.host_id, o.dev, o.ino))
+                   FILTER (WHERE coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS other_disk
+        FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
+        WHERE o.content_id = f.content_id AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s)
+          AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false) %s) s"""
+COPY_SORT = dict(FILE_SORT, same_disk=("s.same_disk",))
+
+
+def _no_copy_on_another_disk(conn, loc, kinds, limit, offset, sort, direction):
     root, path = split_location(loc)
     pre = _prefix(path)
-    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         JOIN pinakes.hosts h USING (host_id)
-                         WHERE r.label = %%s AND f.relpath LIKE %%s
-                           AND NOT EXISTS (SELECT 1 FROM pinakes.present o WHERE o.content_id = f.content_id
-                                           AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s))"""
-                % (FILE_COLS, TOTAL) + order(FILE_SORT, sort, direction, "f.relpath, f.file_id") + PAGE, (root, pre, pre, limit, offset))
+    return rows(conn, """SELECT %s, s.same_disk, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                         JOIN pinakes.hosts h USING (host_id) %s
+                         WHERE r.label = %%s AND f.relpath LIKE %%s AND s.other_disk = 0"""
+                % (FILE_COLS, TOTAL, _COPIES % ("AND ro.kind IN ('primary', 'backup')" if kinds else ""))
+                + order(COPY_SORT, sort, direction, "f.relpath, f.file_id") + PAGE, (pre, root, pre, limit, offset))
+
+
+def only_here(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
+    """The files under loc with no copy on another disk. same_disk: their copies outside loc on the same disk, which
+    die with it (0: no copy anywhere else)."""
+    return _no_copy_on_another_disk(conn, loc, False, limit, offset, sort, direction)
 
 
 def not_safe_to_delete(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
-    """The files under loc with no copy in a primary or backup root outside it. Empty: safe."""
-    root, path = split_location(loc)
-    pre = _prefix(path)
-    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         JOIN pinakes.hosts h USING (host_id)
-                         WHERE r.label = %%s AND f.relpath LIKE %%s
-                           AND NOT EXISTS (SELECT 1 FROM pinakes.present o JOIN pinakes.roots ro
-                                             ON ro.root_id = o.root_id
-                                           WHERE o.content_id = f.content_id AND ro.kind IN ('primary', 'backup')
-                                             AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s))"""
-                % (FILE_COLS, TOTAL) + order(FILE_SORT, sort, direction, "f.relpath, f.file_id") + PAGE,
-                (root, pre, pre, limit, offset))
+    """The files under loc with no copy in a primary or backup root on another disk. Empty: safe. same_disk: their
+    kept copies outside loc on the same disk, which don't make them safe."""
+    return _no_copy_on_another_disk(conn, loc, True, limit, offset, sort, direction)
 
 
 def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):

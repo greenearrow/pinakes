@@ -279,6 +279,11 @@ class TestSorting(ServerCase):
                        mtime=t0 + i * 60)
         self.write("server-1", "store", self.MANY + "sub-a/x.txt", b"c5c5", mtime=t0)
         self.write("server-1", "store", self.MANY + "sub-b/deeper/z.txt", b"deep", mtime=t0 + 30)
+        for i in range(3):          # copies on the same disk outside the folder: 0, 1 and 2 of them
+            self.write("server-1", "store", self.MANY + "kept/k%d.txt" % i, b"kept %d" % i, mtime=t0)
+            for j in range(i):
+                self.write("server-1", "store", "people/user-1/elsewhere/%d/k%d.txt" % (j, i), b"kept %d" % i,
+                           mtime=t0)
         for i in range(40):         # enough for a second page of find in the web UI
             self.write("server-1", "store", "people/user-1/bulk/b%02d.txt" % i, b"bulk %d" % i, mtime=t0 + i)
         for i in range(6):          # user-2's own, one sharing a content with user-1
@@ -345,11 +350,12 @@ class TestSorting(ServerCase):
         loc = "store:" + self.MANY
         files = {"where": lambda r: (r["host"], r["root"]), "path": lambda r: r["relpath"],
                  "size": lambda r: r["size"], "modified": lambda r: r["mtime"], "snapshot": lambda r: r["snapshot"]}
+        copies = dict(files, same_disk=lambda r: r["same_disk"])
         return [
             ("find", lambda c, *a, **o: Q.find(c, "*", *a, **o), Q.FILE_SORT, files),
             ("copies", lambda c, *a, **o: Q.where(c, self.copied, *a, **o), Q.FILE_SORT, files),
-            ("only-here", lambda c, *a, **o: Q.only_here(c, loc, *a, **o), Q.FILE_SORT, files),
-            ("safe-to-delete", lambda c, *a, **o: Q.not_safe_to_delete(c, loc, *a, **o), Q.FILE_SORT, files),
+            ("only-here", lambda c, *a, **o: Q.only_here(c, loc, *a, **o), Q.COPY_SORT, copies),
+            ("safe-to-delete", lambda c, *a, **o: Q.not_safe_to_delete(c, loc, *a, **o), Q.COPY_SORT, copies),
             ("backed-up", lambda c, *a, **o: Q.backed_up(c, loc, *a, **o), Q.BACKED_UP_SORT,
              {"file": lambda r: r["relpath"], "copies": lambda r: r["backup_copies"],
               "snapshots": lambda r: r["snapshots"], "newest": lambda r: r["newest"]}),
@@ -495,8 +501,8 @@ class TestSorting(ServerCase):
         loc = "loc=store:" + self.MANY
         page = "/reports/%s?loc=store:" + self.MANY + "&"
         for url, prefix, cols in (("/browse/store/%s?" % self.MANY, "", queries.LISTING_SORT),
-                                  (page % "only-here", "", queries.FILE_SORT),
-                                  (page % "safe-to-delete", "", queries.FILE_SORT),
+                                  (page % "only-here", "", queries.COPY_SORT),
+                                  (page % "safe-to-delete", "", queries.COPY_SORT),
                                   (page % "backed-up", "", queries.BACKED_UP_SORT),
                                   ("/reports/dupes?", "", queries.DUPES_SORT),
                                   ("/reports/changes?", "", queries.CHANGES_SORT),

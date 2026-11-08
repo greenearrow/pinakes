@@ -1,14 +1,15 @@
 {% from "_pager.html" import th with context %}
 {# A table of files; p, the list's pager, makes the headers sort it. #}
-{% macro file_table(rows, empty="Nothing.", p=None) %}
+{# same_disk adds a column: copies elsewhere on the file's own disk. #}
+{% macro file_table(rows, empty="Nothing.", p=None, same_disk=False) %}
 <div class="scroll"><table>
-  {% if p %}<tr>{{ th(p, "where", "Where") }}{{ th(p, "path", "Path") }}{{ th(p, "size", "Size", "num") }}{{ th(p, "modified", "Modified") }}{{ th(p, "snapshot", "Snapshot") }}</tr>
-  {% else %}<tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th></tr>{% endif %}
+  {% if p %}<tr>{{ th(p, "where", "Where") }}{{ th(p, "path", "Path") }}{{ th(p, "size", "Size", "num") }}{{ th(p, "modified", "Modified") }}{{ th(p, "snapshot", "Snapshot") }}{% if same_disk %}{{ th(p, "same_disk", "Copies on this disk", "num") }}{% endif %}</tr>
+  {% else %}<tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th>{% if same_disk %}<th class="num">Copies on this disk</th>{% endif %}</tr>{% endif %}
   {% for r in rows %}
   <tr><td>{{ r.host }} · {{ r.root }} <span class="tag">{{ r.kind }}</span></td>
       <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.gone_on %} <span class="tag">gone {{ r.gone_on }}</span>{% endif %}{% if r.same_inode and r.file_id != (f.file_id if f is defined else None) %} <span class="tag">hard link: same data</span>{% endif %}</td>
       <td class="num">{{ fmt_size(r.size) }}</td><td>{{ r.mtime.date() if r.mtime else '' }}</td>
-      <td>{{ r.snapshot or '' }}</td></tr>
-  {% else %}<tr><td colspan="5" class="muted">{{ empty }}</td></tr>{% endfor %}
+      <td>{{ r.snapshot or '' }}</td>{% if same_disk %}<td class="num">{{ r.same_disk }}</td>{% endif %}</tr>
+  {% else %}<tr><td colspan="{{ 6 if same_disk else 5 }}" class="muted">{{ empty }}</td></tr>{% endfor %}
 </table></div>
 {% endmacro %}

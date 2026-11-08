@@ -128,6 +128,11 @@ were made while building, to keep going, and are open to change.
   `dupes`, count once in `backed-up` (which also shows how many snapshots hold the version) and once in folder sizes.
 - **Linking same-disk duplicates** is designed (DESIGN.md "Planned"), not built: opt-in per root, settled content
   only, same owner, verified and atomic, the replaced inode to trash by default.
+- **Only another disk makes a file safe** (ROADMAP 5): `only-here` and `safe-to-delete` count a copy only on another
+  host or another device of the same host, and show the copies on the file's own disk apart (`same_disk`); a hard
+  link of the file is no copy. The first deployment had its backup roots on the same disk as their source. A device
+  is the filesystem's number (`st_dev`), not the physical disk: two partitions of one disk, or two btrfs subvolumes,
+  look like two disks, and so count as safe. A device the catalog doesn't know counts as the same disk.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.

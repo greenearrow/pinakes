@@ -32,6 +32,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 | A walk check for comparing the catalog with the disk: `pinakes-agent check` counts each root with the scan's own walk and the running process's rights, beside the last scan, with what changed since it started and errors by kind; `pinakes-ingest totals` gives the catalog's per root, every owner's; no file names in either | Tested (3.12; the comparison on 16); done by hand on one server before it was built: every root matched its last scan |
 | `/health` without sign-in for monitoring (database reachable; per host its newest batch, last complete scan and staleness; 200 or 503; host names only), also alone on `[web] health_listen` | Tested with the test client on 16; served by waitress on both listeners on the desktop |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
+| Only-here and safe-to-delete count a copy only on another disk (another host, or another device of the host); copies on the file's own disk shown apart; a hard link no copy (5) | Tested on 16, under row-level security; web and CLI wording |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
 | Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes with a folder tree of new, changed, moved in, moved out and gone, filtered by kind and folder), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
@@ -41,12 +42,9 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (28, backup roots without churn, 29, name lineage with a second signal, 30, a walk check with the agent's rights,
 31, an ingester stopping when its agent gives up, and 4, a health endpoint, are built; see the table above;
-3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake). The first deployment found its backup
-roots on the same disk as their source, so 5 comes first:
+3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake; 5, same-disk copies, found when the
+first deployment's backup roots turned out to share their source's disk, is built):
 
-5. **Same-disk copies.** `safe-to-delete` and `only-here` accept any other copy; show separately how many copies are on
-   other disks (other host or device), so "safe" can't rest on a copy that dies with the same disk. *Done when:*
-   tests cover a copy on the same disk, one on another disk, and a hard link (not a copy at all).
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and

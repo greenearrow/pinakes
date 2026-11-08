@@ -326,7 +326,8 @@ def create_app(cfg, connect=None):
         loc = request.args.get("loc", "").strip()
         rows, error, ch = [], None, None
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
-                          "changes": queries.CHANGES_SORT}.get(name, queries.FILE_SORT))
+                          "changes": queries.CHANGES_SORT, "only-here": queries.COPY_SORT,
+                          "safe-to-delete": queries.COPY_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
         try:
             if name == "only-here" and loc:

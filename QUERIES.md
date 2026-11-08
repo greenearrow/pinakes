@@ -65,35 +65,50 @@ ORDER BY r.kind, h.name, f.relpath;
 
 ## only-here HOST:PATH
 
+Files with no copy on another disk. A copy is on another disk when it is on another host, or on another device of
+the same host (a device the catalog doesn't know counts as the same disk). Copies are counted physically, as
+distinct (host, device, inode), and a hard link of the file itself is not a copy. `same_disk` counts the copies
+outside the folder on the file's own disk, which die with it; 0 means no copy anywhere else.
+
 ```sql
 -- pinakes only-here downloads:camera/
-SELECT f.relpath, f.size
+SELECT f.relpath, f.size, s.same_disk
 FROM present f
 JOIN roots r USING (root_id)
-WHERE r.label = 'downloads' AND f.relpath LIKE 'camera/%'
-  AND NOT EXISTS (
-        SELECT 1 FROM present o
-        WHERE o.content_id = f.content_id
-          AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'camera/%'))   -- copies inside the folder don't count
+CROSS JOIN LATERAL (
+      SELECT count(DISTINCT (ro.host_id, o.dev, o.ino))
+                 FILTER (WHERE NOT coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS same_disk,
+             count(DISTINCT (ro.host_id, o.dev, o.ino))
+                 FILTER (WHERE coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS other_disk
+      FROM present o JOIN roots ro ON ro.root_id = o.root_id
+      WHERE o.content_id = f.content_id
+        AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'camera/%')   -- copies inside the folder don't count
+        AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s  -- nor hard links
+WHERE r.label = 'downloads' AND f.relpath LIKE 'camera/%' AND s.other_disk = 0
 ORDER BY f.relpath;
 ```
 
 ## safe-to-delete HOST:PATH
 
-Lists the files that are **not** safe: no copy in a primary or backup root outside the folder. No rows means safe.
+Lists the files that are **not** safe: no copy in a primary or backup root outside the folder on another disk, with
+`same_disk` as above (kept copies on the same disk, which don't make a file safe). No rows means safe.
 
 ```sql
 -- pinakes safe-to-delete downloads:old-phone/
-SELECT f.relpath, f.size
+SELECT f.relpath, f.size, s.same_disk
 FROM present f
 JOIN roots r USING (root_id)
-WHERE r.label = 'downloads' AND f.relpath LIKE 'old-phone/%'
-  AND NOT EXISTS (
-        SELECT 1 FROM present o
-        JOIN roots ro ON ro.root_id = o.root_id
-        WHERE o.content_id = f.content_id
-          AND ro.kind IN ('primary', 'backup')
-          AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'old-phone/%'))
+CROSS JOIN LATERAL (
+      SELECT count(DISTINCT (ro.host_id, o.dev, o.ino))
+                 FILTER (WHERE NOT coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS same_disk,
+             count(DISTINCT (ro.host_id, o.dev, o.ino))
+                 FILTER (WHERE coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS other_disk
+      FROM present o JOIN roots ro ON ro.root_id = o.root_id
+      WHERE o.content_id = f.content_id
+        AND ro.kind IN ('primary', 'backup')
+        AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'old-phone/%')
+        AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s
+WHERE r.label = 'downloads' AND f.relpath LIKE 'old-phone/%' AND s.other_disk = 0
 ORDER BY f.relpath;
 ```
 

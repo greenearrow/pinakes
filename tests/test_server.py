@@ -361,6 +361,55 @@ class TestHardLinks(ServerCase):
         self.assertEqual(same, {"a.bin": True, "a-link.bin": True, "a-copy.bin": False})
 
 
+class TestSameDisk(ServerCase):
+    """Only-here and safe-to-delete count a copy only on another disk (another host, or another device on the same
+    host); a copy on the same disk is shown apart, and a hard link is not a copy at all (ROADMAP 5)."""
+
+    OLD = "people/user-1/old/"
+
+    def setUp(self):
+        super().setUp()
+        put = lambda host, label, rel, name: self.write(host, label, rel, b"content of " + name.encode())
+        for n in ("same", "link", "device", "backup", "drop", "alone"):
+            put("server-1", "store", self.OLD + n + ".jpg", n)
+        put("server-1", "store", "people/user-1/keep/same.jpg", "same")          # same host, same disk
+        os.makedirs(self.path("server-1", "store", "people/user-1/links"))
+        os.link(self.path("server-1", "store", self.OLD + "link.jpg"),        # the same inode: not a copy
+                self.path("server-1", "store", "people/user-1/links/link.jpg"))
+        put("server-1", "store", "people/user-1/usb/device.jpg", "device")      # made another device below
+        self.scan("server-1", "store")
+        self.conn.execute("UPDATE pinakes.files SET dev = dev + 1 WHERE relpath = 'people/user-1/usb/device.jpg'")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        put("server-2", "snapshots", "2026-01-01_0140/" + self.OLD + "backup.jpg", "backup")   # another host
+        self.scan("server-2", "snapshots")
+        self.agent("laptop-1", "downloads", kind="drop")
+        put("laptop-1", "downloads", "drop.jpg", "drop")                       # another host, but not kept
+        self.scan("laptop-1", "downloads")
+
+    def answers(self, conn, query):
+        return {r["relpath"][len(self.OLD):]: r["same_disk"] for r in query(conn, "store:" + self.OLD)}
+
+    def test_only_here_and_safe_to_delete(self):
+        from pinakes import queries
+        with self.as_person("user-1") as c:          # under row-level security, as the web UI and CLI run
+            self.assertEqual(self.answers(c, queries.only_here), {"same.jpg": 1, "link.jpg": 0, "alone.jpg": 0})
+            self.assertEqual(self.answers(c, queries.not_safe_to_delete),
+                             {"same.jpg": 1, "link.jpg": 0, "alone.jpg": 0, "drop.jpg": 0})
+
+    def test_unknown_device_is_the_same_disk(self):
+        from pinakes import queries
+        self.conn.execute("UPDATE pinakes.files SET dev = NULL WHERE relpath = 'people/user-1/usb/device.jpg'")
+        self.assertEqual(self.answers(self.conn, queries.only_here)["device.jpg"], 1)
+
+    def test_copies_inside_the_folder_do_not_count(self):
+        from pinakes import queries
+        self.assertEqual(self.answers(self.conn, queries.only_here)["same.jpg"], 1)
+        rows = queries.only_here(self.conn, "store:people/user-1/")       # keep/ is inside now
+        self.assertEqual({r["relpath"]: r["same_disk"] for r in rows if r["relpath"].endswith("same.jpg")},
+                         {"people/user-1/old/same.jpg": 0, "people/user-1/keep/same.jpg": 0})
+
+
 class TestBackupRoots(ServerCase):
     """A backup root records what holds a copy now (ROADMAP 28): hard-linked snapshots rotating through it send only
     the new snapshot's paths, and leave no gone rows or history of their own."""

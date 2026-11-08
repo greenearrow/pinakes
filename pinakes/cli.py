@@ -2,8 +2,8 @@
 
   pinakes [--config FILE] --as NAME find NAME-OR-GLOB
   pinakes ... where ROOT:PATH          every copy and backup of the file at that path
-  pinakes ... only-here ROOT:PATH      files under PATH with no copy anywhere else
-  pinakes ... safe-to-delete ROOT:PATH files under PATH with no kept copy elsewhere (none: safe)
+  pinakes ... only-here ROOT:PATH      files under PATH with no copy on another disk
+  pinakes ... safe-to-delete ROOT:PATH files under PATH with no kept copy on another disk (none: safe)
   pinakes ... backed-up ROOT:PATH
   pinakes ... dupes
   pinakes ... history ROOT:PATH
@@ -113,7 +113,7 @@ def main(argv=None):
             elif a.cmd == "safe-to-delete":
                 rows = queries.not_safe_to_delete(conn, need())
                 if not rows and not a.json:
-                    print("safe: every file under %s has a kept copy elsewhere" % a.arg)
+                    print("safe: every file under %s has a kept copy on another disk" % a.arg)
                     return 0
             elif a.cmd == "backed-up":
                 rows = queries.backed_up(conn, need())

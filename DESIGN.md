@@ -10,7 +10,7 @@ Files land on many machines: a storage server, a backup server, a desktop, a lap
 
 - Does this file exist anywhere else? Where are all the copies, and is any of them a backup?
 - What on this disk or folder exists **only** here?
-- Is this folder safe to delete (does every file in it have a copy somewhere that is kept)?
+- Is this folder safe to delete (does every file in it have a kept copy on another disk)?
 - What changed since last week? Where did that file go?
 - Which photos were taken at this place, which books are by this author, wherever the files are?
 
@@ -320,8 +320,8 @@ safer; the operation would use that where it exists.
 ```
 pinakes find NAME-OR-GLOB              where files with this name are
 pinakes where PATH|SHA256              every copy and backup of this file
-pinakes only-here HOST:PATH            files under PATH with no copy anywhere else
-pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or backup root? (lists the ones that don't)
+pinakes only-here HOST:PATH            files under PATH with no copy on another disk
+pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or backup root on another disk? (lists the ones that don't)
 pinakes backed-up HOST:PATH            per file: backup copies, newest age
 pinakes dupes [HOST:PATH]              duplicates, largest first
 pinakes history HOST:PATH              what happened to a file or folder
