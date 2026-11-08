@@ -542,5 +542,61 @@ class TestAuth(unittest.TestCase):
         self.assertFalse(auth.check_totp(secret, auth.totp(secret, at=1000), at=1200))
 
 
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestHealth(ServerCase):
+    """4: /health for monitoring, without sign-in: the database, each host's newest batch and staleness, no names
+    of roots, people or files."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.scan("server-1", "store")
+        self.conn.execute("UPDATE pinakes.hosts SET expected_every = NULL WHERE name = 'server-2'")  # not tested here
+        self.cfg = server_config.loads('[web]\nsecure_cookies = false\nsession_key = "test-key"\n')
+        self.connect = lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)
+
+    def get(self, connect=None, app=None):
+        app = app or web.create_app(self.cfg, connect=connect or self.connect)
+        r = app.test_client().get("/health")
+        return r.status_code, r.get_json(), r.get_data(as_text=True)
+
+    def test_healthy(self):
+        code, body, text = self.get()
+        self.assertEqual((code, body["status"], body["database"]), (200, "ok", "ok"))
+        hosts = {h["host"]: h for h in body["hosts"]}
+        self.assertEqual(sorted(hosts), ["laptop-1", "server-1", "server-2"])
+        self.assertIsNotNone(hosts["server-1"]["newest_batch"])
+        self.assertEqual(hosts["server-1"]["expected_every_s"], 86400)
+        self.assertFalse(any(h["stale"] for h in hosts.values()))      # laptop-1 is never stale: expected "never"
+        for name in ("store", "taxes", "people", "user-1", "user-2"):
+            self.assertNotIn(name, text)
+
+    def test_stale_host(self):
+        self.conn.execute("UPDATE pinakes.hosts SET last_scan = now() - interval '2 days' WHERE name = 'server-1'")
+        code, body, _ = self.get()
+        self.assertEqual((code, body["status"]), (503, "stale"))
+        self.assertEqual([h["host"] for h in body["hosts"] if h["stale"]], ["server-1"])
+
+    def test_host_never_reported_is_stale(self):
+        self.conn.execute("UPDATE pinakes.hosts SET expected_every = interval '1 day' WHERE name = 'server-2'")
+        code, body, _ = self.get()
+        self.assertEqual(code, 503)
+        self.assertEqual([(h["host"], h["newest_batch"]) for h in body["hosts"] if h["stale"]], [("server-2", None)])
+
+    def test_database_down(self):
+        def down():
+            raise psycopg.OperationalError("connection refused")
+        code, body, text = self.get(connect=down)
+        self.assertEqual((code, body), (503, {"status": "down", "database": "unreachable", "hosts": []}))
+        self.assertNotIn("refused", text)                                  # no error details
+
+    def test_health_alone_on_its_own_listener(self):
+        app = web.create_health_app(self.cfg, connect=self.connect)
+        self.assertEqual(self.get(app=app)[0], 200)
+        c = app.test_client()
+        for path in ("/", "/login", "/find?q=taxes", "/browse/store/"):
+            self.assertEqual(c.get(path).status_code, 404, path)
+
+
 if __name__ == "__main__":
     unittest.main()

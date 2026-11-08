@@ -289,6 +289,16 @@ def stale(conn):
                          ORDER BY last_scan NULLS FIRST""")
 
 
+def health(conn):
+    """Per host: its newest batch, its last complete scan, how often it should report, and whether it is stale.
+    Host names and times only: no root, person or file."""
+    return rows(conn, """SELECT h.name AS host, (SELECT max(i.at) FROM pinakes.ingested i WHERE i.host_id = h.host_id)
+                                AS newest_batch, h.last_scan, h.expected_every,
+                                (h.expected_every IS NOT NULL AND (h.last_scan IS NULL
+                                 OR h.last_scan < now() - h.expected_every)) AS stale
+                         FROM pinakes.hosts h ORDER BY h.name""")
+
+
 def roots(conn):
     return rows(conn, """SELECT r.label, h.name AS host, r.kind, r.protected, r.last_complete_on,
                                 (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id) AS files

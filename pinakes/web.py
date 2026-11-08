@@ -2,6 +2,10 @@
 factor, and the administrator's step-up.
 
   pinakes-web --config /etc/pinakes/server.toml
+
+/health answers without sign-in, for monitoring: whether the database is reachable, and per host its newest batch,
+last complete scan and whether it is stale (200 when all is well, 503 otherwise). It names hosts, never a root,
+person or file. [web] health_listen serves it alone on a second address, for a monitor that can't reach the UI's.
 """
 
 import argparse
@@ -14,7 +18,7 @@ import sys
 import time
 
 import psycopg
-from flask import Flask, abort, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 
 from . import auth, queries
 from .server_config import load as load_server_config
@@ -94,6 +98,60 @@ class Pager:
         return self.total > self.per or self.page > 1
 
 
+def _iso(t):
+    return t.isoformat() if t else None
+
+
+def health_report(connect):
+    """(HTTP status, body) for /health."""
+    try:
+        db = connect()
+    except psycopg.Error:
+        return 503, {"status": "down", "database": "unreachable", "hosts": []}
+    try:
+        hosts = queries.health(db)
+    except psycopg.Error:
+        return 503, {"status": "down", "database": "error", "hosts": []}
+    finally:
+        db.close()
+    body = {"status": "stale" if any(h["stale"] for h in hosts) else "ok", "database": "ok",
+            "hosts": [{"host": h["host"], "newest_batch": _iso(h["newest_batch"]), "last_scan": _iso(h["last_scan"]),
+                       "expected_every_s": int(h["expected_every"].total_seconds()) if h["expected_every"] else None,
+                       "stale": h["stale"]} for h in hosts]}
+    return (200 if body["status"] == "ok" else 503), body
+
+
+def _health_response(connect):
+    code, body = health_report(connect)
+    resp = jsonify(body)
+    resp.status_code = code
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def create_health_app(cfg, connect=None):
+    """An app with /health only, for [web] health_listen."""
+    app = Flask(__name__)
+    connect = connect or _connector(cfg.web)
+
+    @app.route("/health")
+    def health():
+        return _health_response(connect)
+
+    return app
+
+
+def _connector(web):
+    def default_connect():
+        kw = {"conninfo": web.get("dsn", ""), "connect_timeout": 5}
+        pw = web.get("password_file")
+        if pw and os.path.exists(pw):
+            with open(pw) as f:
+                kw["password"] = f.read().strip()
+        return psycopg.connect(**kw)
+    return default_connect
+
+
 def create_app(cfg, connect=None):
     app = Flask(__name__)
     web = cfg.web
@@ -114,18 +172,16 @@ def create_app(cfg, connect=None):
     step_minutes = _seconds(web.get("step_up_duration", "15m")) // 60
     failures = {}
 
-    def default_connect():
-        kw = {"conninfo": web.get("dsn", "")}
-        pw = web.get("password_file")
-        if pw and os.path.exists(pw):
-            with open(pw) as f:
-                kw["password"] = f.read().strip()
-        return psycopg.connect(**kw)
+    connect = connect or _connector(web)
 
-    connect = connect or default_connect
+    @app.route("/health")
+    def health():
+        return _health_response(connect)
 
     @app.before_request
     def open_db():
+        if request.endpoint == "health":
+            return                      # no session, no form; it opens its own connection, and reports a failed one
         g.db = connect()
         g.person = session.get("person")
         g.stepped_up = False
@@ -399,6 +455,12 @@ def main(argv=None):
     listen = cfg.web.get("listen", "127.0.0.1:8080")
     host, port = listen.rsplit(":", 1)
     from waitress import serve
+    if cfg.web.get("health_listen"):
+        import threading
+        from waitress.server import create_server
+        hhost, hport = cfg.web["health_listen"].rsplit(":", 1)
+        hs = create_server(create_health_app(cfg), host=hhost, port=int(hport), threads=1)
+        threading.Thread(target=hs.run, name="pinakes-health", daemon=True).start()
     serve(app, host=host, port=int(port), threads=4)
     return 0
 

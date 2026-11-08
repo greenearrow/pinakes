@@ -384,6 +384,7 @@ GRANT USAGE ON SCHEMA pinakes TO pinakes_app, pinakes_ingest;
 
 GRANT SELECT ON files, present, contents, content_chunks, members, history, lineage, metadata, hosts, roots,
                scans, audit, scan_errors TO pinakes_app;
+GRANT SELECT ON ingested TO pinakes_app;                 -- when each host's batches came in: for /health
 GRANT SELECT (person_id, name, display) ON people TO pinakes_app;
 GRANT SELECT ON groups TO pinakes_app;
 GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visible_acls(), begin_step_up(text, int),

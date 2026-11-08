@@ -30,6 +30,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 | Ingester: sequence and duplicate handling, owners by folder rules and enrollments, backup copies tied to their source (with prefix), moves by hash, inode and chunks, lineage by identical content, chunks and names, recompute after a rule change | Tested on 16; run on 18 with real batches (a first deployment, two scans) |
 | Ingester stopping a batch whose sender hung up (its stdout closed) or that runs past `[ingest] max_batch_time`: the running statement cancelled, the transaction rolled back, exit 3 | Tested on 16 (the forced ingester as a subprocess, blocked on a lock) |
 | A walk check for comparing the catalog with the disk: `pinakes-agent check` counts each root with the scan's own walk and the running process's rights, beside the last scan, with what changed since it started and errors by kind; `pinakes-ingest totals` gives the catalog's per root, every owner's; no file names in either | Tested (3.12; the comparison on 16); done by hand on one server before it was built: every root matched its last scan |
+| `/health` without sign-in for monitoring (database reachable; per host its newest batch, last complete scan and staleness; 200 or 503; host names only), also alone on `[web] health_listen` | Tested with the test client on 16; served by waitress on both listeners on the desktop |
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
@@ -39,8 +40,8 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the first deployme
 
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (28, backup roots without churn, 29, name lineage with a second signal, 30, a walk check with the agent's rights,
-and 31, an ingester stopping when its agent gives up, are built; see the table above; 3, `inhibit_sleep`, is gone,
-as the unit holds the inhibitor):
+31, an ingester stopping when its agent gives up, and 4, a health endpoint, are built; see the table above;
+3, `inhibit_sleep`, is gone, as the unit holds the inhibitor):
 
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
@@ -61,9 +62,6 @@ as the unit holds the inhibitor):
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
-4. **A health endpoint** (`/health`: database reachable, newest batch per host, stale hosts) for monitoring that can't
-   resolve the site's names or reach its loopback. *Done when:* the web tests cover healthy, database down and a
-   stale host, and it reveals no file names.
 
 ## Correctness gaps found while building
 

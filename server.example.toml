@@ -10,6 +10,7 @@ password_file = "/etc/pinakes/secrets/ingest-db-password"
 dsn = "postgresql://pinakes_app@localhost/pinakes"   # the web UI and CLI's role: row-level security applies
 password_file = "/etc/pinakes/secrets/app-db-password"
 listen = "127.0.0.1:8080"              # behind the site's HTTPS reverse proxy
+# health_listen = "192.0.2.10:8081"    # /health alone, for a monitor that can't reach the proxy or the loopback
 behind_proxy = true                    # read the visitor from X-Forwarded-For (one proxy hop)
 public_url = "https://catalog.home.example.net"
 session_key_file = "/etc/pinakes/secrets/session-key"

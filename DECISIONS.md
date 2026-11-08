@@ -98,6 +98,11 @@ were made while building, to keep going, and are open to change.
   (67 MB of memory); a rescan with nothing changed 4.2 s; ingesting it 187 s (about 2,000 records a second, 352 MB);
   database 584 MB (about 1.5 KB a file, indexes included). The ingester did a few round trips per record then;
   completing a scan and matching moves have since gone to bulk, and what is left is in ROADMAP.md item 1.
+- **`/health` answers 503 for a stale host, not only for a database that's down.** Most monitors check the status
+  code alone, and a host that stopped reporting is what it is for; the body says which. Its newest batch comes from
+  `ingested`, which `pinakes_app` may now read (host, sequence, time, record count: no names): an agent that keeps
+  sending but never completes a scan, as the first large scan did, shows a recent batch and an old scan.
+  A catalog built before this needs `GRANT SELECT ON pinakes.ingested TO pinakes_app;` once, as the schema's owner.
 - **The walk check reports what changed since the scan.** On a live disk a plain count can't tell "changed since
   the scan" from "the scan missed it": the first server's check by hand came out higher than the catalog on two
   roots, and only counting files whose mtime or ctime is after the last complete scan's *start* (a file changed

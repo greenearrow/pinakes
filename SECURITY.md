@@ -106,6 +106,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - Never a file: no download, upload, opening or editing, by any route (DESIGN.md "Principles"). The only thing
   shown that is rendered from content is a preview, where a root enables it; never for a protected root.
 - Rate limits on sign-in and search.
+- `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
+  batch, last complete scan and whether it is stale. It names hosts and nothing else (no root, person or file, no
+  error text), through `pinakes_app` with no person set, so row-level security would hide any file it touched. A
+  site that doesn't want host names reachable this way blocks the path at its proxy, or serves it only on
+  `[web] health_listen`, an address of its choosing that serves nothing else.
 
 ## The MCP server (a wish)
 
