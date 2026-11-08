@@ -31,7 +31,7 @@ for the agent; PostgreSQL 16 for the tests, PostgreSQL 18 for the schema and the
 | Queries (QUERIES.md), physical copies by host, device and inode | Tested on 16 |
 | CLI | Run by hand on a demo catalog |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12) |
-| Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
+| Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes with a folder tree of new, changed, moved in, moved out and gone, filtered by kind and folder), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
 
 ## Next: before more machines join
 
@@ -97,6 +97,23 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
 11. **Notifications** when an administrator saw someone's records: a pluggable command (an e-mail, a push service),
     off by default. *Done when:* a test with a stand-in command gets one message per step-up per person, with the
     reason and no file names.
+32. **Reviewing changes, and what needs restoring.** After a clean-up, the changes tree (built) shows what went; a
+    review records which of it was checked. Gone first, then moves (a move between roots or disks is a gone plus a
+    new copy elsewhere, so the two mix):
+    - a mark per history row: *intended*, or *restore*; by row or for everything shown under a folder (the tree's
+      filters) up to a date, so a clean-up of thousands is a few clicks; a later change is unreviewed again;
+    - the tree and list show unreviewed counts, and filter reviewed / unreviewed;
+    - a gone file whose last content still exists in another root you can see (the copy lineage of a disk move) says
+      so, with where, and can be marked intended in bulk; one with no other copy is flagged, as it may be lost;
+    - *restore* lists, per file, which backup copy and snapshot holds its last content (the `versions` query), or
+      none; it clears itself when a scan sees that content back at the path or nearby. Pinakes points at the copy
+      and never restores it (DESIGN.md "Principles");
+    - marks are records about files: under row-level security, made by the file's owner or co-owners, by an
+      administrator only in a step-up (audited); who marked and when is kept.
+    *Done when:* tests cover a folder marked intended in bulk, a later gone under it showing unreviewed, a disk move
+    recognised by its copy, a restore mark naming the snapshot that holds the content and clearing when it comes
+    back, and another person neither seeing nor making marks on files they can't see. Could live with other
+    file-management extras rather than in the core.
 
 ## Metadata (METADATA.md)
 
