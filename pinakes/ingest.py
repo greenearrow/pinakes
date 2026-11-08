@@ -52,6 +52,8 @@ def _under(relpath, folder):
 # - a drop root on either side.
 # The most recent earlier one wins. Used for t in unnest(...) with a.appeared, and parameters (size share, days,
 # days, namesakes, namesakes + 1).
+# Where a file "appeared" is min(seen_on + 0) over its history: a bare min(seen_on) lets PostgreSQL read the
+# history_seen index from the oldest day, filtering by file, which costs the whole history for a new file.
 NAME_CANDIDATE = """
     SELECT s.file_id, 'similar name, ' || s.why AS evidence FROM (
         SELECT o.file_id, o.mtime, CASE
@@ -116,6 +118,43 @@ def _other_inode(h, host_id, dev, ino):
     return False in eqs
 
 
+class _NewFiles:
+    """A completing scan's new files (rows of file_id, relpath, content_id, size, dev, ino, ...), indexed for
+    matching moves: by content (and name), by inode, and those whose content has chunks. Taking one removes it from
+    every index; a taken row still in a list is skipped (and dropped) when met."""
+
+    def __init__(self, rows, chunked):
+        self.left = {r[0]: r for r in rows}
+        self.chunked = chunked
+        self._by_content, self._by_name, self._by_inode, self._with_chunks = {}, {}, {}, []
+        for r in sorted(rows, key=lambda r: r[1], reverse=True):  # by path, the first at the end (pop)
+            if r[2] is not None:
+                self._by_content.setdefault(r[2], []).append(r)
+                self._by_name.setdefault((r[2], r[1].rsplit("/", 1)[-1]), []).append(r)
+        for r in rows:  # in file_id order
+            self._by_inode.setdefault((r[4], r[5]), []).append(r)
+            if r[2] in chunked:
+                self._with_chunks.append(r)
+
+    def take(self, r):
+        del self.left[r[0]]
+
+    def _first(self, rows):
+        while rows and rows[-1][0] not in self.left:
+            rows.pop()
+        return rows[-1] if rows else None
+
+    def same_content(self, content, name):
+        return self._first(self._by_name.get((content, name), [])) or self._first(self._by_content.get(content, []))
+
+    def same_inode(self, dev, ino):
+        return [r for r in self._by_inode.get((dev, ino), ()) if r[0] in self.left]
+
+    def with_chunks(self):
+        self._with_chunks = [r for r in self._with_chunks if r[0] in self.left]
+        return self._with_chunks
+
+
 class Ingester:
     def __init__(self, conn, cfg):
         self.conn = conn
@@ -124,6 +163,7 @@ class Ingester:
         self._acl_cache = {}
         # files worked out per round of lineage: a few queries per round, not per file (1 gives the per-file order)
         self.lineage_round = 2000
+        self.progress_every = 5000  # gone paths between progress lines on stderr while a scan completes
 
     # helpers ---------------------------------------------------------------------------------------------------
     def q(self, sql, args=()):
@@ -447,29 +487,42 @@ class Ingester:
 
     def _complete_tracked(self, ctx, gone_paths):
         root_id, scan, on, after = ctx["root"]["root_id"], ctx["scan"], ctx["on"], ctx["after"]
-        fields ="file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
-        new = {}
-        if gone_paths:  # only a scan that lost paths needs the new files in hand, to match moves
-            new = {r[0]: r for r in self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
-                                           "AND gone_on IS NULL" % fields, (root_id, scan)).fetchall()}
+        fields = "file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
         touched = []
-        for path in gone_paths:
-            g = self.one("SELECT %s FROM pinakes.files WHERE root_id = %%s AND relpath = %%s AND gone_on IS NULL"
-                         % fields, (root_id, path))
-            if g is None:
-                continue  # already gone (a repeated record)
-            match = self._match_move(g, new)
-            if match:
-                n, kind, evidence, confidence = match
-                del new[n[0]]
-                self._merge_move(g, n, kind, evidence, confidence, after, on)
-                if kind == "moved_changed":
-                    touched.append(g[0])
-            else:
-                self.q("UPDATE pinakes.files SET gone_on = %s, pending_scan = NULL WHERE file_id = %s", (on, g[0]))
+        if gone_paths:  # only a scan that lost paths needs the new files in hand, to match moves
+            rows = self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
+                          "AND gone_on IS NULL ORDER BY file_id" % fields, (root_id, scan)).fetchall()
+            paths = list(dict.fromkeys(gone_paths))  # a repeated record is already gone the second time
+            present = {r[1]: r for r in self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND relpath = ANY(%%s) "
+                                               "AND gone_on IS NULL" % fields, (root_id, paths)).fetchall()}
+            chunked = {r[0] for r in self.q(  # contents, new or gone, that have chunks
+                "SELECT c.content_id FROM pinakes.contents c WHERE c.content_id = ANY(%s) AND EXISTS "
+                "(SELECT 1 FROM pinakes.content_chunks k WHERE k.content_id = c.content_id)",
+                (list({r[2] for r in rows + list(present.values()) if r[2] is not None}),)).fetchall()}
+            new = _NewFiles(rows, chunked)
+            gone_ids = []
+            for i, path in enumerate(paths, 1):
+                g = present.get(path)
+                if g is not None:
+                    match = self._match_move(g, new)
+                    if match:
+                        n, kind, evidence, confidence = match
+                        new.take(n)
+                        self._merge_move(g, n, kind, evidence, confidence, after, on)
+                        if kind == "moved_changed":
+                            touched.append(g[0])
+                    else:
+                        gone_ids.append(g[0])
+                if i % self.progress_every == 0 or (i == len(paths) > self.progress_every):
+                    print("pinakes-ingest: scan %d: %d/%d gone path(s) matched or marked gone"
+                          % (scan, i, len(paths)), file=sys.stderr, flush=True)
+            if gone_ids:  # in the order of the gone records, as one at a time would write them
                 self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, old_content_id, old_mtime, old_ctime, "
-                       "old_btime, seen_after, seen_on) VALUES (%s, 'gone', %s, %s, %s, %s, %s, %s, %s)",
-                       (g[0], g[1], g[2], g[6], g[7], g[8], after, on))
+                       "old_btime, seen_after, seen_on) SELECT f.file_id, 'gone', f.relpath, f.content_id, f.mtime, "
+                       "f.ctime, f.btime, %s, %s FROM unnest(%s::bigint[]) WITH ORDINALITY AS t(file_id, ord) "
+                       "JOIN pinakes.files f USING (file_id) ORDER BY t.ord", (after, on, gone_ids))
+                self.q("UPDATE pinakes.files SET gone_on = %s, pending_scan = NULL WHERE file_id = ANY(%s)",
+                       (on, gone_ids))
         # what is still pending after the moves is new in this scan: one statement however many (a first scan: all)
         pending = "FROM pinakes.files WHERE root_id = %s AND pending_scan = %s AND gone_on IS NULL"
         touched += [r[0] for r in self.q("SELECT file_id %s ORDER BY file_id" % pending, (root_id, scan)).fetchall()]
@@ -483,38 +536,42 @@ class Ingester:
         self.lineage_many(list(dict.fromkeys(touched)), on)
 
     def _match_move(self, g, new):
-        """The new file g most likely became: same content, same inode, or shared chunks."""
+        """The new file g most likely became: same content, same inode, or shared chunks. `new` is a _NewFiles;
+        each step looks only at the files that could match, so a gone file with no match costs next to nothing."""
         _, gpath, gcontent, gsize, gdev, gino = g[:6]
         gname = gpath.rsplit("/", 1)[-1]
         if gcontent is not None:
-            same = [n for n in new.values() if n[2] == gcontent]
-            if same:
-                same.sort(key=lambda n: (n[1].rsplit("/", 1)[-1] != gname, n[1]))  # prefer the same name
-                return same[0], "moved", "same sha256", "certain"
+            n = new.same_content(gcontent, gname)  # the same name first, then by path
+            if n:
+                return n, "moved", "same sha256", "certain"
         if gdev is not None:
-            for n in new.values():
-                if n[4] == gdev and n[5] == gino and n[3] is not None and gsize is not None and (
-                        abs(n[3] - gsize) <= max(4096, 0.5 * max(gsize, 1))):
+            for n in new.same_inode(gdev, gino):
+                if n[3] is not None and gsize is not None and abs(n[3] - gsize) <= max(4096, 0.5 * max(gsize, 1)):
                     return n, "moved_changed", "same inode, similar size", "strong"
-        if gcontent is not None:
-            best = None
-            for n in new.values():
-                if n[2] is None:
-                    continue
-                ov = self.chunk_overlap(gcontent, n[2])
-                if ov >= self.cfg.chunk_overlap and (best is None or ov > best[1]):
-                    best = (n, ov)
-            if best:
-                return best[0], "moved_changed", "chunks %.0f%% shared" % (100 * best[1]), "likely"
+        if gcontent is not None and gcontent in new.chunked:  # no chunks of its own: nothing can share them
+            cands = new.with_chunks()
+            if cands:
+                ovs = self.chunk_overlaps(gcontent, list({n[2] for n in cands}))
+                best = None
+                for n in cands:
+                    ov = ovs.get(n[2], 0.0)
+                    if ov and ov >= self.cfg.chunk_overlap and (best is None or ov > best[1]):
+                        best = (n, ov)
+                if best:
+                    return best[0], "moved_changed", "chunks %.0f%% shared" % (100 * best[1]), "likely"
         return None
 
-    def chunk_overlap(self, a, b):
-        """Share of a's bytes found in b's chunks (by chunk digest)."""
-        r = self.one("""SELECT coalesce(sum(ca.len), 0), (SELECT sum(len) FROM pinakes.content_chunks WHERE content_id = %s)
-                        FROM pinakes.content_chunks ca
-                        WHERE ca.content_id = %s AND ca.digest IN
-                              (SELECT digest FROM pinakes.content_chunks WHERE content_id = %s)""", (a, a, b))
-        return (r[0] / r[1]) if r and r[1] else 0.0
+    def chunk_overlaps(self, a, others):
+        """Share of a's bytes found in each other content's chunks (by chunk digest): {content_id: share}, one
+        query for them all; a content sharing nothing is left out."""
+        total = self.one("SELECT sum(len) FROM pinakes.content_chunks WHERE content_id = %s", (a,))[0]
+        if not total:
+            return {}
+        return {b: s / total for b, s in self.q(
+            """SELECT b.content_id, sum(ca.len) FROM unnest(%s::bigint[]) AS b(content_id)
+               JOIN pinakes.content_chunks ca ON ca.content_id = %s AND ca.digest IN
+                    (SELECT digest FROM pinakes.content_chunks WHERE content_id = b.content_id)
+               GROUP BY b.content_id""", (others, a)).fetchall()}
 
     def _merge_move(self, g, n, kind, evidence, confidence, after, on):
         """g's file_id lives on at n's path, with n's attributes; n's row goes."""
@@ -587,7 +644,7 @@ class Ingester:
                    FROM unnest(%s::bigint[], %s::text[], %s::text[], %s::bigint[], %s::timestamptz[], %s::bigint[],
                                %s::text[], %s::text[], %s::boolean[])
                         AS t(fid, key, ext, content, mtime, size, relpath, kind, rare_folder)
-                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on), %s::date) AS appeared FROM pinakes.history h
+                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on + 0), %s::date) AS appeared FROM pinakes.history h
                                        WHERE h.file_id = t.fid) a
                    CROSS JOIN LATERAL (""" + NAME_CANDIDATE + """) n""",
                 ([r[0] for r in named], [r[6] for r in named], [r[7] for r in named], [r[1] for r in named],
@@ -744,7 +801,7 @@ class Ingester:
                                 f.relpath, r.kind, x.rare_folder
                          FROM unnest(%s::bigint[], %s::boolean[]) AS x(fid, rare_folder)
                          JOIN pinakes.files f ON f.file_id = x.fid JOIN pinakes.roots r USING (root_id)) t
-                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on), %s::date) AS appeared FROM pinakes.history h
+                   CROSS JOIN LATERAL (SELECT coalesce(min(h.seen_on + 0), %s::date) AS appeared FROM pinakes.history h
                                        WHERE h.file_id = t.fid) a
                    CROSS JOIN LATERAL (""" + NAME_CANDIDATE + """) n""",
                 (part, self._rare(st, [paths[f] for f in part]), on) + self._name_params()).fetchall()}

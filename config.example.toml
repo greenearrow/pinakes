@@ -20,6 +20,7 @@ ionice_class = 3                       # idle
 kind = "ssh"
 target = "pinakes@server-1"         # user@host; the key is forced to the ingest command there
 identity = "/var/lib/pinakes/id_ed25519"
+timeout = 600                          # seconds to wait for the server to apply one batch
 # kind = "directory"
 # path = "/srv/pinakes/inbox"
 

@@ -16,7 +16,8 @@ class SendError(Exception):
     pass
 
 
-def send_ssh(path, seq, transport, timeout=600):
+def send_ssh(path, seq, transport):
+    timeout = transport.get("timeout", 600)
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
     if transport.get("identity"):
         cmd += ["-i", transport["identity"], "-o", "IdentitiesOnly=yes"]
@@ -24,8 +25,9 @@ def send_ssh(path, seq, transport, timeout=600):
     with open(path, "rb") as f:
         try:
             p = subprocess.run(cmd, stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            raise SendError("timed out")
+        except subprocess.TimeoutExpired as e:
+            last = (e.stderr or b"").decode(errors="replace").strip().splitlines()[-1:]
+            raise SendError("timed out after %ds%s" % (timeout, " (%s)" % last[0] if last else ""))
     out = p.stdout.decode(errors="replace").strip().splitlines()
     if p.returncode != 0 or not out or out[-1] != "ack %d" % seq:
         raise SendError("ingest refused batch %d (exit %d): %s" % (

@@ -86,6 +86,9 @@ class AgentConfig:
         self.transport = d.get("transport", {"kind": "directory", "path": self.outbox + "/../inbox"})
         if self.transport.get("kind") not in ("ssh", "directory"):
             raise ConfigError("[transport] kind must be ssh or directory")
+        t = self.transport.get("timeout", 600)
+        if isinstance(t, bool) or not isinstance(t, int) or t <= 0:
+            raise ConfigError("[transport] timeout must be a whole number of seconds above 0")
         self.roots = [Root(r) for r in d.get("root", [])]
         labels = [r.label for r in self.roots]
         if len(set(labels)) != len(labels):
