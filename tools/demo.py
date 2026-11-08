@@ -106,18 +106,21 @@ def main():
         essay = os.urandom(60000)
         put("store", "people/user-1/writing/essay.odt", essay, 30)
         put("store", "people/user-1/finance/budget-2026.ods", b"budget numbers", 20)
-        for i in range(4):
-            put("store", "people/user-1/trip-photos/IMG_%04d.JPG" % i, os.urandom(3000), 25)
+        photos = [os.urandom(3000) for _ in range(4)]
+        for i, data in enumerate(photos):
+            put("store", "people/user-1/trip-photos/IMG_%04d.JPG" % i, data, 25)
         put("store", "people/user-2/recipes/bread.txt", b"flour, water, salt", 15)
         put("store", "media/music/album/01 track.flac", os.urandom(8000), 60)
         scan("store")
         put("snapshots", "2026-01-10_0140/people/user-1/writing/essay.odt", essay, 30)
         put("snapshots", "2026-01-10_0140/people/user-2/recipes/bread.txt", b"flour, water, salt", 15)
+        put("snapshots", "2026-01-10_0140/people/user-1/trip-photos/IMG_0001.JPG", photos[1], 25)
         scan("snapshots")
         # the essay goes to the laptop, gets worked on, and comes back; photos are dropped there too
         put("downloads", "essay.odt", essay, 5)
         put("downloads", "camera-import/IMG_0100.JPG", os.urandom(3000), 3)
         put("downloads", "camera-import/IMG_0001.JPG", b"", 3)
+        put("downloads", "trip/IMG_0003.JPG", photos[3], 3)          # moved off the server by hand, below
         scan("downloads")
         edited = essay[:30000] + b"a new paragraph" + essay[30000:]
         put("downloads", "essay.odt", edited, 2)
@@ -127,6 +130,9 @@ def main():
         os.makedirs(os.path.join(machines["store"][1], "people/user-1/archive"), exist_ok=True)
         os.rename(os.path.join(machines["store"][1], "people/user-1/finance/budget-2026.ods"),
                   os.path.join(machines["store"][1], "people/user-1/archive/budget-2026.ods"))
+        # a clean-up to review (ROADMAP 32): one photo gone with a backup, one moved to the laptop, one with no copy
+        for i in (1, 2, 3):
+            os.remove(os.path.join(machines["store"][1], "people/user-1/trip-photos/IMG_%04d.JPG" % i))
         scan("store")
         for name, pw in (("user-1", "demo password 1"), ("user-2", "demo password 2")):
             conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) SELECT person_id, %s "

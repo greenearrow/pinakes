@@ -208,9 +208,9 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
             review=None, until=None, elsewhere=False):
     """History in the last `days` (and up to `until`, a date), optionally only some kinds, only what touched a folder
     (ROOT:PATH; a move counts at both ends), only unreviewed or reviewed changes, and only gone files whose last
-    content is still in a kept root you can see (`elsewhere`). Each row has its review mark, and for a gone file the
-    copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in `elsewhere_at`) and
-    `backups`."""
+    content is still in another root you can see, not a backup (`elsewhere`). Each row has its review mark, and for
+    a gone file the copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in
+    `elsewhere_at`) and `backups`."""
     since = datetime.date.today() - datetime.timedelta(days=days)
     root, pre = (None, None)
     if loc:

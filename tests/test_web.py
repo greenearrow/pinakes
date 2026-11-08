@@ -200,7 +200,7 @@ class TestWeb(ServerCase):
         c1, _ = self.login("user-1", "correct horse battery")
         page = c1.get("/reports/changes?loc=store:" + u).get_data(as_text=True)
         self.assertIn('name="id" value="%d"' % ids[u + "a.txt"], page)
-        self.assertIn("may be lost (1 backup copy)", page)
+        self.assertIn("only in 1 backup copy", page)
         self.assertIn("Mark in bulk", page)
         tok = self.csrf(c1, "/reports/changes")
         self.assertEqual(c1.post("/reports/changes/mark", data={"mark": "restore", "id": ids[u + "a.txt"]}).status_code,

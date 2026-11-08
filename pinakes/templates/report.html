@@ -64,7 +64,7 @@
 </form>
 {{ pager(pg, "changes") }}
 <div class="scroll"><table><tr><th></th>{{ th(pg, "seen", "Seen") }}{{ th(pg, "where", "Where") }}{{ th(pg, "what", "What") }}{{ th(pg, "path", "Path") }}<th>Review</th></tr>
-{% for r in rows %}<tr><td>{% if r.reviewable %}<input type="checkbox" form="marks" name="id" value="{{ r.history_id }}" aria-label="select {{ r.path }}">{% endif %}</td><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ labels[r.kind] }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a>{% if r.kind in ('moved', 'moved_changed') %}<br><span class="muted">from {{ r.old_relpath }}</span>{% endif %}{% if r.kind == 'gone' %}<br>{% if r.elsewhere %}<span class="muted">still at {{ r.elsewhere_at }}{% if r.elsewhere > 1 %} and {{ r.elsewhere - 1 }} more{% endif %}</span>{% else %}<span class="error">no other copy you can see: may be lost{% if r.backups %} ({{ r.backups }} backup cop{{ 'y' if r.backups == 1 else 'ies' }}){% endif %}</span>{% endif %}{% endif %}</td>
+{% for r in rows %}<tr><td>{% if r.reviewable %}<input type="checkbox" form="marks" name="id" value="{{ r.history_id }}" aria-label="select {{ r.path }}">{% endif %}</td><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ labels[r.kind] }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a>{% if r.kind in ('moved', 'moved_changed') %}<br><span class="muted">from {{ r.old_relpath }}</span>{% endif %}{% if r.kind == 'gone' %}<br>{% if r.elsewhere %}<span class="muted">still at {{ r.elsewhere_at }}{% if r.elsewhere > 1 %} and {{ r.elsewhere - 1 }} more{% endif %}</span>{% elif r.backups %}<span class="error">only in {{ r.backups }} backup cop{{ 'y' if r.backups == 1 else 'ies' }}: restore it, or mark it intended</span>{% else %}<span class="error">no other copy you can see: may be lost</span>{% endif %}{% endif %}</td>
   <td>{% if r.mark %}<span class="tag">{{ r.mark }}</span> <span class="muted">{{ r.marked_by }}, {{ r.marked_at.date() }}</span>{% elif r.reviewable %}<span class="muted">unreviewed</span>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6" class="muted">Nothing changed.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "changes") }}
@@ -72,7 +72,7 @@
 <form method="post" action="{{ url_for('mark_changes') }}">{{ keep() }}<input type="hidden" name="scope" value="all">
   <p>Every unreviewed gone file and move shown by the filters above ({{ ch.unreviewed }} in the last {{ ch.days }} days{% if loc %} under {{ loc }}{% endif %}), seen up to
   <input type="date" name="until" value="{{ ch.today }}" aria-label="seen up to">,
-  <label><input type="checkbox" name="elsewhere" value="1"> only gone files still in another kept root</label>, as
+  <label><input type="checkbox" name="elsewhere" value="1"> only gone files still in another root (not a backup)</label>, as
   <button name="mark" value="intended">intended</button> <button name="mark" value="restore">restore</button>.
   <span class="muted">Marked changes keep their marks.</span></p>
 </form>{% endif %}
