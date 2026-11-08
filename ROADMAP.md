@@ -41,6 +41,11 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
 30. **A walk check with the agent's own rights,** for comparing the catalog with the disk: run under the same unit
     settings (`CAP_DAC_READ_SEARCH`), print per-root counts and sizes, so a mismatch means a bug, not missing rights.
 
+31. **An ingester outliving its agent.** When a send times out the agent closes SSH, but the forced ingester went on
+    (three hours, old code, its transaction holding locks), and the next ingest and `setup` waited behind it. The
+    ingester should stop when its stdin/stdout closes, or the server should cap one batch's run time.
+    *Done when:* a test kills the agent's side mid-batch and sees the ingester exit and its transaction roll back.
+
 1. **The ingester on a small server.** Measure a first ingest of a large tree on a 4+4-core ARM board; if it is far
    slower than the scan, batch the per-record queries (one round trip per batch for contents, files and members).
    *Done when:* a 300k-file ingest's time and peak memory are recorded for the board, and a test proves batched and
@@ -52,8 +57,9 @@ Found by the first deployment (one storage server, 445k files, two nights), and 
    `TestLineageRounds` proves rounds of 3 and 2000 give the same catalog as rounds of 1 (the per-file order).
    On a desktop (i7-12700KF, PostgreSQL 16 on a local socket, synthetic 300k files): that batch 68.7 s before,
    18.7 s after, the same catalog; an ordinary batch of 5000 files 1.3 s. The per-record queries of ordinary
-   batches are not batched yet. Still per file: matching a scan's gone paths against its new ones (one pass over
-   the new files per gone path), so a reorganisation that moves 100k files at once will be slow.
+   batches are not batched yet. Matching a scan's gone paths against its new ones was one pass over the new files
+   per gone path, so a reorganisation (42k gone, 37k new) never finished; now indexed (`TestMovesSameAsBefore`: the same
+   moves as the old code on 12 random trees; 40k gone and 37k new complete in about 5 s on that desktop).
 2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
    the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
    host to two people through the map, and a server whose clients are all one account still works by folder rules.
