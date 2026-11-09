@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 COLUMNS = ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256", "chunk_params",
-           "protected_link")
+           "protected_link", "t", "target", "link_root", "link_path", "dangling")
 
 
 class State:
@@ -26,10 +26,12 @@ class State:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
-        if "protected_link" not in [r["name"] for r in self.db.execute("PRAGMA table_info(files)")]:
-            # state from before protection by inode: unknown counts as not protected, and a file that is gets sent
-            # again by the next scan, as the flag differs
-            self.db.execute("ALTER TABLE files ADD COLUMN protected_link INTEGER")
+        have = [r["name"] for r in self.db.execute("PRAGMA table_info(files)")]
+        # state from an older release: a file whose new fields aren't empty gets sent again by the next scan
+        for col, typ in (("protected_link", "INTEGER"), ("t", "TEXT"), ("target", "TEXT"), ("link_root", "TEXT"),
+                         ("link_path", "TEXT"), ("dangling", "INTEGER")):
+            if col not in have:
+                self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
 
     def close(self):
         self.db.close()

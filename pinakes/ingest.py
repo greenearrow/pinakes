@@ -127,6 +127,19 @@ def _other_inode(h, host_id, dev, ino):
     return False in eqs
 
 
+def link_key(r):
+    """What a symlink row (of _complete_tracked's fields) leads to, for matching a moved one: the root and path of
+    its target, or an absolute target outside the roots as written; None for a relative one outside them (it reads
+    differently from another folder) and for anything not a symlink."""
+    if not r[9]:
+        return None
+    if r[11] is not None:
+        return ("in", r[11], r[12])
+    if r[10] and r[10].startswith("/"):
+        return ("text", r[10])
+    return None
+
+
 class _NewFiles:
     """A completing scan's new files (rows of file_id, relpath, content_id, size, dev, ino, ...), indexed for
     matching moves: by content (and name), by inode, and those whose content has chunks. Taking one removes it from
@@ -136,12 +149,15 @@ class _NewFiles:
         self.left = {r[0]: r for r in rows}
         self.chunked = chunked
         self._by_content, self._by_name, self._by_inode, self._with_chunks = {}, {}, {}, []
+        self._by_link = {}
         for r in sorted(rows, key=lambda r: r[1], reverse=True):  # by path, the first at the end (pop)
             if r[2] is not None:
                 self._by_content.setdefault(r[2], []).append(r)
                 self._by_name.setdefault((r[2], r[1].rsplit("/", 1)[-1]), []).append(r)
         for r in rows:  # in file_id order
             self._by_inode.setdefault((r[4], r[5]), []).append(r)
+            if link_key(r):
+                self._by_link.setdefault(link_key(r), []).append(r)
             if r[2] in chunked:
                 self._with_chunks.append(r)
 
@@ -158,6 +174,14 @@ class _NewFiles:
 
     def same_inode(self, dev, ino):
         return [r for r in self._by_inode.get((dev, ino), ()) if r[0] in self.left]
+
+    def same_link(self, key, name):
+        """A new symlink leading where a gone one did: the one of the same name, or else the only one."""
+        cands = [r for r in self._by_link.get(key, ()) if r[0] in self.left]
+        named = [r for r in cands if r[1].rsplit("/", 1)[-1] == name]
+        if named:
+            return named[0], True
+        return (cands[0], False) if len(cands) == 1 else (None, False)
 
     def with_chunks(self):
         self._with_chunks = [r for r in self._with_chunks if r[0] in self.left]
@@ -449,7 +473,8 @@ class Ingester:
                 "dev": rec.get("dev"), "ino": rec.get("ino"), "nlink": rec.get("nlink"), "uid": rec.get("uid"),
                 "is_symlink": rec.get("t") == "symlink", "link_target": rec.get("target"),
                 "unstable": bool(rec.get("unstable")), "name_key": key, "ext": ext,
-                "protected_link": bool(rec.get("protected_link"))}
+                "protected_link": bool(rec.get("protected_link")), "link_root": rec.get("link_root"),
+                "link_relpath": rec.get("link_path"), "link_dangling": rec.get("dangling")}
         ex = self.one("SELECT file_id, content_id, mtime, ctime, btime FROM pinakes.files "
                       "WHERE root_id = %s AND relpath = %s AND gone_on IS NULL", (root["root_id"], relpath))
         if ex:
@@ -510,7 +535,8 @@ class Ingester:
 
     def _complete_tracked(self, ctx, gone_paths):
         root_id, scan, on, after = ctx["root"]["root_id"], ctx["scan"], ctx["on"], ctx["after"]
-        fields = "file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime"
+        fields = ("file_id, relpath, content_id, size, dev, ino, mtime, ctime, btime, "
+                  "is_symlink, link_target, link_root, link_relpath")
         touched = []
         if gone_paths:  # only a scan that lost paths needs the new files in hand, to match moves
             rows = self.q("SELECT %s FROM pinakes.files WHERE root_id = %%s AND pending_scan = %%s "
@@ -563,6 +589,18 @@ class Ingester:
         each step looks only at the files that could match, so a gone file with no match costs next to nothing."""
         _, gpath, gcontent, gsize, gdev, gino = g[:6]
         gname = gpath.rsplit("/", 1)[-1]
+        if g[9]:  # a symlink: no content. The same inode leading to the same place, or a new link that does; a
+            # symlink is small, so a freed inode is soon another link's, and an inode alone says little
+            key = link_key(g)
+            if gdev is not None:
+                for n in new.same_inode(gdev, gino):
+                    if n[9] and (n[10] == g[10] or (key is not None and link_key(n) == key)):
+                        return n, "moved", "same inode, same target", "certain"
+            if key:
+                n, named = new.same_link(key, gname)
+                if n:
+                    return n, "moved", "same target" + (" and name" if named else ""), "strong" if named else "likely"
+            return None
         if gcontent is not None:
             n = new.same_content(gcontent, gname)  # the same name first, then by path
             if n:
@@ -600,7 +638,7 @@ class Ingester:
         """g's file_id lives on at n's path, with n's attributes; n's row goes."""
         cols = ("relpath, name, content_id, size, mtime, ctime, btime, mtime_ns, ctime_ns, btime_ns, dev, ino, nlink, "
                 "uid, is_symlink, link_target, unstable, name_key, ext, acl_id, owner_id, backup_of, snapshot, "
-                "protected_link")
+                "protected_link, link_root, link_relpath, link_dangling")
         row = self.one("SELECT %s FROM pinakes.files WHERE file_id = %%s" % cols, (n[0],))
         self.q("DELETE FROM pinakes.files WHERE file_id = %s", (n[0],))
         sets = ", ".join("%s = %%s" % c.strip() for c in cols.split(","))

@@ -177,7 +177,10 @@ CREATE TABLE files (
     changed_scan bigint,                                    -- changed in this unfinished scan: lineage pending
     name_key    text,                                       -- the name normalized for lineage (names.toml)
     ext         text,
-    protected_link boolean NOT NULL DEFAULT false           -- another link to its inode is under a protected root
+    protected_link boolean NOT NULL DEFAULT false,          -- another link to its inode is under a protected root
+    link_root   text,                                       -- a symlink's target, when in a root of its agent: the
+    link_relpath text,                                      -- root's label and the path in it ('' for the root)
+    link_dangling boolean                                   -- its target is missing; NULL: not known
 );
 CREATE UNIQUE INDEX files_present_path ON files (root_id, relpath) WHERE gone_on IS NULL;
 CREATE INDEX files_content ON files (content_id);
@@ -187,6 +190,7 @@ CREATE INDEX files_backup_of ON files (backup_of);
 CREATE INDEX files_name_trgm ON files USING gin (name public.gin_trgm_ops);
 CREATE INDEX files_relpath ON files (root_id, relpath text_pattern_ops);
 CREATE INDEX files_name_key ON files (name_key, ext);
+CREATE INDEX files_link ON files (link_root, link_relpath text_pattern_ops) WHERE is_symlink;
 -- security_invoker: without it a view reads its table as the view's owner, and row-level security wouldn't apply
 CREATE VIEW present WITH (security_invoker = true) AS SELECT * FROM files WHERE gone_on IS NULL;
 

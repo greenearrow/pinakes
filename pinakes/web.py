@@ -99,6 +99,9 @@ class Pager:
         return self.total > self.per or self.page > 1
 
 
+LINKS_SHOWN = 200  # symlinks into a folder listed on its safe-to-delete page; the total is said
+
+
 def _iso(t):
     return t.isoformat() if t else None
 
@@ -325,7 +328,7 @@ def create_app(cfg, connect=None):
     @signed_in
     def report(name):
         loc = request.args.get("loc", "").strip()
-        rows, error, ch = [], None, None
+        rows, error, ch, links = [], None, None, []
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
                           "changes": queries.CHANGES_SORT, "restore": queries.RESTORE_SORT,
                           "only-here": queries.COPY_SORT,
@@ -336,6 +339,7 @@ def create_app(cfg, connect=None):
                 rows = queries.only_here(g.db, loc, *lim, **pg.order)
             elif name == "safe-to-delete" and loc:
                 rows = queries.not_safe_to_delete(g.db, loc, *lim, **pg.order)
+                links = queries.links_into(g.db, loc, LINKS_SHOWN)
             elif name == "backed-up" and loc:
                 rows = queries.backed_up(g.db, loc, *lim, **pg.order)
             elif name == "dupes":
@@ -362,9 +366,9 @@ def create_app(cfg, connect=None):
         except ValueError as e:
             error = str(e)
         pg.done(rows)
-        audit_shown([r["file_id"] for r in rows if r.get("file_id")], "report %s %s" % (name, loc))
+        audit_shown([r["file_id"] for r in rows + links if r.get("file_id")], "report %s %s" % (name, loc))
         return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
-                               kinds=queries.KINDS)
+                               kinds=queries.KINDS, links=links, links_total=queries.page_total(links))
 
     @app.route("/reports/changes/mark", methods=["POST"])
     @signed_in

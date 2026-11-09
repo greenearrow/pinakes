@@ -19,7 +19,9 @@ contents (content_id, sha256 bytea UNIQUE, size bigint, mime text)
 files    (file_id, root_id, relpath text, name text,                        -- name: last part of relpath
           content_id, size bigint, mtime, ctime, btime timestamptz,
           owner_id, first_seen, last_seen timestamptz, gone_on date,       -- gone_on NULL while present
-          backup_of bigint, snapshot date)                                  -- backup copies: source file, snapshot date
+          backup_of bigint, snapshot date,                                  -- backup copies: source file, snapshot date
+          is_symlink boolean, link_target text,                            -- a symlink: its target as written, and
+          link_root text, link_relpath text, link_dangling boolean)        -- where it leads in its agent's roots
 history  (history_id, file_id, kind text,                                   -- new | changed | moved | moved_changed | gone
           old_relpath, new_relpath, old_content_id, new_content_id,
           seen_after date, seen_on date, evidence text, confidence text)   -- the window: last scan before, scan that saw it
@@ -85,6 +87,7 @@ CROSS JOIN LATERAL (
         AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'camera/%')   -- copies inside the folder don't count
         AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s  -- nor hard links
 WHERE r.label = 'downloads' AND f.relpath LIKE 'camera/%' AND s.other_disk = 0
+  AND NOT f.is_symlink                                                  -- a symlink holds no data
 ORDER BY f.relpath;
 ```
 
@@ -109,7 +112,22 @@ CROSS JOIN LATERAL (
         AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'old-phone/%')
         AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s
 WHERE r.label = 'downloads' AND f.relpath LIKE 'old-phone/%' AND s.other_disk = 0
+  AND NOT f.is_symlink
 ORDER BY f.relpath;
+```
+
+A symlink in the folder holds no data, so it is never what makes a folder unsafe. Links elsewhere that point into
+the folder would be left dangling; the CLI and the web UI list them beside the answer:
+
+```sql
+-- symlinks outside downloads:old-phone/ that lead into it (or to it)
+SELECT r.label, f.relpath, f.link_target, f.link_relpath
+FROM present f
+JOIN roots r USING (root_id)
+WHERE f.is_symlink AND f.link_root = 'downloads'
+  AND (f.link_relpath LIKE 'old-phone/%' OR f.link_relpath = 'old-phone')
+  AND NOT (r.label = 'downloads' AND f.relpath LIKE 'old-phone/%')
+ORDER BY r.label, f.relpath;
 ```
 
 ## backed-up HOST:PATH

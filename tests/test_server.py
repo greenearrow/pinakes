@@ -676,39 +676,210 @@ protected = true
                 os.path.join(self.store, "people/user-1/draft.zip"))
         self.run_scan("writing")
         self.run_scan("store")
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades",
-                            "protected-links.sql")
-        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
-                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
-                "        WHERE table_schema = 'pinakes' AND table_name = 'files'), "
-                "(SELECT array_agg(column_name::text ORDER BY ordinal_position) FROM information_schema.columns "
-                " WHERE table_schema = 'pinakes' AND table_name = 'present'), "
-                "pg_get_viewdef('pinakes.present'::regclass), "
-                "(SELECT reloptions FROM pg_class WHERE oid = 'pinakes.present'::regclass), "
-                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
-                " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' AND table_name = 'present')")
         draft = self.q("SELECT content_id FROM pinakes.files WHERE relpath = 'people/user-1/draft.zip' "
                        "AND root_id = (SELECT root_id FROM pinakes.roots WHERE label = 'store')")[0][0]
-        with admin_conn(self.db) as c:
-            fresh = c.execute(defs).fetchone()
-            grants = c.execute("SELECT grantee, privilege_type FROM information_schema.role_table_grants "
-                               "WHERE table_schema = 'pinakes' AND table_name = 'present'").fetchall()
-            # as a catalog from before: no column, and a listing kept for the linked file
-            c.execute("DROP VIEW pinakes.present; ALTER TABLE pinakes.files DROP COLUMN protected_link; "
-                      "CREATE VIEW pinakes.present WITH (security_invoker = true) AS "
-                      "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
-            for grantee, priv in grants:
-                c.execute("GRANT %s ON pinakes.present TO %s" % (priv, grantee))
-            c.execute("INSERT INTO pinakes.members (archive_content_id, entry_path, size, content_id) "
-                      "VALUES (%s, 'chapter.txt', 9, %s)", (draft, draft))
-            with open(path) as f:
-                c.execute(f.read())
-            c.execute("RESET search_path")
-            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        # a catalog from before: no flag, and a listing kept for the linked file
+        upgrade_files_match_the_schema(
+            self, ["protected_link", "link_root", "link_relpath", "link_dangling"], ["files_link"],
+            ["protected-links.sql", "symlink-targets.sql"],
+            "INSERT INTO pinakes.members (archive_content_id, entry_path, size, content_id) "
+            "VALUES (%d, 'chapter.txt', 9, %d)" % (draft, draft))
         self.assertEqual(self.flags(), {"people/user-1/draft.zip": True, "people/user-1/old.zip": False})
         self.assertEqual(self.listed("people/user-1/draft.zip"), 0)
         self.assertEqual(self.q("SELECT count(*) FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
                                 "WHERE r.protected AND f.protected_link")[0][0], 0)
+
+
+class TestSymlinks(ServerCase):
+    """Symlinks tied to their targets (ROADMAP 7): where each leads, dangling ones, moved ones matched by inode or by
+    target, and safe-to-delete naming the links elsewhere that point into the folder, under row-level security."""
+
+    OLD = "people/user-1/old/"
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER.replace('roots = ["store"]', 'roots = ["store", "media"]', 1))
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        base = os.path.join(self.tmp, "server-1")
+        self.store, self.media = os.path.join(base, "store"), os.path.join(base, "media")
+        os.makedirs(self.media)
+        self.cfg = config.loads("""
+[agent]
+host = "server-1"
+state = "%(b)s/state.sqlite"
+outbox = "%(b)s/outbox"
+[[root]]
+label = "store"
+path = "%(b)s/store"
+[[root]]
+label = "media"
+path = "%(b)s/media"
+""" % {"b": base})
+        self.st = State(self.cfg.state)
+        for rel in (self.OLD + "a.txt", self.OLD + "sub/b.txt", "people/user-2/hers.txt"):
+            self.put(self.store, rel, rel.encode())
+        self.ln(self.store, "a.txt", self.OLD + "inside")                      # in the folder: goes with it
+        self.ln(self.store, "../old/a.txt", "people/user-1/elsewhere/to-a")
+        self.ln(self.store, "old", "people/user-1/to-the-folder")
+        self.ln(self.store, "../user-1/old/sub/b.txt", "people/user-2/to-b")    # user-2's link to user-1's file
+        self.ln(self.media, os.path.join(self.store, self.OLD, "a.txt"), "from-media")
+        self.ln(self.store, "gone.txt", "people/user-1/dangling")
+        self.scan_all()
+
+    def tearDown(self):
+        self.st.close()
+        super().tearDown()
+
+    def put(self, top, rel, data):
+        p = os.path.join(top, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+
+    def ln(self, top, target, rel):
+        p = os.path.join(top, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        os.symlink(target, p)
+
+    def scan_all(self):
+        for label in ("store", "media"):
+            Scanner(self.cfg, self.st).scan(self.cfg.root(label))
+            for seq, p in outbox.pending(self.cfg.outbox):
+                header, recs = outbox.read(p)
+                self.ing.apply(header, recs, "server-1")
+                outbox.ack(self.cfg.outbox, seq)
+
+    def links(self):
+        return {(r, p): (lr, lp, d) for r, p, lr, lp, d in self.q(
+            "SELECT r.label, f.relpath, f.link_root, f.link_relpath, f.link_dangling FROM pinakes.present f "
+            "JOIN pinakes.roots r USING (root_id) WHERE f.is_symlink")}
+
+    def test_targets_and_dangling(self):
+        links = self.links()
+        self.assertEqual(links[("store", "people/user-1/elsewhere/to-a")], ("store", self.OLD + "a.txt", False))
+        self.assertEqual(links[("media", "from-media")], ("store", self.OLD + "a.txt", False))
+        self.assertEqual(links[("store", "people/user-1/dangling")], ("store", "people/user-1/gone.txt", True))
+        self.put(self.store, "people/user-1/gone.txt", b"back")
+        self.scan_all()
+        self.assertFalse(self.links()[("store", "people/user-1/dangling")][2])
+
+    def test_moved_links(self):
+        os.makedirs(os.path.join(self.store, "people/user-1/moved"))
+        os.rename(os.path.join(self.store, "people/user-1/elsewhere/to-a"),
+                  os.path.join(self.store, "people/user-1/moved/to-a"))           # mv: the same inode
+        self.ln(self.store, "../old", "people/user-1/moved/to-the-folder")      # made again elsewhere: same target
+        os.unlink(os.path.join(self.store, "people/user-1/to-the-folder"))      # (after, so its inode isn't reused)
+        self.scan_all()
+        rows = dict(self.q("SELECT h.new_relpath, h.kind || ': ' || h.evidence FROM pinakes.history h "
+                           "WHERE h.kind <> 'new'"))
+        self.assertEqual(rows, {"people/user-1/moved/to-a": "moved: same inode, same target",
+                                "people/user-1/moved/to-the-folder": "moved: same target and name"})
+
+    def test_two_links_to_one_place_are_not_guessed(self):
+        for name in ("one", "two"):
+            self.ln(self.store, "../x/t.txt", "people/user-1/pair/%s" % name)
+        self.scan_all()
+        for name in ("three", "four"):  # made before the old ones go, so no inode is reused
+            self.ln(self.store, "../x/t.txt", "people/user-1/pair2/%s" % name)
+        shutil.rmtree(os.path.join(self.store, "people/user-1/pair"))
+        self.scan_all()
+        kinds = self.q("SELECT kind, count(*) FROM pinakes.history h JOIN pinakes.files f USING (file_id) "
+                       "WHERE f.relpath LIKE 'people/user-1/pair%%' GROUP BY kind ORDER BY kind")
+        self.assertEqual(kinds, [("gone", 2), ("new", 4)])
+
+    def test_a_reused_inode_leading_elsewhere_is_no_move(self):
+        from pinakes.ingest import _NewFiles
+        gone = (1, "p/l", None, 5, 10, 20, None, None, None, True, "../x", "store", "x")
+        elsewhere = (2, "q/l", None, 5, 10, 20, None, None, None, True, "../y", "store", "y")
+        same_place = (3, "q/r/l", None, 5, 10, 20, None, None, None, True, "../../x", "store", "x")
+        self.assertIsNone(self.ing._match_move(gone, _NewFiles([elsewhere], set())))
+        self.assertEqual(self.ing._match_move(gone, _NewFiles([same_place], set()))[1:],
+                         ("moved", "same inode, same target", "certain"))
+
+    def test_safe_to_delete_names_the_links_into_the_folder(self):
+        from pinakes import queries
+        loc = "store:" + self.OLD
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["relpath"] for r in queries.not_safe_to_delete(c, loc)],
+                             [self.OLD + "a.txt", self.OLD + "sub/b.txt"])      # the link inside isn't data
+            self.assertEqual({(r["root"], r["relpath"]) for r in queries.links_into(c, loc)},
+                             {("store", "people/user-1/elsewhere/to-a"), ("store", "people/user-1/to-the-folder"),
+                              ("media", "from-media")})                          # not user-2's, nor the one inside
+        with self.as_person("user-2") as c:
+            self.assertEqual([(r["root"], r["relpath"]) for r in queries.links_into(c, loc)],
+                             [("store", "people/user-2/to-b")])
+            mine = self.file("store", "people/user-2/to-b")
+            f = queries.file_by_id(c, mine)
+            self.assertEqual((f["link_root"], f["link_relpath"]), ("store", self.OLD + "sub/b.txt"))
+            self.assertIsNone(f["link_file_id"])                                  # the target is user-1's
+        with self.as_person("user-1") as c:
+            f = queries.file_by_id(c, self.file("store", "people/user-1/elsewhere/to-a"))
+            self.assertEqual(f["link_file_id"], self.file("store", self.OLD + "a.txt"))
+
+    def test_cli_safe_to_delete(self):
+        import json
+        from pinakes import cli
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write(SERVER + '[web]\ndsn = "host=%s user=pinakes_app dbname=%s"\n' % (PGHOST, self.db))
+        loc = "store:" + self.OLD
+
+        def run(*extra):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["--config", conf, "--as", "user-1", *extra, "safe-to-delete", loc]), 0)
+            return out.getvalue()
+
+        text = run()
+        self.assertIn(self.OLD + "a.txt", text)
+        self.assertNotIn(self.OLD + "inside", text)
+        self.assertIn("3 symlink(s) elsewhere lead into %s and would be left dangling:" % loc, text)
+        self.assertIn("media:from-media", text)
+        got = json.loads(run("--json"))
+        self.assertEqual([r["relpath"] for r in got["not_safe"]], [self.OLD + "a.txt", self.OLD + "sub/b.txt"])
+        self.assertEqual(len(got["links_into"]), 3)
+
+    def test_upgrade_file_matches_the_schema(self):
+        upgrade_files_match_the_schema(self, ["link_root", "link_relpath", "link_dangling"], ["files_link"],
+                                       ["symlink-targets.sql"])
+
+
+def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
+    """Make case's catalog one from before: drop these columns of files (and these indexes), run `before`, then
+    the upgrade files in order; the files table, the present view and its grants must come out as schema.sql
+    makes them."""
+    defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+            "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+            "        WHERE table_schema = 'pinakes' AND table_name = 'files'), "
+            "(SELECT array_agg(column_name::text ORDER BY ordinal_position) FROM information_schema.columns "
+            " WHERE table_schema = 'pinakes' AND table_name = 'present'), "
+            "pg_get_viewdef('pinakes.present'::regclass), "
+            "(SELECT reloptions FROM pg_class WHERE oid = 'pinakes.present'::regclass), "
+            "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+            " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' AND table_name = 'present'), "
+            "(SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'pinakes' "
+            " AND tablename = 'files')")
+    upgrades = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades")
+    with admin_conn(case.db) as c:
+        fresh = c.execute(defs).fetchone()
+        grants = c.execute("SELECT grantee, privilege_type FROM information_schema.role_table_grants "
+                           "WHERE table_schema = 'pinakes' AND table_name = 'present'").fetchall()
+        c.execute("DROP VIEW pinakes.present")
+        for index in indexes:
+            c.execute("DROP INDEX pinakes.%s" % index)
+        c.execute("ALTER TABLE pinakes.files %s" % ", ".join("DROP COLUMN %s" % col for col in columns))
+        c.execute("CREATE VIEW pinakes.present WITH (security_invoker = true) AS "
+                  "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
+        for grantee, priv in grants:
+            c.execute("GRANT %s ON pinakes.present TO %s" % (priv, grantee))
+        if before:
+            c.execute(before)
+        for name in files:
+            with open(os.path.join(upgrades, name)) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")              # each file sets its own; compare as before
+        case.assertEqual(c.execute(defs).fetchone(), fresh)
 
 
 class TestBackupRoots(ServerCase):

@@ -167,6 +167,20 @@ were made while building, to keep going, and are open to change.
   as the agent can't tell. A link made or removed changes the record, so the next scan sends it, in a backup root
   too. A plain copy is not covered: it is a new file, under its own root's rules. Older catalogs:
   `upgrades/protected-links.sql`, which also marks the links the catalog already knows.
+- **A symlink is tied to where it leads** (ROADMAP 7): the agent resolves its target one name at a time, like the
+  kernel (`..` after a link is the link's target's parent), with `lstat` only inside its own roots and on their own
+  filesystem: a target outside every root (or reached only through one) is stored as text, not looked up, so a
+  link to an automount or a hung network share costs nothing. Dangling is true when a name is missing, under a
+  file, or the chain passes 40 links; unknown when a lookup is refused or reaches a mount the root doesn't cross.
+  Kept in the agent's state with the target text, so a target appearing or going resends the link, and `--full`
+  sends a symlink as one. Moves: a symlink is small, so a freed inode is soon another link's; the same inode counts
+  only if it still leads to the same place. Otherwise the same resolved target (or the same absolute text, outside
+  the roots) and the same name is strong, a single candidate likely, several not guessed. A relative link outside the
+  roots reads differently from another folder, so it isn't matched by text. `only-here` and `safe-to-delete` leave
+  symlinks out (they listed every one as having no copy); the links into a folder are listed beside the answer
+  (the web shows the first 200 and the total; the CLI's `--json` gives `not_safe` and `links_into`). Only links
+  the person may see, and only from the same agent: a link on another machine to an NFS mount of the folder isn't
+  known as one. Older catalogs: `upgrades/symlink-targets.sql`, after `protected-links.sql`.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.

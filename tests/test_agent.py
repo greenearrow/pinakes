@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 import zipfile
 
 from pinakes import agent, chunker, config, fsinfo, globs, names, outbox
@@ -733,6 +734,122 @@ CREATE TABLE files (
     sha256 TEXT, chunk_params TEXT, seen_scan INTEGER,
     PRIMARY KEY (root, relpath));
 """
+
+
+class TestSymlinkTargets(unittest.TestCase):
+    """A symlink's target, followed only inside the agent's roots (ROADMAP 7): which root and path it leads to, and
+    whether anything is there."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinakes-test-")
+        self.a, self.b, self.out = (os.path.join(self.tmp, d) for d in ("a", "b", "outside"))
+        for d in (self.a, self.b, self.out):
+            os.makedirs(d)
+        self.cfg = config.loads("""
+[agent]
+host = "test-1"
+state = "%(t)s/state.sqlite"
+outbox = "%(t)s/outbox"
+[transport]
+kind = "directory"
+path = "%(t)s/inbox"
+[[root]]
+label = "a"
+path = "%(a)s"
+[[root]]
+label = "b"
+path = "%(b)s"
+""" % {"t": self.tmp, "a": self.a, "b": self.b})
+        self.state = State(self.cfg.state)
+        self.put(self.a, "x.txt")
+        self.put(self.a, "deep/x.txt")
+        self.put(self.a, "deep/sub/f.txt")
+        self.put(self.b, "y.txt")
+        self.put(self.out, "z.txt")
+
+    def tearDown(self):
+        self.state.close()
+        shutil.rmtree(self.tmp)
+
+    def put(self, top, rel, data=b"data"):
+        p = os.path.join(top, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+
+    def ln(self, target, rel):
+        p = os.path.join(self.a, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        os.symlink(target, p)
+
+    def scan(self, **kw):
+        Scanner(self.cfg, self.state).scan(self.cfg.root("a"), **kw)
+        recs = []
+        for seq, path in outbox.pending(self.cfg.outbox):
+            recs.extend(outbox.read(path)[1])
+            outbox.ack(self.cfg.outbox, seq)
+        return {r["path"]: (r["link_root"], r["link_path"], r["dangling"]) for r in recs if r["t"] == "symlink"}
+
+    def test_where_each_link_leads(self):
+        self.maxDiff = None
+        self.ln("../x.txt", "docs/inside")
+        self.ln(os.path.join(self.b, "y.txt"), "other-root")
+        self.ln("missing.txt", "dangling")
+        self.ln(os.path.join(self.out, "z.txt"), "outside")
+        self.ln("deep/sub", "dirlink")
+        self.ln("dirlink/f.txt", "through-a-folder-link")
+        self.ln("dirlink/../x.txt", "dotdot-after-a-link")      # .. after a link: the link's parent, as the kernel
+        self.ln("loop-2", "loop-1")
+        self.ln("loop-1", "loop-2")
+        self.ln(self.b, "the-other-root")
+        self.ln("x.txt/nothing", "under-a-file")
+        self.assertEqual(self.scan(), {
+            "docs/inside": ("a", "x.txt", False),
+            "other-root": ("b", "y.txt", False),
+            "dangling": ("a", "missing.txt", True),
+            "outside": (None, None, None),
+            "dirlink": ("a", "deep/sub", False),
+            "through-a-folder-link": ("a", "deep/sub/f.txt", False),
+            "dotdot-after-a-link": ("a", "deep/x.txt", False),
+            "loop-1": ("a", "loop-2", True),                    # a loop: dangling
+            "loop-2": ("a", "loop-1", True),
+            "the-other-root": ("b", "", False),
+            "under-a-file": ("a", "x.txt/nothing", True),
+        })
+
+    def test_nothing_outside_the_roots_is_looked_up(self):
+        self.ln(os.path.join(self.out, "z.txt"), "outside")
+        self.ln(os.path.join(self.out, "../a/x.txt"), "back-in-by-name")   # leaves the roots: not followed
+        looked = []
+        real = os.lstat
+
+        def lstat(path, *args, **kw):
+            looked.append(os.fspath(path))
+            return real(path, *args, **kw)
+
+        with unittest.mock.patch("os.lstat", lstat):
+            recs = self.scan()
+        self.assertEqual(recs["outside"], (None, None, None))
+        self.assertEqual(recs["back-in-by-name"], (None, None, None))
+        self.assertEqual([p for p in looked if p.startswith(self.out)], [])
+
+    def test_target_appearing_or_going_sends_the_link_again(self):
+        self.ln("later.txt", "link")
+        self.assertEqual(self.scan(), {"link": ("a", "later.txt", True)})
+        self.assertEqual(self.scan(), {})
+        self.put(self.a, "later.txt")
+        self.assertEqual(self.scan(), {"link": ("a", "later.txt", False)})
+        os.unlink(os.path.join(self.a, "later.txt"))
+        self.assertEqual(self.scan(), {"link": ("a", "later.txt", True)})
+
+    def test_full_resend_keeps_a_symlink_a_symlink(self):
+        self.ln("x.txt", "link")
+        self.scan()
+        Scanner(self.cfg, self.state).scan(self.cfg.root("a"), full=True)
+        recs = [r for seq, path in outbox.pending(self.cfg.outbox) for r in outbox.read(path)[1]]
+        (link,) = [r for r in recs if r.get("path") == "link"]
+        self.assertEqual((link["t"], link["target"], link["link_root"], link["link_path"], link["dangling"]),
+                         ("symlink", "x.txt", "a", "x.txt", False))
 
 
 class TestConfig(unittest.TestCase):

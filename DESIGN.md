@@ -157,7 +157,12 @@ file's owner and enrollments.
   counts physical copies: duplicates (links reclaim nothing), backups (22 hard-linked snapshots of an unchanged file
   are one backup copy), and space (a folder's size takes each inode once). The UI marks a hard link of the file being
   shown as "same data", not as a copy.
-- **A symlink is recorded, never followed:** its target as text, no hash, and a symlinked folder is not entered.
+- **A symlink is recorded, never followed into:** its target as text, no hash, and a symlinked folder is not
+  entered. The agent also works out where it leads, name by name as the kernel would, looking names up (`lstat`)
+  only inside its own roots: the root and path it reaches, and whether anything is there (**dangling** if not, or
+  if it loops). A link leaving every root is not looked up; a hung network mount can't stall a scan. A target
+  appearing or going sends the link again. `safe-to-delete` leaves symlinks in the folder out (they hold no data)
+  and lists the links elsewhere that lead into it, which deleting it would leave dangling.
 
 ### Backup servers
 
@@ -182,6 +187,8 @@ Per root, on each scan, for every path:
    - same device and inode, similar size: **moved and changed** (strong; `mv` then edit);
    - chunk overlap at or above a threshold (default 60 %): **moved and changed** (likely; the evidence records the
      overlap). Catches "save as" and editors that replace the file, which get a new inode;
+   - a symlink: the same inode leading to the same place, **moved** (certain); else a new link leading where the gone
+     one did, with the same name (strong) or the only one (likely). Several, none of the same name: not guessed;
    - its bundle moved with it (a photo and its sidecar to the same new folder): raises the confidence of the above;
    - otherwise: **gone** and **new**.
 4. Across hosts nothing is a move: the same SHA-256 on two hosts is a **copy**, and a copy is a lineage edge, not a

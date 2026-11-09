@@ -83,7 +83,11 @@ def file_at(conn, loc):
 def file_by_id(conn, file_id):
     r = rows(conn, """SELECT %s, f.content_id, encode(c.sha256, 'hex') AS sha256, f.ctime, f.btime, f.first_seen,
                              f.last_seen, f.backup_of, p.display AS owner, r.protected AS root_protected,
-                             f.protected_link
+                             f.protected_link, f.is_symlink, f.link_target, f.link_root, f.link_relpath,
+                             f.link_dangling,
+                             (SELECT t.file_id FROM pinakes.present t JOIN pinakes.roots tr USING (root_id)
+                              WHERE f.is_symlink AND tr.label = f.link_root AND t.relpath = f.link_relpath
+                              LIMIT 1) AS link_file_id
                       FROM pinakes.files f JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                       LEFT JOIN pinakes.contents c ON c.content_id = f.content_id
                       LEFT JOIN pinakes.people p ON p.person_id = f.owner_id
@@ -121,7 +125,7 @@ def _no_copy_on_another_disk(conn, loc, kinds, limit, offset, sort, direction):
     pre = _prefix(path)
     return rows(conn, """SELECT %s, s.same_disk, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) %s
-                         WHERE r.label = %%s AND f.relpath LIKE %%s AND s.other_disk = 0"""
+                         WHERE r.label = %%s AND f.relpath LIKE %%s AND s.other_disk = 0 AND NOT f.is_symlink"""
                 % (FILE_COLS, TOTAL, _COPIES % ("AND ro.kind IN ('primary', 'backup')" if kinds else ""))
                 + order(COPY_SORT, sort, direction, "f.relpath, f.file_id") + PAGE, (pre, root, pre, limit, offset))
 
@@ -136,6 +140,19 @@ def not_safe_to_delete(conn, loc, limit=None, offset=0, sort=None, direction="as
     """The files under loc with no copy in a primary or backup root on another disk. Empty: safe. same_disk: their
     kept copies outside loc on the same disk, which don't make them safe."""
     return _no_copy_on_another_disk(conn, loc, True, limit, offset, sort, direction)
+
+
+def links_into(conn, loc, limit=None, offset=0):
+    """Symlinks outside loc that lead into it, or to it: deleting the folder would leave them dangling. Only those
+    the person can see (row-level security); only links whose agent also scans loc's root (same host)."""
+    root, path = split_location(loc)
+    pre = _prefix(path)
+    return rows(conn, """SELECT %s, f.link_target, f.link_relpath, %s FROM pinakes.present f
+                         JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                         WHERE f.is_symlink AND f.link_root = %%s AND (f.link_relpath LIKE %%s OR f.link_relpath = %%s)
+                           AND NOT (r.label = %%s AND f.relpath LIKE %%s)
+                         ORDER BY r.label, f.relpath, f.file_id""" % (FILE_COLS, TOTAL) + PAGE,
+                (root, pre, path, root, pre, limit, offset))
 
 
 def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):

@@ -65,6 +65,24 @@ class TestWeb(ServerCase):
         self.conn.execute("UPDATE pinakes.files SET protected_link = true WHERE file_id = %s", (his,))
         self.assertIn("protected: linked from a protected root", c.get("/file/%d" % his).get_data(as_text=True))
 
+    def test_symlinks_on_safe_to_delete_and_their_page(self):
+        os.makedirs(self.path("server-1", "store", "people/user-1/links"))
+        os.symlink("../taxes.txt", self.path("server-1", "store", "people/user-1/links/to-taxes"))
+        os.symlink("../nowhere.txt", self.path("server-1", "store", "people/user-1/links/dangling"))
+        self.scan("server-1", "store")
+        c, _ = self.login("user-1", "correct horse battery")
+        page = c.get("/reports/safe-to-delete?loc=store:people/user-1/").get_data(as_text=True)
+        self.assertNotIn("Links that would break", page)                  # both links are inside the folder
+        self.assertNotIn("to-taxes", page)                                # and a link holds no data
+        page = c.get("/reports/safe-to-delete?loc=store:people/user-1/taxes.txt").get_data(as_text=True)
+        self.assertIn("1 symlink(s) you can see elsewhere lead into this folder", page)
+        self.assertIn("store:people/user-1/links/to-taxes", page)
+        link = c.get("/file/%d" % self.file_id("people/user-1/links/to-taxes")).get_data(as_text=True)
+        self.assertIn('href="/file/%d">store:people/user-1/taxes.txt</a>' % self.file_id("people/user-1/taxes.txt"),
+                      link)
+        dangling = c.get("/file/%d" % self.file_id("people/user-1/links/dangling")).get_data(as_text=True)
+        self.assertIn("dangling: its target is missing", dangling)
+
     def test_csrf_required(self):
         c = self.client()
         c.get("/login")

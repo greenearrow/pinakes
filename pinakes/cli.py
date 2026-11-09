@@ -3,7 +3,8 @@
   pinakes [--config FILE] --as NAME find NAME-OR-GLOB
   pinakes ... where ROOT:PATH          every copy and backup of the file at that path
   pinakes ... only-here ROOT:PATH      files under PATH with no copy on another disk
-  pinakes ... safe-to-delete ROOT:PATH files under PATH with no kept copy on another disk (none: safe)
+  pinakes ... safe-to-delete ROOT:PATH files under PATH with no kept copy on another disk (none: safe), and the
+                                     symlinks elsewhere that lead into it
   pinakes ... backed-up ROOT:PATH
   pinakes ... dupes
   pinakes ... history ROOT:PATH
@@ -112,9 +113,19 @@ def main(argv=None):
                 rows = queries.only_here(conn, need())
             elif a.cmd == "safe-to-delete":
                 rows = queries.not_safe_to_delete(conn, need())
-                if not rows and not a.json:
-                    print("safe: every file under %s has a kept copy on another disk" % a.arg)
+                links = queries.links_into(conn, a.arg)
+                if a.json:
+                    print(json.dumps({"not_safe": rows, "links_into": links}, default=_default, indent=1))
                     return 0
+                if not rows:
+                    print("safe: every file under %s has a kept copy on another disk" % a.arg)
+                else:
+                    _print(rows, False)
+                if links:
+                    print("\n%d symlink(s) elsewhere lead into %s and would be left dangling:" % (len(links), a.arg))
+                    _print([{"link": "%s:%s" % (l["root"], l["relpath"]), "target": l["link_target"]}
+                            for l in links], False)
+                return 0
             elif a.cmd == "backed-up":
                 rows = queries.backed_up(conn, need())
             elif a.cmd == "dupes":

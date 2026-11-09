@@ -13,6 +13,12 @@
   {% if name == 'safe-to-delete' %}
     {% if rows %}<p class="error"><strong>Not safe.</strong> These {{ pg.total }} file(s) have no copy you can see in a kept or backup root outside this folder on another disk. A copy on the same disk dies with it:</p>{{ pager(pg, "files") }}{{ file_table(rows, p=pg, same_disk=True) }}{{ pager(pg, "files") }}
     {% else %}<p><strong>Safe:</strong> every file under {{ loc }} has a copy you can see in a kept or backup root on another disk.</p>{% endif %}
+    <p class="muted">Symlinks in the folder hold no data and aren't counted.</p>
+    {% if links %}<h2>Links that would break</h2>
+    <p class="error">{{ links_total }} symlink(s) you can see elsewhere lead into this folder: deleting it leaves them dangling{% if links_total > links|length %} (the first {{ links|length }} shown){% endif %}.</p>
+    <div class="scroll"><table><tr><th>Link</th><th>Written as</th><th>Leads to</th></tr>
+    {% for l in links %}<tr><td>{{ l.host }} · <a href="{{ url_for('file', file_id=l.file_id) }}">{{ l.root }}:{{ l.relpath }}</a></td><td class="mono">{{ l.link_target }}</td><td>{{ loc.split(':')[0] }}:{{ l.link_relpath }}</td></tr>{% endfor %}
+    </table></div>{% endif %}
   {% elif name == 'only-here' %}
     <p class="muted">Files under {{ loc }} with no copy you can see on another disk{% if pg.total %}: {{ pg.total }}{% endif %}. Copies on this disk die with it; a hard link is not a copy.</p>{{ pager(pg, "files") }}{{ file_table(rows, "None: everything here has a copy on another disk.", pg, True) }}{{ pager(pg, "files") }}
   {% else %}

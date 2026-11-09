@@ -1,7 +1,8 @@
 """Scanning one root: walk it, compare with the local state, hash what changed, write batches.
 
 Read-only on the tree: files are opened O_RDONLY (with O_NOATIME where permitted, O_NOFOLLOW always), nothing is
-written inside the root, symlinks are recorded but never followed.
+written inside the root, symlinks are recorded but never followed into: a symlink's target is looked up (lstat, no
+reading) only inside this agent's own roots, to say which root and path it leads to and whether it is there.
 """
 
 import hashlib
@@ -16,6 +17,11 @@ from .outbox import BatchWriter
 
 READ_BLOCK = 1024 * 1024
 ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
+
+
+def _flag(v):
+    """A stored true/false/unknown (SQLite keeps 1, 0 or NULL) as True, False or None."""
+    return None if v is None else bool(v)
 
 
 class Interrupted(Exception):
@@ -230,12 +236,89 @@ class Scanner:
         self.counter = {}
         self.progress = progress  # callable(str), e.g. print; None: quiet
         self._protected = None
+        self._root_devs = {}
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
                 "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
                 "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
                              "mirrors": root.mirrors}}
+
+    def _root_holding(self, path):
+        """The root of this agent whose folder holds path (the innermost, for nested roots), and path's relpath in
+        it ('' for the root's own folder); (None, None) outside every root."""
+        best = None
+        for r in self.cfg.roots:
+            top = r.path.rstrip("/")
+            if (path == r.path or path.startswith(top + "/")) and (best is None or len(r.path) > len(best.path)):
+                best = r
+        if best is None:
+            return None, None
+        return best, path[len(best.path.rstrip("/")):].lstrip("/")
+
+    def _root_dev(self, r):
+        if r.label not in self._root_devs:
+            try:
+                self._root_devs[r.label] = _root_dev(r.path)
+            except OSError:
+                self._root_devs[r.label] = None
+        return self._root_devs[r.label]
+
+    LINK_HOPS = 40  # as the kernel's limit on symlinks in one lookup
+
+    def resolve_link(self, abspath, target):
+        """Where a symlink leads: (root label, relpath, dangling). Followed like the kernel would, one name at a
+        time, but looked up (lstat) only inside this agent's roots, on the root's own filesystem unless it crosses
+        mounts: anything else is never touched, so a link to a hung network mount can't stall the scan. Outside
+        every root: (None, None, None). Inside one: dangling is True when the target is missing (or a loop), False
+        when it is there, None when it can't be told (no rights, a mount not crossed)."""
+        if not target:
+            return None, None, None
+        todo = list(reversed(target.split("/")))
+        cur = "/" if target.startswith("/") else os.path.dirname(abspath)
+        hops = 0
+
+        def at(path, dangling):
+            r, rel = self._root_holding(os.path.normpath(path))
+            return (r.label, rel, dangling) if r else (None, None, None)
+
+        while todo:
+            name = todo.pop()
+            if name in ("", "."):
+                continue
+            if name == "..":
+                cur = os.path.dirname(cur)
+                continue
+            nxt = os.path.join(cur, name)
+            r, rel = self._root_holding(nxt)
+            if r is None or rel == "":
+                if r is None and not any(p.path.startswith(nxt.rstrip("/") + "/") for p in self.cfg.roots):
+                    return None, None, None   # leaves every root, and isn't on the way to one: not looked at
+                cur = nxt                     # a root's folder or a folder above one: taken as configured
+                continue
+            rest = os.path.join(nxt, *reversed(todo)) if todo else nxt
+            try:
+                st = os.lstat(nxt)
+            except (FileNotFoundError, NotADirectoryError):
+                return at(rest, True)
+            except OSError:
+                return at(rest, None)
+            if not r.cross_mounts and st.st_dev != self._root_dev(r):
+                return at(rest, None)         # a mount inside the root, which scans don't cross either
+            if stat.S_ISLNK(st.st_mode):
+                hops += 1
+                if hops > self.LINK_HOPS:
+                    return at(rest, True)     # a loop: nothing is there
+                try:
+                    t = os.readlink(nxt)
+                except OSError:
+                    return at(rest, None)
+                todo.extend(reversed(t.split("/")))
+                if t.startswith("/"):
+                    cur = "/"
+                continue
+            cur = nxt
+        return at(cur, False)
 
     def _protecting_root(self, root, fi):
         """The protected root holding another link to this file's inode, or None. A file in a protected root is
@@ -290,6 +373,7 @@ class Scanner:
                 rec["target"] = os.readlink(abspath)
             except OSError:
                 rec["target"] = None
+            rec["link_root"], rec["link_path"], rec["dangling"] = self.resolve_link(abspath, rec["target"])
         elif not stat.S_ISREG(fi.mode):
             return None, None  # sockets, fifos, devices: not files
         prot = self._protecting_root(root, fi)
@@ -304,6 +388,9 @@ class Scanner:
                      and prev["dev"] == fi.dev and prev["ino"] == fi.ino)
         if same_meta and prev["chunk_params"] == rec["chunk_params"]:
             if (prev["uid"] == fi.uid and bool(prev["protected_link"]) == (prot is not None)
+                    and (rec["t"] != "symlink" or (prev["t"], prev["target"], prev["link_root"], prev["link_path"],
+                                                   _flag(prev["dangling"]))
+                         == ("symlink", rec["target"], rec["link_root"], rec["link_path"], rec["dangling"]))
                     and (root.kind == "backup" or (prev["ctime_ns"] == fi.ctime_ns and prev["nlink"] == fi.nlink))):
                 # unchanged: nothing to send. In a backup root a new hard-linked snapshot changes every shared
                 # inode's link count and ctime; that says nothing about the copy, so it isn't sent
@@ -417,6 +504,9 @@ class Scanner:
                     rec.update(t="file", path=relpath, resend=True)
                     if prev["protected_link"]:
                         rec["protected_link"] = True
+                    if prev["t"] == "symlink":
+                        rec.update(t="symlink", target=prev["target"], link_root=prev["link_root"],
+                                   link_path=prev["link_path"], dangling=_flag(prev["dangling"]))
                 w = ensure_writer()
                 if rec is None:
                     self.state.mark_seen(root.label, relpath, scan_id)
