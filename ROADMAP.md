@@ -17,6 +17,8 @@ machines) or *operability* (installing and running it); "also" names a second.
 - **Queries:** every SQL block in QUERIES.md runs as a test (`tests/test_queries.py`), as a person under row-level
   security, on a catalog built by real scans.
 - **Web:** Flask's test client against the same throwaway database.
+- **`tools/test`** starts that throwaway PostgreSQL itself (a Unix socket in a temporary folder, removed after),
+  runs everything, and fails a run that skipped tests for want of a database or a dependency.
 - **"Tested" means run, on the stated Python, PostgreSQL, OS and hardware.** Each change says which. A feature that
   touches files on disk also gets a run on a real tree (read-only) before it is called done.
 - **Security-relevant changes** (anything that names or shows a file, any new role or function, any new way in) add

@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Run the tests against a throwaway PostgreSQL that this script starts and removes.
+
+  tools/test                         every test, on the newest PostgreSQL installed, with .venv's Python
+  tools/test --pg 18                 on PostgreSQL 18 (/usr/lib/postgresql/18/bin), or --pg-bin DIR
+  tools/test --python PATH           with another interpreter (it needs the server extras: psycopg, flask)
+  tools/test --agent-only            only the agent's tests: no PostgreSQL, standard library only
+  tools/test tests.test_server.TestSymlinks ...   only these
+
+The cluster lives in a new temporary folder, listens only on a Unix socket there (no port to collide with), runs
+without fsync, and is stopped and deleted afterwards, failed or not. A run that skips a server or web test (no
+database, Flask or psycopg missing) fails: "OK" means everything ran. The last line says what it ran on.
+"""
+
+import argparse
+import glob
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Run inside the interpreter under test: the suite, then every skip, as "SKIP<tab>test<tab>reason" lines.
+DRIVER = r"""
+import sys, unittest
+names = sys.argv[1:]
+sys.path.insert(0, "tests")  # as `python -m unittest discover -s tests` has it: test_agent, test_server, ...
+loader = unittest.defaultTestLoader
+suite = loader.loadTestsFromNames(names) if names else loader.discover("tests")
+result = unittest.TextTestRunner(verbosity=1).run(suite)
+for test, why in result.skipped:
+    print("SKIP\t%s\t%s" % (test.id(), why))
+sys.exit(0 if result.wasSuccessful() else 1)
+"""
+
+# Skips that mean part of the suite didn't run here, rather than a test that doesn't apply (e.g. running as root).
+MISSING = ("PINAKES_TEST_PGHOST", "not installed", "psycopg")
+
+
+def pg_bin(args):
+    if args.pg_bin:
+        return args.pg_bin
+    found = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"), key=lambda p: int(p.split("/")[4]))
+    if args.pg:
+        want = "/usr/lib/postgresql/%s/bin" % args.pg
+        if not os.path.exists(want + "/initdb"):
+            sys.exit("tools/test: no PostgreSQL %s (%s/initdb); installed: %s"
+                     % (args.pg, want, ", ".join(p.split("/")[4] for p in found) or "none"))
+        return want
+    if not found:
+        sys.exit("tools/test: no PostgreSQL under /usr/lib/postgresql; give --pg-bin DIR")
+    return os.path.dirname(found[-1])
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], epilog=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--pg", help="PostgreSQL major version, from /usr/lib/postgresql/N/bin")
+    ap.add_argument("--pg-bin", help="the folder holding initdb and pg_ctl")
+    ap.add_argument("--python", help="the interpreter to test with (default: .venv/bin/python, else this one)")
+    ap.add_argument("--agent-only", action="store_true", help="only tests/test_agent.py; no PostgreSQL")
+    ap.add_argument("--keep", action="store_true", help="on failure, keep the cluster's folder and say where")
+    ap.add_argument("tests", nargs="*", help="test names (default: all)")
+    args = ap.parse_args()
+
+    python = args.python or (os.path.join(HERE, ".venv/bin/python")
+                             if os.path.exists(os.path.join(HERE, ".venv/bin/python")) else sys.executable)
+    pyver = subprocess.run([python, "-c", "import platform; print(platform.python_version())"],
+                           check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
+    env = dict(os.environ)
+    for k in ("PINAKES_TEST_PGHOST", "PINAKES_TEST_PGUSER", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"):
+        env.pop(k, None)
+    names = args.tests or (["test_agent"] if args.agent_only else [])
+    on = "Python %s, %s %s, %s" % (pyver, platform.system(), platform.release(), platform.machine())
+
+    tmp = None
+    pg = None
+    ok = False
+    try:
+        if not args.agent_only:
+            bindir = pg_bin(args)
+            # a socket path is limited to about 100 bytes: keep the folder short
+            base = tempfile.gettempdir()
+            tmp = tempfile.mkdtemp(prefix="pinakes-pg-", dir=base if len(base) < 60 else "/tmp")
+            data = os.path.join(tmp, "data")
+            run([os.path.join(bindir, "initdb"), "-D", data, "-U", "postgres", "-A", "trust", "--no-sync",
+                 "-E", "UTF8", "--locale", "C.UTF-8"])
+            run([os.path.join(bindir, "pg_ctl"), "-D", data, "-l", os.path.join(tmp, "log"), "-w", "-o",
+                 "-k %s -c listen_addresses='' -p 5432 -c fsync=off -c synchronous_commit=off "
+                 "-c full_page_writes=off -c max_connections=50" % tmp, "start"])
+            pg = (bindir, data)
+            version = run([os.path.join(bindir, "postgres"), "--version"]).stdout.strip()
+            on = "%s, %s" % (version.replace("postgres (PostgreSQL) ", "PostgreSQL "), on)
+            env.update(PINAKES_TEST_PGHOST=tmp, PINAKES_TEST_PGUSER="postgres", PGPORT="5432")
+        print("tools/test: on %s" % on, flush=True)
+        proc = subprocess.run([python, "-c", DRIVER] + names, cwd=HERE, env=env, stdout=subprocess.PIPE, text=True)
+        skips = []
+        for line in proc.stdout.splitlines():
+            if line.startswith("SKIP\t"):
+                skips.append(line.split("\t", 2)[1:])
+            else:
+                print(line)
+        missing = [s for s in skips if any(m in s[1] for m in MISSING)] if not args.agent_only else []
+        for test, why in skips:
+            print("skipped: %s: %s" % (test, why))
+        if missing:
+            print("tools/test: FAILED: %d test(s) skipped for something missing here (above): not a full run"
+                  % len(missing))
+        ok = proc.returncode == 0 and not missing
+        print("tools/test: %s on %s" % ("OK" if ok else "FAILED", on))
+    except subprocess.CalledProcessError as e:
+        print("tools/test: %s failed:\n%s" % (" ".join(e.cmd[:1]), e.stdout), file=sys.stderr)
+    finally:
+        if pg:
+            subprocess.run([os.path.join(pg[0], "pg_ctl"), "-D", pg[1], "-m", "immediate", "stop"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if tmp:
+            if args.keep and not ok:
+                print("tools/test: kept %s (its server log: log)" % tmp)
+            else:
+                shutil.rmtree(tmp, ignore_errors=True)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

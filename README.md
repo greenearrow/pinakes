@@ -44,5 +44,9 @@ Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
 ## Contributing
 
+Tests: `tools/test` starts a throwaway PostgreSQL (from `/usr/lib/postgresql/N/bin`; `--pg N` picks one), runs
+every test with `.venv`'s Python, removes the cluster, and fails if anything was skipped for lack of a database or a
+dependency; `tools/test --agent-only` needs neither. Its last line says what it ran on.
+
 Run `git config core.hooksPath githooks` once. The hooks run `tools/leak-scan`, which blocks addresses, MACs, LAN
 host names, email addresses, keys and your own private terms (`leak-patterns.example`) from being committed.
