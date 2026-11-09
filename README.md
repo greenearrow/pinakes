@@ -43,7 +43,23 @@ Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.15; 
 
 Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
+## Installing
+
+A machine running pinakes needs only the package: `pip install pinakes` for an agent (`pinakes[agent310]` on Python
+3.10), `pinakes[server]` for the catalog server and web UI. No tests, test tools or extra PostgreSQL versions; the
+wheel holds the package alone, and `tools/test --wheel` fails if anything else gets in.
+
 ## Contributing
+
+Development needs more: `pip install -e '.[dev]'` (the server's packages, `build`, `uv`), and a PostgreSQL for the
+tests. When to run what:
+
+- Every commit: the hooks run `tools/leak-scan`; run `tools/test` yourself (about 75 s; `--agent-only` about 3 s).
+- A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
+- Before a release: `tools/test --matrix full` and `tools/test --wheel`.
+
+The matrix needs each PostgreSQL major version side by side (PGDG's apt packages, with `create_main_cluster =
+false` so none starts a cluster of its own) and `tools/test --setup` once.
 
 Tests: `tools/test` starts a throwaway PostgreSQL (from `/usr/lib/postgresql/N/bin`; `--pg N` picks one), runs
 every test with `.venv`'s Python, removes the cluster, and fails if anything was skipped for lack of a database or a

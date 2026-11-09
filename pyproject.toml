@@ -15,6 +15,9 @@ dependencies = []                      # the agent is standard library only (plu
 agent310 = ["tomli>=1.2"]
 server = ["psycopg[binary]>=3.1", "flask>=3.0", "waitress>=3.0"]
 mcp = ["mcp>=1.0"]
+# development only, never on a machine that runs pinakes: the server's packages for the tests, build for --wheel,
+# uv for the matrix's environments (tools/test)
+dev = ["pinakes[server]", "build>=1.2", "uv>=0.5"]
 
 [project.scripts]
 pinakes-agent = "pinakes.agent:main"

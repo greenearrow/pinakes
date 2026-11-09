@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,6 +154,11 @@ def wheel(args):
         built = sorted(os.listdir(dist))
         whl = [f for f in built if f.endswith(".whl")]
         print("tools/test: built %s" % ", ".join(built), flush=True)
+        with zipfile.ZipFile(os.path.join(dist, whl[0])) as z:  # what a machine installs: the package, nothing more
+            extra = [n for n in z.namelist() if not n.startswith(("pinakes/", "pinakes-"))]
+            dev = [n for n in z.namelist() if n.startswith(("pinakes/tests/", "pinakes/tools/"))]
+        if extra or dev:
+            sys.exit("tools/test: the wheel holds more than the package: %s" % ", ".join(extra + dev))
         env = os.path.join(tmp, "venv")
         subprocess.run([uv, "venv", "-q", "--python", here_py, env], check=True)
         py = os.path.join(env, "bin", "python")
