@@ -5,8 +5,6 @@ test_server.py does."""
 import hashlib
 import os
 import random
-import shutil
-import tempfile
 import time
 import unittest
 
@@ -88,11 +86,18 @@ class _OldIngester(Ingester):
 class TestMovesSameAsBefore(ServerCase):
     CHUNKS = 'chunks = { enabled = true, min_size = "1", average = "4KiB" }'
 
-    def scenario(self, cls):
-        self.reset()
-        self.ing = cls(self.conn, self.scfg)
-        self.ing.seed()
-        self.ing.progress_every = 7  # the progress lines run too
+    def record(self):
+        """Build the trees and scan them once, keeping the batches: both ingesters must get the same input. Built
+        twice, the filesystem hands out other inodes, and a freed one reused by a file written just after makes a
+        gone and a new path "the same inode" in one build and not the other (more so with other tests running)."""
+        batches = []
+
+        class Recorder:
+            def apply(self, header, recs, host):
+                batches.append((header, recs, host))
+                return "recorded"
+
+        self.ing = Recorder()
         rnd = random.Random(11)
         big = [rnd.randbytes(30000) for _ in range(3)]
         t0 = 1700000000
@@ -134,6 +139,17 @@ class TestMovesSameAsBefore(ServerCase):
         for i in range(4):  # new copies of contents that also moved: the same-name preference decides
             self.write("server-1", "store", "extra/%d-same.txt" % i, b"copy %d" % i, mtime=t0 + 500)
         self.scan("server-1", "store")
+        return batches
+
+    def replay(self, cls, batches):
+        with admin_conn(self.db) as c:
+            c.execute("DROP SCHEMA IF EXISTS pinakes CASCADE")
+            apply_schema(c)
+        self.ing = cls(self.conn, self.scfg)
+        self.ing.seed()
+        self.ing.progress_every = 7  # the progress lines run too
+        for header, recs, host in batches:
+            self.assertEqual(self.ing.apply(header, recs, host), "applied")
         history = self.q("""SELECT f.relpath, h.kind, h.old_relpath, h.new_relpath, h.evidence, h.confidence
                             FROM pinakes.history h JOIN pinakes.files f USING (file_id) ORDER BY 1, 2, 3, 4""")
         catalog = self.q("SELECT relpath, gone_on IS NULL, content_id FROM pinakes.files ORDER BY 1, 2, 3")
@@ -142,19 +158,10 @@ class TestMovesSameAsBefore(ServerCase):
                           JOIN pinakes.files ft ON ft.file_id = l.to_file_id ORDER BY 1, 2, 3""")
         return history, catalog, edges
 
-    def reset(self):
-        for st, _, _ in self.agents.values():
-            st.close()
-        self.agents = {}
-        shutil.rmtree(self.tmp)
-        self.tmp = tempfile.mkdtemp(prefix="pinakes-srv-")
-        with admin_conn(self.db) as c:
-            c.execute("DROP SCHEMA IF EXISTS pinakes CASCADE")
-            apply_schema(c)
-
     def test_same_history_catalog_and_lineage(self):
-        old = self.scenario(_OldIngester)
-        new = self.scenario(Ingester)
+        batches = self.record()
+        old = self.replay(_OldIngester, batches)
+        new = self.replay(Ingester, batches)
         kinds = {(h[1], h[4]) for h in old[0]}
         for k in [("moved", "same sha256"), ("moved_changed", "same inode, similar size"), ("gone", None),
                   ("new", None)]:

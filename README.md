@@ -38,7 +38,8 @@ In short:
 - Owners per folder, changeable in the web UI, with others enrolled as co-owners, readers or annotators.
 - A wish: an MCP server over the read-only queries, acting as one person.
 
-Target: Debian-family Linux with systemd, Python 3.11+, PostgreSQL 15+; the web UI on Flask and waitress.
+Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.14; 3.10 needs `tomli`, the
+`agent310` extra), PostgreSQL 15+ (tested on 15 to 18); the web UI on Flask and waitress.
 
 Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
@@ -46,7 +47,11 @@ Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
 Tests: `tools/test` starts a throwaway PostgreSQL (from `/usr/lib/postgresql/N/bin`; `--pg N` picks one), runs
 every test with `.venv`'s Python, removes the cluster, and fails if anything was skipped for lack of a database or a
-dependency; `tools/test --agent-only` needs neither. Its last line says what it ran on.
+dependency; `tools/test --agent-only` needs neither. Its last line says what it ran on. Across versions:
+`tools/test --setup` makes an environment per Python under `.matrix/` (with [uv](https://docs.astral.sh/uv/)),
+then `tools/test --matrix [full] --jobs 4` runs them against every PostgreSQL installed (PGDG's packages put several
+side by side). `tools/test --wheel` tests what a release would ship: the wheel, built from a clean copy and
+installed in a new environment.
 
 Run `git config core.hooksPath githooks` once. The hooks run `tools/leak-scan`, which blocks addresses, MACs, LAN
 host names, email addresses, keys and your own private terms (`leak-patterns.example`) from being committed.

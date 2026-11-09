@@ -23,12 +23,14 @@ try:
 except ImportError:
     psycopg = None
 
+import pinakes
 from pinakes import config, outbox, server_config
 from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
 from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
 
 PGHOST = os.environ.get("PINAKES_TEST_PGHOST")
+UPGRADES = os.path.join(os.path.dirname(pinakes.__file__), "upgrades")   # as installed: a wheel must carry them
 PGUSER = os.environ.get("PINAKES_TEST_PGUSER", "postgres")
 
 SERVER = """
@@ -556,8 +558,7 @@ class TestReview(ServerCase):
         self.assertEqual(audit, ([two], {"mark": "intended", "changes": 1}))
 
     def test_upgrade_file_matches_the_schema(self):
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades",
-                            "review-marks.sql")
+        path = os.path.join(UPGRADES, "review-marks.sql")
         defs = ("SELECT pg_get_functiondef('pinakes.mark_changes(bigint[], text)'::regprocedure), "
                 "(SELECT array_agg(pg_get_expr(polqual, polrelid)) FROM pg_policy "
                 " WHERE polrelid = 'pinakes.review_marks'::regclass), "
@@ -860,7 +861,7 @@ def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
             " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' AND table_name = 'present'), "
             "(SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'pinakes' "
             " AND tablename = 'files')")
-    upgrades = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades")
+    upgrades = UPGRADES
     with admin_conn(case.db) as c:
         fresh = c.execute(defs).fetchone()
         grants = c.execute("SELECT grantee, privilege_type FROM information_schema.role_table_grants "
@@ -1368,8 +1369,7 @@ class TestIngesterStops(ServerCase):
         with open(cfg, "w") as f:
             f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s\n%s'
                     % (PGHOST, self.db, extra, SERVER))
-        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        env = dict(os.environ, PYTHONPATH=repo)
+        env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(pinakes.__file__)))  # the one in use
         p = subprocess.Popen([sys.executable, "-m", "pinakes.ingest", "--config", cfg, "--host", "server-1"],
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         p.stdin.write(self.batch)

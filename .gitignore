@@ -6,3 +6,4 @@ private/
 .venv/
 *.egg-info/
 build/
+.matrix/

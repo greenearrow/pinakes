@@ -5,7 +5,13 @@
   tools/test --pg 18                 on PostgreSQL 18 (/usr/lib/postgresql/18/bin), or --pg-bin DIR
   tools/test --python PATH           with another interpreter (it needs the server extras: psycopg, flask)
   tools/test --agent-only            only the agent's tests: no PostgreSQL, standard library only
-  tools/test tests.test_server.TestSymlinks ...   only these
+  tools/test test_server.TestSymlinks ...   only these
+  tools/test --matrix [--jobs N]     each Python in .matrix/ on the newest PostgreSQL, and each PostgreSQL installed
+                                     on .venv's Python; --matrix full: every pair. One line per run; logs in
+                                     .matrix/logs/. Make the environments with tools/test --setup (needs uv).
+  tools/test --wheel [--pg N]        build the sdist and, from it, the wheel (python -m build); install the wheel with
+                                     the server extras into a new environment (uv); run every test there against the
+                                     installed copy, not this tree: what a release would ship.
 
 The cluster lives in a new temporary folder, listens only on a Unix socket there (no port to collide with), runs
 without fsync, and is stopped and deleted afterwards, failed or not. A run that skips a server or web test (no
@@ -20,6 +26,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -55,6 +63,124 @@ def pg_bin(args):
     return os.path.dirname(found[-1])
 
 
+def installed_pg():
+    return sorted((p.split("/")[4] for p in glob.glob("/usr/lib/postgresql/*/bin/initdb")), key=int)
+
+
+def matrix_pythons():
+    found = glob.glob(os.path.join(HERE, ".matrix", "py3.*", "bin", "python"))
+    return sorted(found, key=lambda p: [int(x) for x in p.split("/")[-3][2:].split(".")])
+
+
+MATRIX_PYTHONS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+
+
+def setup(pythons):
+    """One environment per Python under .matrix/, made with uv (from .venv, else on PATH): the package editable,
+    with the server extras (and tomli on 3.10)."""
+    uv = os.path.join(HERE, ".venv/bin/uv") if os.path.exists(os.path.join(HERE, ".venv/bin/uv")) else "uv"
+    for v in pythons:
+        env = os.path.join(HERE, ".matrix", "py" + v)
+        extra = "server,agent310" if v == "3.10" else "server"
+        subprocess.run([uv, "venv", "-q", "--allow-existing", "--python", v, env], check=True)
+        subprocess.run([uv, "pip", "install", "-q", "--python", os.path.join(env, "bin/python"),
+                        "-e", "%s[%s]" % (HERE, extra)], check=True)
+        print("tools/test: .matrix/py%s ready" % v)
+    return 0
+
+
+def matrix(args):
+    pythons, pgs = matrix_pythons(), installed_pg()
+    if not pythons:
+        sys.exit("tools/test: no environments in .matrix/: make them with tools/test --setup")
+    if not pgs:
+        sys.exit("tools/test: no PostgreSQL under /usr/lib/postgresql")
+    default = os.path.join(HERE, ".venv/bin/python")
+    if args.matrix == "full":
+        runs = [(py, pg) for py in pythons for pg in pgs]
+    else:
+        runs = [(py, pgs[-1]) for py in pythons] + [(default, pg) for pg in pgs[:-1]]
+    logs = os.path.join(HERE, ".matrix", "logs")
+    os.makedirs(logs, exist_ok=True)
+
+    def one(run_):
+        py, pg = run_
+        name = "%s-pg%s" % (py.split("/")[-3].lstrip(".") if ".matrix" in py else "venv", pg)
+        start = time.monotonic()
+        with open(os.path.join(logs, name + ".log"), "w") as log:
+            rc = subprocess.run([sys.executable, os.path.abspath(__file__), "--python", py, "--pg", pg],
+                                stdout=log, stderr=subprocess.STDOUT).returncode
+        with open(os.path.join(logs, name + ".log")) as log:
+            text = log.read()
+        ran = [l for l in text.splitlines() if l.startswith("Ran ")]
+        last = [l for l in text.splitlines() if l.startswith(("tools/test: OK on", "tools/test: FAILED on"))]
+        line = "%-6s %-14s %4.0f s  %s" % ("OK" if rc == 0 else "FAILED", name, time.monotonic() - start,
+                                           (ran[-1][4:] + "; " if ran else "") + (last[-1].split(" on ", 1)[1]
+                                                                                  if last else "see its log"))
+        print(line, flush=True)
+        return rc == 0
+
+    print("tools/test: %d run(s), %d at a time; logs in .matrix/logs/" % (len(runs), args.jobs), flush=True)
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        results = list(pool.map(one, runs))
+    print("tools/test: matrix %s: %d of %d runs OK" % ("OK" if all(results) else "FAILED", sum(results),
+                                                       len(results)))
+    return 0 if all(results) else 1
+
+
+def wheel(args):
+    """Build, install into a clean environment, and run the tests from a copy of tests/ (with the example config
+    and QUERIES.md they read), so `import pinakes` finds the installed package, never this tree."""
+    here_py = os.path.join(HERE, ".venv/bin/python")
+    uv = os.path.join(HERE, ".venv/bin/uv")
+    tmp = tempfile.mkdtemp(prefix="pinakes-wheel-")
+    try:
+        # build from a clean copy: the files git tracks or would (ignored ones left out), so nothing left in this
+        # tree by an editable install (pinakes.egg-info, whose file list setuptools trusts) slips into the package
+        tree = os.path.join(tmp, "tree")
+        files = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd=HERE,
+                               check=True, stdout=subprocess.PIPE, text=True).stdout.split("\0")
+        for f in filter(None, files):
+            if os.path.isfile(os.path.join(HERE, f)):
+                os.makedirs(os.path.dirname(os.path.join(tree, f)), exist_ok=True)
+                shutil.copy2(os.path.join(HERE, f), os.path.join(tree, f))
+        dist = os.path.join(tmp, "dist")
+        b = subprocess.run([here_py, "-m", "build", "--outdir", dist, tree], stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True)
+        if b.returncode:
+            print(b.stdout)
+            sys.exit("tools/test: the build failed (above)")
+        built = sorted(os.listdir(dist))
+        whl = [f for f in built if f.endswith(".whl")]
+        print("tools/test: built %s" % ", ".join(built), flush=True)
+        env = os.path.join(tmp, "venv")
+        subprocess.run([uv, "venv", "-q", "--python", here_py, env], check=True)
+        py = os.path.join(env, "bin", "python")
+        subprocess.run([uv, "pip", "install", "-q", "--python", py, os.path.join(dist, whl[0]) + "[server]"],
+                       check=True)
+        src = os.path.join(tmp, "src")
+        shutil.copytree(os.path.join(HERE, "tests"), os.path.join(src, "tests"),
+                        ignore=shutil.ignore_patterns("__pycache__"))
+        for f in ("QUERIES.md", "config.example.toml"):
+            shutil.copy(os.path.join(HERE, f), src)
+        where = subprocess.run([py, "-c", "import pinakes; print(pinakes.__file__)"], cwd=src, check=True,
+                               stdout=subprocess.PIPE, text=True).stdout.strip()
+        if not where.startswith(env):
+            sys.exit("tools/test: the tests would import %s, not the installed wheel" % where)
+        for script in ("pinakes-agent", "pinakes-ingest", "pinakes", "pinakes-web"):
+            subprocess.run([os.path.join(env, "bin", script), "--help"], check=True, stdout=subprocess.DEVNULL)
+        print("tools/test: installed in a new environment; pinakes from %s; the four commands start"
+              % os.path.relpath(where, tmp), flush=True)
+        cmd = [sys.executable, os.path.abspath(__file__), "--python", py, "--tests-from", src]
+        if args.pg:
+            cmd += ["--pg", args.pg]
+        if args.agent_only:
+            cmd += ["--agent-only"]
+        return subprocess.run(cmd + args.tests).returncode
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, **kw)
 
@@ -67,8 +193,21 @@ def main():
     ap.add_argument("--python", help="the interpreter to test with (default: .venv/bin/python, else this one)")
     ap.add_argument("--agent-only", action="store_true", help="only tests/test_agent.py; no PostgreSQL")
     ap.add_argument("--keep", action="store_true", help="on failure, keep the cluster's folder and say where")
+    ap.add_argument("--matrix", nargs="?", const="lean", choices=("lean", "full"),
+                    help="run across Pythons and PostgreSQL versions (see above)")
+    ap.add_argument("--jobs", type=int, default=1, help="matrix runs at a time (each has its own cluster)")
+    ap.add_argument("--setup", nargs="*", metavar="VERSION",
+                    help="make .matrix/ environments with uv (default: %s)" % " ".join(MATRIX_PYTHONS))
+    ap.add_argument("--wheel", action="store_true", help="test the built wheel, installed (see above)")
+    ap.add_argument("--tests-from", default=HERE, help=argparse.SUPPRESS)  # --wheel: a copy of tests/
     ap.add_argument("tests", nargs="*", help="test names (default: all)")
     args = ap.parse_args()
+    if args.wheel:
+        return wheel(args)
+    if args.setup is not None:
+        return setup(args.setup or MATRIX_PYTHONS)
+    if args.matrix:
+        return matrix(args)
 
     python = args.python or (os.path.join(HERE, ".venv/bin/python")
                              if os.path.exists(os.path.join(HERE, ".venv/bin/python")) else sys.executable)
@@ -100,7 +239,8 @@ def main():
             on = "%s, %s" % (version.replace("postgres (PostgreSQL) ", "PostgreSQL "), on)
             env.update(PINAKES_TEST_PGHOST=tmp, PINAKES_TEST_PGUSER="postgres", PGPORT="5432")
         print("tools/test: on %s" % on, flush=True)
-        proc = subprocess.run([python, "-c", DRIVER] + names, cwd=HERE, env=env, stdout=subprocess.PIPE, text=True)
+        proc = subprocess.run([python, "-c", DRIVER] + names, cwd=args.tests_from, env=env, stdout=subprocess.PIPE,
+                              text=True)
         skips = []
         for line in proc.stdout.splitlines():
             if line.startswith("SKIP\t"):
