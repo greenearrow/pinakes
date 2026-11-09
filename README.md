@@ -38,7 +38,7 @@ In short:
 - Owners per folder, changeable in the web UI, with others enrolled as co-owners, readers or annotators.
 - A wish: an MCP server over the read-only queries, acting as one person.
 
-Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.14; 3.10 needs `tomli`, the
+Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.15; 3.10 needs `tomli`, the
 `agent310` extra), PostgreSQL 15+ (tested on 15 to 18); the web UI on Flask and waitress.
 
 Licence: GPL-3.0 ([LICENSE](LICENSE)).

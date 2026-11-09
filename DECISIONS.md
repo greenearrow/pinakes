@@ -159,7 +159,7 @@ were made while building, to keep going, and are open to change.
   is the filesystem's number (`st_dev`), not the physical disk: two partitions of one disk, or two btrfs subvolumes,
   look like two disks, and so count as safe. A device the catalog doesn't know counts as the same disk.
 - **The test matrix is lean by default** (ROADMAP 27): each Python on the newest PostgreSQL and each PostgreSQL on
-  one Python, 8 runs; Python and PostgreSQL meet only through psycopg's protocol, so the 20-pair `--matrix full` is
+  one Python, 9 runs; Python and PostgreSQL meet only through psycopg's protocol, so the 24-pair `--matrix full` is
   for before a release. Each run has its own cluster on a Unix socket in its own folder, so runs go side by side
   (`--jobs`); 8 at once take under two minutes on the desktop. A test that compared the bulk move matching with the
   old per-file one built its tree twice: a freed inode reused by a file written just after made a gone and a new
