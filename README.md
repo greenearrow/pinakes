@@ -54,7 +54,9 @@ wheel holds the package alone, and `tools/test --wheel` fails if anything else g
 Development needs more: `pip install -e '.[dev]'` (the server's packages, `build`, `uv`), and a PostgreSQL for the
 tests. When to run what:
 
-- Every commit: the hooks run `tools/leak-scan`; run `tools/test` yourself (about 75 s; `--agent-only` about 3 s).
+- Every commit: the hooks run `tools/leak-scan`, and, when the commit touches code or tests, the agent's tests
+  (`tools/test --agent-only`, about 3 s; `PINAKES_SKIP_TESTS=1` skips them once). Run the full `tools/test` yourself
+  (about 75 s).
 - A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
 - Before a release: `tools/test --matrix full` and `tools/test --wheel`.
 
