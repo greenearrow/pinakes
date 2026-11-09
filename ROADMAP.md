@@ -4,6 +4,10 @@ What is built, what is left to build, and what "done" means for each piece. The 
 METADATA.md and QUERIES.md; choices made while building are in DECISIONS.md. Deployment belongs to each site, not to
 this repo.
 
+Each open item starts with its category in brackets: *feature* (something new to do), *security* (who sees or does
+what), *correctness* (a wrong answer without a crash), *stability* (staying up), *scalability* (bigger trees, busier
+machines) or *operability* (installing and running it); "also" names a second.
+
 ## How things are tested
 
 - **Agent:** `unittest` on generated trees in a temporary directory; standard library only, so it runs anywhere the
@@ -47,85 +51,87 @@ walk check with the agent's rights, 31, an ingester stopping when its agent give
 built; see the table above; 3, `inhibit_sleep`, is gone, as the unit or the site keeps the machine awake; 5, same-disk
 copies, found when the first deployment's backup roots turned out to share their source's disk, is built):
 
-2. **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an `owner = "uid"` form that maps
-   the file's uid through the host's map, or the option goes. *Done when:* a test gives two files of two uids on one
-   host to two people through the map, and a server whose clients are all one account still works by folder rules.
-   The first deployment's shares all write as one account, so uids decide nothing there yet; they will once people
-   write as themselves (per-person Samba accounts, no `force user`). Keep `uid_map`; build this then.
+2. [Security; also correctness] **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an
+   `owner = "uid"` form that maps the file's uid through the host's map, or the option goes. *Done when:* a test gives
+   two files of two uids on one host to two people through the map, and a server whose clients are all one account still
+   works by folder rules. The first deployment's shares all write as one account, so uids decide nothing there yet; they
+   will once people write as themselves (per-person Samba accounts, no `force user`). Keep `uid_map`; build this then.
 
 ## Correctness gaps found while building
 
-6. **Protection by inode.** A file under a protected root that is hard-linked elsewhere is protected at every path.
-   *Done when:* a test links a protected file into a normal root and finds no archive listing, no metadata, no chunks
-   policy override, and the UI shows only names, sizes, times and hashes there.
-7. **Symlinks tied to their targets.** Resolve a target inside a known root to that file's id, flag dangling links,
-   match a moved symlink by its target, and list in `safe-to-delete` the links elsewhere that point into the folder.
-   *Done when:* tests cover a link inside a root, one to another root, a dangling one, a moved one, and a folder with
-   links pointing into it.
+6. [Security] **Protection by inode.** A file under a protected root that is hard-linked elsewhere is protected at every
+   path. *Done when:* a test links a protected file into a normal root and finds no archive listing, no metadata, no
+   chunks policy override, and the UI shows only names, sizes, times and hashes there.
+7. [Correctness] **Symlinks tied to their targets.** Resolve a target inside a known root to that file's id, flag
+   dangling links, match a moved symlink by its target, and list in `safe-to-delete` the links elsewhere that point into
+   the folder. *Done when:* tests cover a link inside a root, one to another root, a dangling one, a moved one, and a
+   folder with links pointing into it.
 
 ## The web UI, read-write
 
-8. **Owners and enrollments per folder:** give a folder away, enroll people as co-owners, readers or annotators, a
-   preview of how many files change hands before saving, audited and shown to the people affected. *Done when:*
-   tests cover a person giving their own folder away, being refused someone else's, an administrator taking one only
-   in a step-up, and the preview's count matching the result.
-9. **Lineage decisions:** confirm or reject a likely or possible relative; a decision outranks every heuristic.
-   *Done when:* a rejected edge disappears from walks and is never re-added by a later scan, and a confirmed one
-   survives a recompute.
-10. **Operator page:** counts, sizes, ages and errors per root, no file names. *Done when:* a test shows an operator
-    sees totals for another person's root and no path from it.
-11. **Notifications** when an administrator saw someone's records: a pluggable command (an e-mail, a push service),
-    off by default. *Done when:* a test with a stand-in command gets one message per step-up per person, with the
-    reason and no file names.
+8. [Feature; also security] **Owners and enrollments per folder:** give a folder away, enroll people as co-owners,
+   readers or annotators, a preview of how many files change hands before saving, audited and shown to the people
+   affected. *Done when:* tests cover a person giving their own folder away, being refused someone else's, an
+   administrator taking one only in a step-up, and the preview's count matching the result.
+9. [Feature; also correctness] **Lineage decisions:** confirm or reject a likely or possible relative; a decision
+   outranks every heuristic. *Done when:* a rejected edge disappears from walks and is never re-added by a later scan,
+   and a confirmed one survives a recompute.
+10. [Operability] **Operator page:** counts, sizes, ages and errors per root, no file names. *Done when:* a test shows
+    an operator sees totals for another person's root and no path from it.
+11. [Security] **Notifications** when an administrator saw someone's records: a pluggable command (an e-mail, a push
+    service), off by default. *Done when:* a test with a stand-in command gets one message per step-up per person, with
+    the reason and no file names.
 
 ## Metadata (METADATA.md)
 
-12. **The schema registry** (`schemas/*.toml`), with Dublin Core's common fields first. *Done when:* schemas load and
-    validate, a bad one is refused with a clear message, and every enrolled field's index exists.
-13. **Extractors, one schema at a time:** EXIF, then XMP (embedded and sidecar), audio tags, OPF, PDF and office
-    properties, video. Each optional by its dependency. *Done when, for each:* tests on generated files (made by the
-    test, never real ones) extract the declared fields; a missing dependency turns the extractor off, not the scan;
-    nothing runs on a protected root (a test proves it).
-14. **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each sidecar form, RAW with JPEG,
-    a book folder, and a bundle moved together counting as one move.
-15. **Identity fields for lineage** (PDF `/ID`, XMP `DocumentID`/`InstanceID`/`DerivedFrom`, EPUB identifier).
-    *Done when:* two renamed, edited files sharing an identity field are linked with certainty in a test.
-16. **Person-entered metadata and sensitive fields** in the UI. *Done when:* a shared file shows its non-sensitive
-    fields to the other person and hides the sensitive ones unless shared too.
+12. [Feature] **The schema registry** (`schemas/*.toml`), with Dublin Core's common fields first. *Done when:* schemas
+    load and validate, a bad one is refused with a clear message, and every enrolled field's index exists.
+13. [Feature; also security] **Extractors, one schema at a time:** EXIF, then XMP (embedded and sidecar), audio tags,
+    OPF, PDF and office properties, video. Each optional by its dependency. *Done when, for each:* tests on generated
+    files (made by the test, never real ones) extract the declared fields; a missing dependency turns the extractor off,
+    not the scan; nothing runs on a protected root (a test proves it).
+14. [Feature; also correctness] **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each
+    sidecar form, RAW with JPEG, a book folder, and a bundle moved together counting as one move.
+15. [Correctness] **Identity fields for lineage** (PDF `/ID`, XMP `DocumentID`/`InstanceID`/`DerivedFrom`, EPUB
+    identifier). *Done when:* two renamed, edited files sharing an identity field are linked with certainty in a test.
+16. [Feature; also security] **Person-entered metadata and sensitive fields** in the UI. *Done when:* a shared file
+    shows its non-sensitive fields to the other person and hides the sensitive ones unless shared too.
 
 ## Managing files (DESIGN.md "Managing files")
 
-17. **The operation queue:** request, approval, the agent fetching approved operations for its roots, carrying them
-    out within its local `managed` policy, reporting results. Move and rename first, then trash. *Done when:* tests
-    cover every refusal (file changed since the request, outside the local policy, someone else's file without
-    approval, a would-be overwrite) and a crash mid-operation leaving either the old state or the new, never neither.
-18. **Linking same-disk duplicates** (DESIGN.md "Planned"), after 17. *Done when:* the same refusals plus: different
-    owners, unsettled content, a protected or drop or backup root; the replaced inode reaches the trash; undo by copy
-    is documented and tested.
+17. [Feature; also stability] **The operation queue:** request, approval, the agent fetching approved operations for its
+    roots, carrying them out within its local `managed` policy, reporting results. Move and rename first, then trash.
+    *Done when:* tests cover every refusal (file changed since the request, outside the local policy, someone else's
+    file without approval, a would-be overwrite) and a crash mid-operation leaving either the old state or the new,
+    never neither.
+18. [Feature] **Linking same-disk duplicates** (DESIGN.md "Planned"), after 17. *Done when:* the same refusals plus:
+    different owners, unsettled content, a protected or drop or backup root; the replaced inode reaches the trash; undo
+    by copy is documented and tested.
 
 ## Sources and imports
 
-19. **Checksum manifests** (`SHA256SUMS` files) as hints, checked on the next scan, never trusted. *Done when:* a test
-    finds a wrong line reported and a right one confirmed.
-20. **Another catalog's checksums** (a photo library's SHA-1s), for files the agent doesn't see. Needs SHA-1 as an
-    extra hash on the roots that hold the library's originals. *Done when:* a test matches by SHA-1 and reports the
-    library's files that no root holds.
-21. **A restic repository as a backup source** (`restic ls --json`: paths, sizes, times; no whole-file hashes, so
-    matches are by path, size and mtime, marked lower confidence). *Done when:* a test with a stand-in `restic`
+19. [Feature; also correctness] **Checksum manifests** (`SHA256SUMS` files) as hints, checked on the next scan, never
+    trusted. *Done when:* a test finds a wrong line reported and a right one confirmed.
+20. [Feature] **Another catalog's checksums** (a photo library's SHA-1s), for files the agent doesn't see. Needs SHA-1
+    as an extra hash on the roots that hold the library's originals. *Done when:* a test matches by SHA-1 and reports
+    the library's files that no root holds.
+21. [Feature] **A restic repository as a backup source** (`restic ls --json`: paths, sizes, times; no whole-file hashes,
+    so matches are by path, size and mtime, marked lower confidence). *Done when:* a test with a stand-in `restic`
     answers "which snapshot holds this version" for a primary file.
 
 ## Accounts and hardening
 
-22. **WebAuthn** as a second factor; **OpenID Connect** sign-in. *Done when:* each has its own tests, and step-up
-    accepts each factor it is configured for.
-23. **Rate limits on search, audit retention, removing a person** (their records, shares and sessions go; audit
-    entries about them kept for the retention period). *Done when:* tests cover each.
+22. [Security] **WebAuthn** as a second factor; **OpenID Connect** sign-in. *Done when:* each has its own tests, and
+    step-up accepts each factor it is configured for.
+23. [Security] **Rate limits on search, audit retention, removing a person** (their records, shares and sessions go;
+    audit entries about them kept for the retention period). *Done when:* tests cover each.
 
 ## Later, or a wish
 
-24. **MCP server** over the read-only queries (DESIGN.md "Wish"). *Done when:* tests show a token acting as one person
-    under row-level security, never stepping up, leaving protected roots out unless added, and every query logged.
-25. **A live watcher** (fanotify) on a busy server, beside the nightly scan.
-26. **Single-machine mode** (SQLite, no people).
-27. **Packaging:** an installable release (`pyproject` build), a test runner that starts its own throwaway PostgreSQL,
-    and a test matrix (Python 3.10 to 3.13, PostgreSQL 15 to 18).
+24. [Feature; also security] **MCP server** over the read-only queries (DESIGN.md "Wish"). *Done when:* tests show a
+    token acting as one person under row-level security, never stepping up, leaving protected roots out unless added,
+    and every query logged.
+25. [Scalability] **A live watcher** (fanotify) on a busy server, beside the nightly scan.
+26. [Feature] **Single-machine mode** (SQLite, no people).
+27. [Operability] **Packaging:** an installable release (`pyproject` build), a test runner that starts its own throwaway
+    PostgreSQL, and a test matrix (Python 3.10 to 3.13, PostgreSQL 15 to 18).
