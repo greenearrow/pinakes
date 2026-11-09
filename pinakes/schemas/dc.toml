@@ -1,0 +1,54 @@
+# Dublin Core's elements (dcterms), the common fields: every other schema maps its own onto these in [common], so
+# one search covers every type (a photo's photographer, a song's artist and a book's author are all `creator`).
+# A site's schemas take the same form (METADATA.md "Schemas"); this one has no extractor of its own.
+#
+# Dates are ISO 8601 text, as precise as known ("2019", "2019-05", "2019-05-04", "2019-05-04T13:20:00Z"), times
+# in UTC with a Z, so that their text order is their time order.
+
+name = "dc"
+version = 1
+title = "Dublin Core"
+mime = ["*/*"]
+
+[fields.title]
+type = "text"
+index = "trigram"
+
+[fields.creator]
+type = "list"
+of = "text"
+index = "trigram"
+description = "who made it: author, artist, photographer"
+
+[fields.subject]
+type = "list"
+of = "text"
+index = "exact"
+description = "keywords, tags"
+
+[fields.description]
+type = "text"
+index = "trigram"
+
+[fields.date]
+type = "date"
+index = "range"
+description = "when it was made: taken, recorded, written, released"
+
+[fields.type]
+type = "text"
+index = "exact"
+description = "a DCMI type: Image, Sound, Text, MovingImage, Dataset, Software"
+
+[fields.format]
+type = "text"
+index = "exact"
+description = "a MIME type"
+
+[fields.language]
+type = "text"
+index = "exact"
+description = "a language tag, e.g. en, de-CH"
+
+[fields.rights]
+type = "text"

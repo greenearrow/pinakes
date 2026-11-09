@@ -43,8 +43,31 @@ To be enrolled first, all standards:
 | `ebook` | OPF (EPUB, a Calibre `metadata.opf`) | title, authors, series and index, identifiers (ISBN), language, publisher |
 | `document` | PDF info, Office core properties | title, author, created, modified, page count |
 
-A site can enroll its own schemas in config (a collection's catalogue numbers, a family's own tags) in the same form.
-Export maps onto schema.org types where they exist.
+A site can enroll its own schemas in config (a collection's catalogue numbers, a family's own tags) in the same form:
+a folder of `NAME.toml` files named by `[metadata] schemas` in `server.toml`, which can't reuse a project schema's
+name. Export maps onto schema.org types where they exist.
+
+### The file's form (built: ROADMAP 12)
+
+`pinakes/schemas/dc.toml` is the example. Top-level keys: `name` (as the file's name: a lowercase letter, then up to
+19 lowercase letters or digits), `version` (a whole number from 1), `title`, `mime` (a list; `image/*`, `*/*`),
+`[extractor]` (`module`, a dotted Python name, and `requires`, a list of packages), `[common]` (common field =
+this schema's field, of the same type, or one item of a common list) and one `[fields.NAME]` table per field
+(`type`, `of` for a list's items, `index`, `sensitive`, `identity`, `description`). Anything else is refused, as is a
+type an index doesn't fit:
+
+| Type | Stored as | Index |
+|---|---|---|
+| `text` | a string | `exact` (B-tree), `trigram` |
+| `number`, `duration` | a number (a duration in seconds) | `exact`, `range` (B-tree on the number) |
+| `date` | ISO 8601 text, as precise as known, times in UTC with `Z`, so text order is time order | `exact`, `range` |
+| `point` | `{"lat": ..., "lon": ...}` | `spatial` (GiST, PostgreSQL's own `point`; no PostGIS) |
+| `list` | an array, `of` text (the default), number, date, person or file | `exact` (GIN: has this item), `trigram` (of text) |
+| `person`, `file` | an id | `exact` |
+
+`pinakes-ingest setup` loads every schema first, and a bad one stops it, naming the file and the key, before anything
+changes; it then makes one partial index per indexed field (`md_SCHEMA_FIELD_KIND`, `WHERE schema = 'SCHEMA'`) and
+drops the `md_*` indexes no schema wants any more. Sidecar patterns and pairing rules join the form with ROADMAP 14.
 
 ## Identity fields
 

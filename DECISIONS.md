@@ -232,3 +232,21 @@ were made while building, to keep going, and are open to change.
   reclaims nothing, so `dupes` leaves them out (the first deployment's top row by copies was 4,467 empty game data
   files), and lineage neither starts nor ends at one. `tidy` removes undecided edges to or from an empty file. A file's
   own page still lists where else its content is, empty or not.
+- **The schema registry's indexes are made by a function, not by hand** (ROADMAP 12). The ingester owns no table, so
+  it can't make an index on `metadata`; `enroll_metadata_indexes()` is the schema owner's (SECURITY DEFINER) and
+  executable by `pinakes_ingest` only. It takes `[schema, field, kind]` names, checks them against the same patterns
+  the registry does, and builds each index from one of seven fixed expressions, so no SQL passes through it; it
+  touches only `md_*` indexes on `metadata`. Setup can then keep the indexes in step with the schemas, a site's
+  included, with no superuser step for each new schema. Building an index locks the table against writes while it
+  runs: setup, not a batch, does it. Older catalogs: `upgrades/metadata-indexes.sql`, once, as the owner.
+- **An index is named by what it indexes** (`md_SCHEMA_FIELD_KIND`, the kind standing for the expression: `eq`,
+  `trgm`, `num`, `date`, `list`, `ref`, `geo`), so a field whose type or index changes gets a new index and the
+  old one is dropped. Schema names have no underscore and are at most 20 characters, field names at most 30, so names
+  stay unique and within PostgreSQL's 63.
+- **Dates are ISO 8601 text**, indexed as text: a cast to `timestamptz` isn't immutable (it depends on the session's
+  time zone), so it can't be indexed, and partial dates ("2019") are common in tags. Times are stored in UTC with
+  `Z`, so text order is time order. A trigram index on a list of text covers its JSON text, which is enough for
+  "creator contains". Places use PostgreSQL's own `point` and GiST: no PostGIS.
+- **Only what the registry needs now is in the form:** sidecar patterns and pairing rules come with ROADMAP 14 and
+  are refused as unknown keys until then; `[extractor]` is checked (a dotted module name, a list of packages) but
+  nothing imports it before ROADMAP 13.

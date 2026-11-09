@@ -2,7 +2,8 @@
 
   pinakes-ingest --config server.toml --host NAME     one batch on stdin (the forced command of an agent's key)
   pinakes-ingest --config server.toml inbox DIR       every batch file waiting in DIR (the directory transport)
-  pinakes-ingest --config server.toml setup           seed people, hosts and settings (the schema must exist)
+  pinakes-ingest --config server.toml setup           seed people, hosts and settings, and enroll the metadata
+                                                      schemas' indexes (the schema must exist)
   pinakes-ingest --config server.toml passwd NAME     set a person's password at a hidden prompt (first sign-in)
   pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
   pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, and redo name
@@ -31,7 +32,8 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMAT, names
+from . import BATCH_FORMAT, names, registry
+from .config import ConfigError
 from .server_config import load as load_server_config
 
 SCHEMA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.sql")
@@ -888,6 +890,11 @@ class Ingester:
         return n
 
     # setup -----------------------------------------------------------------------------------------------------
+    def enroll(self, reg):
+        """Every indexed field of the registry's schemas gets its index; md_* indexes nothing wants are dropped."""
+        return self.one("SELECT pinakes.enroll_metadata_indexes(%s::jsonb)",
+                        (json.dumps([list(i) for i in reg.indexes()]),))[0]
+
     def seed(self):
         with self.conn.transaction():
             for name, p in self.cfg.people.items():
@@ -1003,6 +1010,12 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="tidy: count what would change, change nothing")
     args = ap.parse_args(argv)
     cfg = load_server_config(args.config)
+    if args.cmd == "setup":
+        try:
+            reg = registry.load(cfg.schemas_dir)       # a bad schema stops setup before it changes anything
+        except ConfigError as e:
+            print("schema refused: %s" % e, file=sys.stderr)
+            return 1
     with psycopg.connect(**cfg.connect_kwargs(), autocommit=True) as conn:
         if args.cmd == "setup":
             if not schema_exists(conn):
@@ -1012,8 +1025,13 @@ def main(argv=None):
                       "(on a server in Docker: sudo docker exec -i -u postgres CONTAINER psql ...)" % SCHEMA_FILE,
                       file=sys.stderr)
                 return 2
-            Ingester(conn, cfg).seed()
+            ing = Ingester(conn, cfg)
+            ing.seed()
             print("seeded people, groups, hosts and settings")
+            r = ing.enroll(reg)
+            print("schemas %s; %d metadata indexes, %d made, %d dropped" % (
+                ", ".join("%s %d" % (sc.name, sc.version) for sc in reg), len(r["wanted"]), len(r["created"]),
+                len(r["dropped"])))
             return 0
         ing = Ingester(conn, cfg)
         if args.cmd in ("inbox", None):

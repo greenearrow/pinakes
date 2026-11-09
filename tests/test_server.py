@@ -8,6 +8,7 @@ import contextlib
 import datetime
 import hashlib
 import io
+import json
 import os
 import random
 import shutil
@@ -24,7 +25,7 @@ except ImportError:
     psycopg = None
 
 import pinakes
-from pinakes import config, outbox, server_config
+from pinakes import config, outbox, registry, server_config
 from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
 from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
@@ -1338,6 +1339,187 @@ class TestCheckAgainstCatalog(ServerCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(ingest_main(["--config", path, "totals"]), 0)
         self.assertEqual(out.getvalue(), "server-1 store: 3 files 11 bytes\n")
+
+
+class TestSchemaRegistry(ServerCase):
+    """The schema registry (ROADMAP 12): setup makes an index for every indexed field of every enrolled schema, the
+    project's and the site's, and drops the ones no schema wants any more; a bad schema stops setup with a message
+    and changes nothing; the function that makes them takes names, never SQL, and only the ingester may run it."""
+
+    def setUp(self):
+        super().setUp()
+        self.site = os.path.join(self.tmp, "schemas")
+        os.makedirs(self.site)
+        self.write_schema("photo", PHOTO_SCHEMA)
+        self.cfg_path = os.path.join(self.tmp, "server.toml")
+        with open(self.cfg_path, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n[metadata]\nschemas = "%s"\n%s'
+                    % (PGHOST, self.db, self.site, SERVER))
+
+    def write_schema(self, name, text):
+        with open(os.path.join(self.site, name + ".toml"), "w") as f:
+            f.write(text)
+
+    def setup_cmd(self):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = ingest_main(["--config", self.cfg_path, "setup"])
+        return rc, out.getvalue(), err.getvalue()
+
+    def md_indexes(self):
+        return {r[0] for r in self.q("SELECT indexname FROM pg_indexes WHERE schemaname = 'pinakes' "
+                                     "AND tablename = 'metadata' AND indexname LIKE 'md\\_%%'")}
+
+    def wanted(self, site=True):
+        reg = registry.load(self.site if site else None)
+        return {registry.index_name(*i) for i in reg.indexes()}
+
+    def q(self, sql, args=()):
+        return self.conn.execute(sql, args).fetchall()
+
+    def test_setup_makes_every_enrolled_fields_index(self):
+        rc, out, _ = self.setup_cmd()
+        self.assertEqual(rc, 0)
+        self.assertIn("schemas dc 1, photo 1; 14 metadata indexes, 14 made, 0 dropped", out)
+        self.assertEqual(self.md_indexes(), self.wanted())
+        self.assertEqual(len(self.wanted()), 14)
+        self.assertEqual(self.setup_cmd()[1].splitlines()[-1], "schemas dc 1, photo 1; 14 metadata indexes, 0 made, "
+                                                                 "0 dropped")
+        # the indexes are partial, per schema: another schema's rows with the same field name don't reach them
+        defs = dict(self.q("SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'md\\_%%'"))
+        self.assertIn("WHERE (schema = 'photo'::text)", defs["md_photo_iso_num"])
+        self.assertIn("gin_trgm_ops", defs["md_dc_title_trgm"])
+        self.assertIn("USING gist", defs["md_photo_place_geo"])
+
+    def test_the_indexes_take_values_of_their_types_and_serve_searches(self):
+        self.setup_cmd()
+        cid = self.q("INSERT INTO pinakes.contents (sha256, size) VALUES ('\\x01', 1) RETURNING content_id")[0][0]
+        self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source) VALUES (%s, 'photo', %s, 'embedded'),"
+               " (%s, 'dc', %s, 'embedded') RETURNING metadata_id",
+               (cid, json.dumps({"photographer": "User One", "taken": "2019-05-04T13:20:00Z",
+                                 "place": {"lat": 47.5, "lon": 8.5}, "iso": 200, "length": 1.5, "shown": [1, 2],
+                                 "album": 7, "document_id": "uuid:1"}),
+                cid, json.dumps({"title": "A walk", "creator": ["User One"], "subject": ["walk"],
+                                 "date": "2019-05-04"})))
+        # each search uses its index, when it is the table's only one (on two rows the planner would pick any index
+        # that covers "schema = ...": every md_* one does)
+        others = {r[0] for r in self.q("SELECT indexname FROM pg_indexes WHERE schemaname = 'pinakes' AND "
+                                       "tablename = 'metadata' AND indexname <> 'metadata_pkey'")}
+        with admin_conn(self.db) as c:
+            for where, idx in [
+                    ("schema = 'photo' AND (vals ->> 'iso')::numeric > 100", "md_photo_iso_num"),
+                    ("schema = 'photo' AND point((vals -> 'place' ->> 'lon')::float8, "
+                     "(vals -> 'place' ->> 'lat')::float8) <@ box '((8,47),(9,48))'", "md_photo_place_geo"),
+                    ("schema = 'dc' AND vals ->> 'title' ILIKE '%walk%'", "md_dc_title_trgm"),
+                    ("schema = 'dc' AND vals ->> 'date' >= '2019'", "md_dc_date_date"),
+                    ("schema = 'dc' AND vals -> 'subject' ? 'walk'", "md_dc_subject_list")]:
+                with c.transaction(force_rollback=True):
+                    for other in others - {idx}:
+                        c.execute("DROP INDEX pinakes.%s" % other)
+                    c.execute("SET LOCAL enable_seqscan = off")
+                    sql = "SELECT metadata_id FROM pinakes.metadata WHERE " + where
+                    plan = "\n".join(r[0] for r in c.execute("EXPLAIN " + sql))
+                    self.assertIn(idx, plan, where)
+                    self.assertEqual(len(c.execute(sql).fetchall()), 1, where)
+
+    def test_indexes_no_schema_wants_are_dropped(self):
+        self.setup_cmd()
+        self.write_schema("photo", PHOTO_SCHEMA.replace('type = "number"\nindex = "range"', 'type = "number"'))
+        rc, out, _ = self.setup_cmd()
+        self.assertEqual(rc, 0)
+        self.assertIn("13 metadata indexes, 0 made, 1 dropped", out)
+        self.assertNotIn("md_photo_iso_num", self.md_indexes())
+        os.remove(os.path.join(self.site, "photo.toml"))
+        self.setup_cmd()
+        self.assertEqual(self.md_indexes(), self.wanted(site=False))
+        self.assertEqual(self.q("SELECT count(*) FROM pg_indexes WHERE indexname IN "
+                                "('metadata_content', 'metadata_file', 'metadata_vals')")[0][0], 3)
+
+    def test_a_bad_schema_stops_setup_and_changes_nothing(self):
+        self.setup_cmd()
+        before = self.md_indexes()
+        self.conn.execute("UPDATE pinakes.people SET display = 'before' WHERE name = 'user-2'")
+        self.write_schema("photo", PHOTO_SCHEMA.replace('index = "spatial"', 'index = "trigram"'))
+        self.write_schema("extra", 'name = "extra"\nversion = 1\nmime = ["*/*"]\n[fields.x]\ntype = "text"\n'
+                                   'index = "exact"\n')
+        rc, out, err = self.setup_cmd()
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("schema refused: %s: field place: index 'trigram' doesn't apply to point (use spatial)"
+                      % os.path.join(self.site, "photo.toml"), err)
+        self.assertEqual(self.md_indexes(), before)
+        self.assertEqual(self.q("SELECT display FROM pinakes.people WHERE name = 'user-2'")[0][0], "before")
+
+    def test_the_function_takes_names_not_sql(self):
+        for bad in ([["dc", "x')); DROP TABLE pinakes.files; --", "eq"]], [["dc; DROP", "x", "eq"]],
+                    [["dc", "x", "eq; DROP"]], [["dc", "x"]], {"dc": "x"}, [["dc", "Title", "eq"]]):
+            with self.subTest(bad=bad):
+                with self.assertRaises(psycopg.errors.RaiseException):
+                    self.conn.execute("SELECT pinakes.enroll_metadata_indexes(%s::jsonb)", (json.dumps(bad),))
+        self.assertIsNotNone(self.q("SELECT to_regclass('pinakes.files')")[0][0])
+        self.assertEqual(self.md_indexes(), set())
+
+    def test_only_the_ingester_may_enroll(self):
+        with admin_conn(self.db) as c:
+            self.assertEqual(c.execute(
+                "SELECT has_function_privilege('pinakes_app', 'pinakes.enroll_metadata_indexes(jsonb)', 'EXECUTE'), "
+                "has_function_privilege('public', 'pinakes.enroll_metadata_indexes(jsonb)', 'EXECUTE'), "
+                "has_function_privilege('pinakes_ingest', 'pinakes.enroll_metadata_indexes(jsonb)', 'EXECUTE')"
+            ).fetchone(), (False, False, True))
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db, autocommit=True) as app:
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                app.execute("SELECT pinakes.enroll_metadata_indexes('[]')")
+        # nor may the ingester make an index on its own: only through the function
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            self.conn.execute("CREATE INDEX md_dc_x_eq ON pinakes.metadata ((vals ->> 'x'))")
+
+    def test_upgrade_file_matches_the_schema(self):
+        sig = "'pinakes.enroll_metadata_indexes(jsonb)'::regprocedure"
+        defs = ("SELECT pg_get_functiondef(%s), has_function_privilege('pinakes_ingest', %s, 'EXECUTE'), "
+                "has_function_privilege('pinakes_app', %s, 'EXECUTE'), has_function_privilege('public', %s, "
+                "'EXECUTE')" % (sig, sig, sig, sig))
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP FUNCTION pinakes.enroll_metadata_indexes(jsonb)")
+            with open(os.path.join(UPGRADES, "metadata-indexes.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertEqual(fresh[1:], (True, False, False))
+        self.assertEqual(self.setup_cmd()[0], 0)
+
+
+PHOTO_SCHEMA = """
+name = "photo"
+version = 1
+mime = ["image/*"]
+[common]
+creator = "photographer"
+date = "taken"
+[fields.photographer]
+type = "text"
+index = "trigram"
+[fields.taken]
+type = "date"
+index = "range"
+[fields.place]
+type = "point"
+index = "spatial"
+sensitive = true
+[fields.iso]
+type = "number"
+index = "range"
+[fields.shown]
+type = "list"
+of = "person"
+index = "exact"
+sensitive = true
+[fields.album]
+type = "file"
+index = "exact"
+[fields.note]
+type = "text"
+"""
 
 
 class TestDurations(unittest.TestCase):

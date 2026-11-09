@@ -70,6 +70,8 @@ class ServerConfig:
         # stops it sooner)
         self.max_batch_time = seconds(d.get("ingest", {}).get("max_batch_time", "1h"))
         self.web = d.get("web", {})
+        # a folder of the site's own schemas (NAME.toml), enrolled after the project's (METADATA.md "Schemas")
+        self.schemas_dir = d.get("metadata", {}).get("schemas")
         self.base_dir = base_dir
 
     def connect_kwargs(self):
