@@ -94,7 +94,9 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   compromised server could at worst ask for moves and renames the machine's owner already allowed, never a deletion.
   The agent re-checks hashes before acting and never overwrites.
 - Protected roots send names, sizes, times and hashes (SHA-256 and chunk hashes) only. Nothing readable derived from
-  their content leaves the machine.
+  their content leaves the machine, by any path: a hard link of a protected file in another root is protected there
+  too (the agent walks its protected roots for links; a folder there it can't list protects every multi-link file
+  on its filesystem). A plain copy is a new file, under its own root's rules.
 
 ## Web UI
 

@@ -66,8 +66,9 @@ Each value records its source and time: **person** (entered in the UI), **sideca
 **embedded** (read from the file itself), **derived** (computed, such as a duration). When sources disagree, the UI
 shows all of them and searches use the first of person, sidecar, embedded, derived.
 
-Extraction reads file content, so it never runs on a protected root, and it runs on the agent, on the machine that
-has the file, never on the server.
+Extraction reads file content, so it never runs on a protected root, nor on a hard link of a protected file in
+another root (its record says `protected_link`), and it runs on the agent, on the machine that has the file, never on
+the server.
 
 ## Pairing: bundles
 

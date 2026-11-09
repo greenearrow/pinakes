@@ -436,7 +436,11 @@ class Ingester:
         relpath = rec["path"]
         name = relpath.rsplit("/", 1)[-1]
         content_id = self.content(rec.get("sha256"), rec.get("size") or 0, rec.get("chunks"), rec.get("chunk_params"))
-        if rec.get("members") and content_id and not root["protected"]:
+        if rec.get("protected_link") and content_id:
+            # another link to this inode is under a protected root: nothing readable is kept from it, even a
+            # listing made before the link was
+            self.q("DELETE FROM pinakes.members WHERE archive_content_id = %s", (content_id,))
+        elif rec.get("members") and content_id and not root["protected"]:
             self._members(content_id, rec["members"])
         key, ext = names.normalize(name, self.patterns)
         cols = {"name": name, "content_id": content_id, "size": rec.get("size"),
@@ -444,7 +448,8 @@ class Ingester:
                 "mtime_ns": rec.get("mtime_ns"), "ctime_ns": rec.get("ctime_ns"), "btime_ns": rec.get("btime_ns"),
                 "dev": rec.get("dev"), "ino": rec.get("ino"), "nlink": rec.get("nlink"), "uid": rec.get("uid"),
                 "is_symlink": rec.get("t") == "symlink", "link_target": rec.get("target"),
-                "unstable": bool(rec.get("unstable")), "name_key": key, "ext": ext}
+                "unstable": bool(rec.get("unstable")), "name_key": key, "ext": ext,
+                "protected_link": bool(rec.get("protected_link"))}
         ex = self.one("SELECT file_id, content_id, mtime, ctime, btime FROM pinakes.files "
                       "WHERE root_id = %s AND relpath = %s AND gone_on IS NULL", (root["root_id"], relpath))
         if ex:
@@ -594,7 +599,8 @@ class Ingester:
     def _merge_move(self, g, n, kind, evidence, confidence, after, on):
         """g's file_id lives on at n's path, with n's attributes; n's row goes."""
         cols = ("relpath, name, content_id, size, mtime, ctime, btime, mtime_ns, ctime_ns, btime_ns, dev, ino, nlink, "
-                "uid, is_symlink, link_target, unstable, name_key, ext, acl_id, owner_id, backup_of, snapshot")
+                "uid, is_symlink, link_target, unstable, name_key, ext, acl_id, owner_id, backup_of, snapshot, "
+                "protected_link")
         row = self.one("SELECT %s FROM pinakes.files WHERE file_id = %%s" % cols, (n[0],))
         self.q("DELETE FROM pinakes.files WHERE file_id = %s", (n[0],))
         sets = ", ".join("%s = %%s" % c.strip() for c in cols.split(","))

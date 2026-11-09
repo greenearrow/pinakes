@@ -229,12 +229,52 @@ class Scanner:
         self.hook = hook          # tests: called with (relpath) before each file; may raise Interrupted
         self.counter = {}
         self.progress = progress  # callable(str), e.g. print; None: quiet
+        self._protected = None
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
                 "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
                 "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
                              "mirrors": root.mirrors}}
+
+    def _protecting_root(self, root, fi):
+        """The protected root holding another link to this file's inode, or None. A file in a protected root is
+        protected by its root; a file with one link has no other path."""
+        if root.protected or fi.nlink < 2 or not stat.S_ISREG(fi.mode):
+            return None
+        if self._protected is None:
+            self._protected = self._protected_inodes(root)
+        inodes, uncertain = self._protected
+        return inodes.get((fi.dev, fi.ino)) or uncertain.get(fi.dev)
+
+    def _protected_inodes(self, root):
+        """Every inode with more than one link under this agent's protected roots, walked afresh once per scan (a
+        link can be made at any time), excludes ignored: an excluded file is still under the root. A folder there
+        that can't be listed hides what it holds, so every file with more than one link on its filesystem counts
+        as protected. Returns ({(dev, ino): protected root}, {dev: protected root})."""
+        inodes, uncertain = {}, {}
+        for p in self.cfg.roots:
+            if not p.protected or p is root or not os.path.isdir(p.path):
+                continue
+            try:
+                start = _root_dev(p.path)
+            except OSError:
+                continue
+            for rel, path, err in _walk(p.path, None, None if p.cross_mounts else start):
+                if isinstance(err, MountPoint):
+                    continue
+                try:
+                    st = os.lstat(path)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    uncertain.setdefault(start, p)
+                    continue
+                if err is not None:
+                    uncertain.setdefault(st.st_dev, p)
+                elif stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+                    inodes.setdefault((st.st_dev, st.st_ino), p)
+        return inodes, uncertain
 
     def _record(self, root, relpath, abspath, prev, seen_inodes):
         """The record to send for one path, and the state row to keep; (None, None) if unchanged."""
@@ -252,15 +292,19 @@ class Scanner:
                 rec["target"] = None
         elif not stat.S_ISREG(fi.mode):
             return None, None  # sockets, fifos, devices: not files
-        cparams = (chunker.Params(root.chunk_average) if rec["t"] == "file" and root.wants_chunks(fi.size)
+        prot = self._protecting_root(root, fi)
+        if prot is not None:
+            rec["protected_link"] = True  # another link to this inode is under a protected root: protected here too
+        cparams = (chunker.Params(root.chunk_average)
+                   if rec["t"] == "file" and root.wants_chunks(fi.size) and (prot is None or prot.wants_chunks(fi.size))
                    else None)
         rec["chunk_params"] = cparams.ident() if cparams else None
 
         same_meta = (prev is not None and prev["size"] == fi.size and prev["mtime_ns"] == fi.mtime_ns
                      and prev["dev"] == fi.dev and prev["ino"] == fi.ino)
         if same_meta and prev["chunk_params"] == rec["chunk_params"]:
-            if prev["uid"] == fi.uid and (root.kind == "backup" or (prev["ctime_ns"] == fi.ctime_ns
-                                                                     and prev["nlink"] == fi.nlink)):
+            if (prev["uid"] == fi.uid and bool(prev["protected_link"]) == (prot is not None)
+                    and (root.kind == "backup" or (prev["ctime_ns"] == fi.ctime_ns and prev["nlink"] == fi.nlink))):
                 # unchanged: nothing to send. In a backup root a new hard-linked snapshot changes every shared
                 # inode's link count and ctime; that says nothing about the copy, so it isn't sent
                 return None, None
@@ -296,7 +340,7 @@ class Scanner:
         rec["sha256"] = digest
         if chunks is not None:
             rec["chunks"] = chunks
-        if (root.archives and not root.protected
+        if (root.archives and not root.protected and prot is None
                 and relpath.lower().endswith(ARCHIVE_SUFFIXES)):
             try:
                 rec["members"] = list_members(abspath)
@@ -317,6 +361,7 @@ class Scanner:
         scan_id, started, resumed = self.state.open_scan(root.label)
         summary = {"root": root.label, "scan": scan_id, "resumed": resumed, "sent": 0, "gone": 0,
                    "errors": 0, "batches": 0}
+        self._protected = None  # walked when first needed: see _protecting_root
         seen_inodes = {}
         unreadable = []   # directories that couldn't be listed: what's under them is not reported gone
         writer = None
@@ -370,6 +415,8 @@ class Scanner:
                     rec = {k: prev[k] for k in ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino",
                                                 "nlink", "uid", "sha256", "chunk_params")}
                     rec.update(t="file", path=relpath, resend=True)
+                    if prev["protected_link"]:
+                        rec["protected_link"] = True
                 w = ensure_writer()
                 if rec is None:
                     self.state.mark_seen(root.label, relpath, scan_id)

@@ -158,6 +158,15 @@ were made while building, to keep going, and are open to change.
   link of the file is no copy. The first deployment had its backup roots on the same disk as their source. A device
   is the filesystem's number (`st_dev`), not the physical disk: two partitions of one disk, or two btrfs subvolumes,
   look like two disks, and so count as safe. A device the catalog doesn't know counts as the same disk.
+- **Protection follows the inode** (ROADMAP 6): a file in any root whose inode has another link under one of the
+  same agent's protected roots is protected there too. The agent finds such links by walking its protected roots
+  (names and inodes only, excludes ignored, since an excluded file is still under the root) once per scan, and only
+  when the scan meets a file with more than one link. Its record says `protected_link`: no archive listing, and chunks
+  only if both roots make them; the catalog drops a listing it kept from before the link, and the file's page says
+  so. A folder in a protected root the agent can't list makes every multi-link file on that filesystem protected,
+  as the agent can't tell. A link made or removed changes the record, so the next scan sends it, in a backup root
+  too. A plain copy is not covered: it is a new file, under its own root's rules. Older catalogs:
+  `upgrades/protected-links.sql`, which also marks the links the catalog already knows.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
   arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.

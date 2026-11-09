@@ -126,8 +126,10 @@ Set in config, per root:
 - `exclude`: glob patterns (caches, build output, VM images).
 - `protected`: nothing readable is derived from the files. Hashes only: SHA-256 and, if `chunks` is on, chunk hashes,
   which say nothing about the text but let lineage work. No archive listing, no metadata extraction, no previews;
-  the UI shows path, size, times and hashes. Its records never go to an outside service that would use them: MCP
-  tokens leave protected roots out unless the person adds them (SECURITY.md).
+  the UI shows path, size, times and hashes. Protection follows the inode: a hard link of a protected file in
+  another root is protected there too, and makes chunks only if the protected root does. Its records never go to an
+  outside service that would use them: MCP tokens leave protected roots out unless the person adds them
+  (SECURITY.md).
 - `managed`: off (default) or the operations allowed here (`move`, `rename`, `write-sidecar`, `trash`).
 
 ### Ownership and enrollments

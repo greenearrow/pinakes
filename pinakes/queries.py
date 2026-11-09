@@ -82,7 +82,8 @@ def file_at(conn, loc):
 
 def file_by_id(conn, file_id):
     r = rows(conn, """SELECT %s, f.content_id, encode(c.sha256, 'hex') AS sha256, f.ctime, f.btime, f.first_seen,
-                             f.last_seen, f.backup_of, p.display AS owner
+                             f.last_seen, f.backup_of, p.display AS owner, r.protected AS root_protected,
+                             f.protected_link
                       FROM pinakes.files f JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                       LEFT JOIN pinakes.contents c ON c.content_id = f.content_id
                       LEFT JOIN pinakes.people p ON p.person_id = f.owner_id

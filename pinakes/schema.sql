@@ -176,7 +176,8 @@ CREATE TABLE files (
     pending_scan bigint,                                    -- new in this unfinished scan: move matching pending
     changed_scan bigint,                                    -- changed in this unfinished scan: lineage pending
     name_key    text,                                       -- the name normalized for lineage (names.toml)
-    ext         text
+    ext         text,
+    protected_link boolean NOT NULL DEFAULT false           -- another link to its inode is under a protected root
 );
 CREATE UNIQUE INDEX files_present_path ON files (root_id, relpath) WHERE gone_on IS NULL;
 CREATE INDEX files_content ON files (content_id);

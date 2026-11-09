@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -572,6 +573,166 @@ class TestProtected(Tree):
         with self.assertRaises(config.ConfigError):
             config.loads('[agent]\nhost="h"\nstate="s"\noutbox="o"\n[[root]]\nlabel="w"\npath="/x"\n'
                          'protected=true\narchives=true\n')
+
+
+class TestProtectedByInode(unittest.TestCase):
+    """A file under a protected root hard-linked into another root is protected at every path (ROADMAP 6): no
+    archive listing there, and chunks only if the protected root makes them."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinakes-test-")
+        self.store = os.path.join(self.tmp, "store")
+        self.writing = os.path.join(self.tmp, "writing")
+        os.makedirs(self.store)
+        os.makedirs(self.writing)
+        self.state = None
+        self.configure()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("chapter.txt", os.urandom(20000))
+        self.zipped = buf.getvalue()
+        self.put(self.writing, "draft.zip", self.zipped)
+        self.put(self.store, "own.zip", self.zipped[:-1] + b"x")  # not linked: listed as before
+
+    def configure(self, writing_chunks="false", store_kind="primary", writing_extra=""):
+        if self.state:
+            self.state.close()
+        mirrors = '\nmirrors = { root = "elsewhere", layout = "{relpath}" }' if store_kind == "backup" else ""
+        self.cfg = config.loads("""
+[agent]
+host = "test-1"
+state = "%(t)s/state.sqlite"
+outbox = "%(t)s/outbox"
+[transport]
+kind = "directory"
+path = "%(t)s/inbox"
+[[root]]
+label = "store"
+path = "%(store)s"
+kind = "%(kind)s"
+archives = true
+chunks = { enabled = true, min_size = "1", average = "4KiB" }%(mirrors)s
+[[root]]
+label = "writing"
+path = "%(writing)s"
+protected = true
+exclude = ["**/private"]
+chunks = { enabled = %(wc)s, min_size = "1", average = "4KiB" }
+%(wx)s
+""" % {"t": self.tmp, "store": self.store, "writing": self.writing, "wc": writing_chunks, "kind": store_kind,
+       "mirrors": mirrors, "wx": writing_extra})
+        self.state = State(self.cfg.state)
+
+    def tearDown(self):
+        self.state.close()
+        for d, subdirs, _ in os.walk(self.tmp):
+            for sub in subdirs:
+                os.chmod(os.path.join(d, sub), 0o755)
+        shutil.rmtree(self.tmp)
+
+    def put(self, top, rel, data):
+        p = os.path.join(top, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def link(self, rel, to):
+        os.makedirs(os.path.dirname(os.path.join(self.store, to)), exist_ok=True)
+        os.link(os.path.join(self.writing, rel), os.path.join(self.store, to))
+
+    def scan_store(self):
+        Scanner(self.cfg, self.state).scan(self.cfg.root("store"))
+        recs = []
+        for seq, path in outbox.pending(self.cfg.outbox):
+            recs.extend(outbox.read(path)[1])
+            outbox.ack(self.cfg.outbox, seq)
+        return {r["path"]: r for r in recs if r["t"] == "file"}
+
+    def test_linked_file_has_no_listing_and_no_chunks(self):
+        self.link("draft.zip", "copies/draft.zip")
+        recs = self.scan_store()
+        linked, own = recs["copies/draft.zip"], recs["own.zip"]
+        self.assertTrue(linked["protected_link"])
+        self.assertEqual(linked["sha256"], sha(self.zipped))       # hashes, as on the protected root itself
+        for key in ("members", "members_error", "chunks", "metadata"):
+            self.assertNotIn(key, linked)
+        self.assertIsNone(linked["chunk_params"])                  # the protected root makes no chunks
+        self.assertNotIn("protected_link", own)
+        self.assertTrue(own["members"])
+        self.assertTrue(own["chunks"])
+
+    def test_chunks_when_the_protected_root_makes_them(self):
+        self.configure(writing_chunks="true")
+        self.link("draft.zip", "copies/draft.zip")
+        linked = self.scan_store()["copies/draft.zip"]
+        self.assertTrue(linked["protected_link"])
+        self.assertTrue(linked["chunks"])
+        self.assertNotIn("members", linked)
+
+    def test_excluded_file_is_still_under_the_root(self):
+        self.put(self.writing, "private/notes.zip", self.zipped + b"2")
+        self.link("private/notes.zip", "notes.zip")
+        self.assertTrue(self.scan_store()["notes.zip"]["protected_link"])
+
+    def test_link_made_or_removed_later_is_sent_again(self):
+        for kind in ("primary", "backup"):  # a backup root sends no link-count change, but this one it does
+            with self.subTest(kind=kind):
+                self.configure(store_kind=kind)
+                self.put(self.store, "pair/a.zip", self.zipped + kind.encode())
+                os.link(os.path.join(self.store, "pair/a.zip"), os.path.join(self.store, "pair/b.zip"))
+                first = self.scan_store()
+                self.assertTrue(first["pair/a.zip"]["members"])
+                self.assertNotIn("protected_link", first["pair/a.zip"])
+                os.link(os.path.join(self.store, "pair/a.zip"), os.path.join(self.writing, "a-%s.zip" % kind))
+                again = self.scan_store()
+                self.assertEqual(set(again) & {"pair/a.zip", "pair/b.zip"}, {"pair/a.zip", "pair/b.zip"})
+                self.assertTrue(again["pair/a.zip"]["protected_link"])
+                self.assertNotIn("members", again["pair/b.zip"])
+                self.assertEqual(self.scan_store(), {})              # settled: nothing more to send
+                os.unlink(os.path.join(self.writing, "a-%s.zip" % kind))
+                after = self.scan_store()
+                self.assertNotIn("protected_link", after["pair/a.zip"])
+                shutil.rmtree(os.path.join(self.store, "pair"))
+                self.scan_store()
+
+    @unittest.skipIf(os.geteuid() == 0, "root lists every folder")
+    def test_unlistable_folder_protects_every_linked_file_on_its_disk(self):
+        self.put(self.store, "x.zip", self.zipped + b"x")
+        os.link(os.path.join(self.store, "x.zip"), os.path.join(self.store, "y.zip"))
+        self.put(self.writing, "locked/inner.txt", b"inner")
+        os.chmod(os.path.join(self.writing, "locked"), 0)
+        recs = self.scan_store()
+        self.assertTrue(recs["x.zip"]["protected_link"])           # can't tell: treated as protected
+        self.assertNotIn("protected_link", recs["own.zip"])        # one link: no other path to it
+
+    def test_no_walk_without_a_linked_file(self):
+        walked = []
+        sc = Scanner(self.cfg, self.state)
+        sc._protected_inodes = lambda root: walked.append(root) or ({}, {})
+        sc.scan(self.cfg.root("store"))
+        self.assertEqual(walked, [])
+
+    def test_state_from_before_gains_the_column(self):
+        self.state.close()
+        path = os.path.join(self.tmp, "old.sqlite")
+        db = sqlite3.connect(path)
+        db.executescript(SCHEMA_BEFORE_PROTECTED_LINK)
+        db.execute("INSERT INTO files (root, relpath, size, seen_scan) VALUES ('store', 'a', 1, 1)")
+        db.commit()
+        db.close()
+        self.state = State(path)
+        self.assertIsNone(self.state.get("store", "a")["protected_link"])
+
+
+SCHEMA_BEFORE_PROTECTED_LINK = """
+CREATE TABLE files (
+    root TEXT NOT NULL, relpath TEXT NOT NULL,
+    size INTEGER, mtime_ns INTEGER, ctime_ns INTEGER, btime_ns INTEGER,
+    dev INTEGER, ino INTEGER, nlink INTEGER, uid INTEGER,
+    sha256 TEXT, chunk_params TEXT, seen_scan INTEGER,
+    PRIMARY KEY (root, relpath));
+"""
 
 
 class TestConfig(unittest.TestCase):

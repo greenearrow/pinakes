@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import zipfile
 
 try:
     import psycopg
@@ -573,6 +574,141 @@ class TestReview(ServerCase):
             c.execute("RESET search_path")                  # the file sets its own; compare as before
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertEqual(fresh[3:], (True, False))
+
+
+class TestProtectedByInode(ServerCase):
+    """A file under a protected root hard-linked into another root is protected at that path too (ROADMAP 6): the
+    catalog keeps no archive listing for it, even one made before the link, and says so."""
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER.replace('roots = ["store"]', 'roots = ["store", "writing"]', 1))
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        base = os.path.join(self.tmp, "server-1")
+        self.store, self.writing = os.path.join(base, "store"), os.path.join(base, "writing")
+        os.makedirs(self.store)
+        os.makedirs(self.writing)
+        self.cfg = config.loads("""
+[agent]
+host = "server-1"
+state = "%(b)s/state.sqlite"
+outbox = "%(b)s/outbox"
+[[root]]
+label = "store"
+path = "%(b)s/store"
+archives = true
+[[root]]
+label = "writing"
+path = "%(b)s/writing"
+protected = true
+""" % {"b": base})
+        self.st = State(self.cfg.state)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("chapter.txt", b"a chapter")
+        self.zipped = buf.getvalue()
+        self.put(self.writing, "people/user-1/draft.zip", self.zipped)
+        self.put(self.store, "people/user-1/old.zip", self.zipped + b"old")
+
+    def tearDown(self):
+        self.st.close()
+        super().tearDown()
+
+    def put(self, top, rel, data):
+        p = os.path.join(top, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(data)
+        return p
+
+    def run_scan(self, label):
+        Scanner(self.cfg, self.st).scan(self.cfg.root(label))
+        for seq, p in outbox.pending(self.cfg.outbox):
+            header, recs = outbox.read(p)
+            self.ing.apply(header, recs, "server-1")
+            outbox.ack(self.cfg.outbox, seq)
+
+    def listed(self, rel):
+        return self.q("SELECT count(*) FROM pinakes.members m JOIN pinakes.files f "
+                      "ON f.content_id = m.archive_content_id WHERE f.relpath = %s AND f.gone_on IS NULL", (rel,))[0][0]
+
+    def flags(self):
+        return dict(self.q("SELECT f.relpath, f.protected_link FROM pinakes.present f JOIN pinakes.roots r "
+                           "USING (root_id) WHERE r.label = 'store'"))
+
+    def test_linked_now_and_linked_later(self):
+        os.makedirs(os.path.join(self.store, "people/user-1/copies"))
+        os.link(os.path.join(self.writing, "people/user-1/draft.zip"),
+                os.path.join(self.store, "people/user-1/copies/draft.zip"))
+        os.link(os.path.join(self.store, "people/user-1/old.zip"), os.path.join(self.store, "people/user-1/old2.zip"))
+        self.run_scan("writing")
+        self.run_scan("store")
+        self.assertEqual(self.flags(), {"people/user-1/copies/draft.zip": True, "people/user-1/old.zip": False,
+                                        "people/user-1/old2.zip": False})
+        self.assertEqual(self.listed("people/user-1/copies/draft.zip"), 0)
+        self.assertEqual(self.listed("people/user-1/old.zip"), 1)     # listed: no protected path to it yet
+        os.link(os.path.join(self.store, "people/user-1/old.zip"), os.path.join(self.writing, "people/user-1/old.zip"))
+        self.run_scan("store")
+        self.assertEqual(set(self.flags().values()), {True})
+        self.assertEqual(self.listed("people/user-1/old.zip"), 0)     # the listing made before the link is gone
+        os.rename(os.path.join(self.store, "people/user-1/copies/draft.zip"),
+                  os.path.join(self.store, "people/user-1/draft.zip"))
+        self.run_scan("store")                                         # a move keeps the flag
+        self.assertTrue(self.flags()["people/user-1/draft.zip"])
+        self.assertEqual(self.history(self.file("store", "people/user-1/draft.zip")), ["new", "moved"])
+
+    def test_the_owner_sees_the_flag_under_row_level_security(self):
+        from pinakes import queries
+        os.link(os.path.join(self.writing, "people/user-1/draft.zip"),
+                os.path.join(self.store, "people/user-1/draft.zip"))
+        self.run_scan("writing")
+        self.run_scan("store")
+        fid = self.file("store", "people/user-1/draft.zip")
+        with self.as_person("user-1") as c:
+            f = queries.file_by_id(c, fid)
+            self.assertEqual((f["protected_link"], f["root_protected"]), (True, False))
+        with self.as_person("user-2") as c:
+            self.assertIsNone(queries.file_by_id(c, fid))
+
+    def test_upgrade_file_matches_the_schema_and_fills_in(self):
+        os.link(os.path.join(self.writing, "people/user-1/draft.zip"),
+                os.path.join(self.store, "people/user-1/draft.zip"))
+        self.run_scan("writing")
+        self.run_scan("store")
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pinakes", "upgrades",
+                            "protected-links.sql")
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'files'), "
+                "(SELECT array_agg(column_name::text ORDER BY ordinal_position) FROM information_schema.columns "
+                " WHERE table_schema = 'pinakes' AND table_name = 'present'), "
+                "pg_get_viewdef('pinakes.present'::regclass), "
+                "(SELECT reloptions FROM pg_class WHERE oid = 'pinakes.present'::regclass), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' AND table_name = 'present')")
+        draft = self.q("SELECT content_id FROM pinakes.files WHERE relpath = 'people/user-1/draft.zip' "
+                       "AND root_id = (SELECT root_id FROM pinakes.roots WHERE label = 'store')")[0][0]
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            grants = c.execute("SELECT grantee, privilege_type FROM information_schema.role_table_grants "
+                               "WHERE table_schema = 'pinakes' AND table_name = 'present'").fetchall()
+            # as a catalog from before: no column, and a listing kept for the linked file
+            c.execute("DROP VIEW pinakes.present; ALTER TABLE pinakes.files DROP COLUMN protected_link; "
+                      "CREATE VIEW pinakes.present WITH (security_invoker = true) AS "
+                      "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
+            for grantee, priv in grants:
+                c.execute("GRANT %s ON pinakes.present TO %s" % (priv, grantee))
+            c.execute("INSERT INTO pinakes.members (archive_content_id, entry_path, size, content_id) "
+                      "VALUES (%s, 'chapter.txt', 9, %s)", (draft, draft))
+            with open(path) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertEqual(self.flags(), {"people/user-1/draft.zip": True, "people/user-1/old.zip": False})
+        self.assertEqual(self.listed("people/user-1/draft.zip"), 0)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
+                                "WHERE r.protected AND f.protected_link")[0][0], 0)
 
 
 class TestBackupRoots(ServerCase):

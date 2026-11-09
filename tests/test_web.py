@@ -58,6 +58,13 @@ class TestWeb(ServerCase):
         self.assertIn("store", c.get("/").get_data(as_text=True))
         self.assertEqual(self.client().get("/").status_code, 302)          # signed out: to the sign-in page
 
+    def test_file_linked_from_a_protected_root_says_so(self):
+        his = self.file_id("people/user-1/taxes.txt")
+        c, _ = self.login("user-1", "correct horse battery")
+        self.assertNotIn("protected", c.get("/file/%d" % his).get_data(as_text=True))
+        self.conn.execute("UPDATE pinakes.files SET protected_link = true WHERE file_id = %s", (his,))
+        self.assertIn("protected: linked from a protected root", c.get("/file/%d" % his).get_data(as_text=True))
+
     def test_csrf_required(self):
         c = self.client()
         c.get("/login")
