@@ -319,3 +319,15 @@ were made while building, to keep going, and are open to change.
   one condition per schema, its names written as literals from the registry so that each part uses that schema's
   partial index. A file matches by its content's metadata or its own. The search runs under the same row-level
   security, so a sensitive field (if a site maps one onto a common field) finds nothing for a reader.
+- **Hidden files** are those with a dot at the start of their name or of a folder's above them, or with the
+  Windows hidden attribute, set on them or on a folder above, which Samba keeps in the `user.DOSATTRIB` extended
+  attribute (`pinakes/hidden.py` reads every form Samba writes: the old hex text, and the NDR-encoded versions 1 to
+  5 with their 0xFFFF compat form; an attribute not marked valid counts as none). Reading it is one extended
+  attribute per file and per folder, as stat is: no content, so protected roots get it too. The agent sends
+  `"hidden": true` on the file record (still batch format 2: an ingester that doesn't know it ignores it) and keeps
+  it in its state, so a change of attribute alone resends the record without rehashing; an older agent's state
+  sends its hidden files once more. The ingester also marks a dot-name itself, from an agent that doesn't say. On
+  the web, browse and find leave hidden files out until a person shows them, a choice kept for the session; browse
+  says how many it left out (of those the person may see). Reports (only here, safe to delete, duplicates, changes)
+  always count them: deleting a folder deletes its hidden files too. Older catalogs: `upgrades/hidden-files.sql`,
+  after `symlink-targets.sql`; it marks the dot-names, and the agents' next scans send the attribute.

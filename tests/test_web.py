@@ -60,6 +60,44 @@ class TestWeb(ServerCase):
         self.assertIn("store", c.get("/").get_data(as_text=True))
         self.assertEqual(self.client().get("/").status_code, 302)          # signed out: to the sign-in page
 
+    def test_hidden_files_left_out_of_browse_and_find_until_shown(self):
+        self.write("server-1", "store", "people/user-1/.profile", b"profile")
+        self.write("server-1", "store", "people/user-1/.cache-dir/thing.txt", b"thing")
+        self.scan("server-1", "store")
+        c, _ = self.login("user-1", "correct horse battery")
+        folder = "/browse/store/people/user-1/"
+        page = c.get(folder).get_data(as_text=True)
+        self.assertNotIn(".profile", page)
+        self.assertNotIn(".cache-dir", page)
+        self.assertIn("taxes.txt", page)
+        self.assertIn("2 hidden file(s) not shown.", page)
+        self.assertNotIn("thing.txt", c.get("/find?q=thing").get_data(as_text=True))
+        # reports count them all the same: deleting a folder deletes its hidden files too
+        self.assertIn(".profile", c.get("/reports/only-here?loc=store:people/user-1/").get_data(as_text=True))
+        # shown, for this session
+        tok = self.csrf(c, folder)
+        self.assertEqual(c.post("/hidden-files", data={"show": "1", "next": folder}).status_code, 400)   # no token
+        r = c.post("/hidden-files", data={"csrf": tok, "show": "1", "next": folder})
+        self.assertEqual((r.status_code, r.headers["Location"]), (302, folder))
+        page = c.get(folder).get_data(as_text=True)
+        self.assertIn('.profile</a> <span class="tag">hidden</span>', page)
+        self.assertIn('.cache-dir/</a>', page)
+        self.assertIn("Hidden files are shown.", page)
+        found = c.get("/find?q=thing").get_data(as_text=True)
+        self.assertIn('people/user-1/.cache-dir/thing.txt</a> <span class="tag">hidden</span>', found)
+        self.assertIn("Leave out hidden files", found)
+        self.assertNotIn("hidden file(s) not shown", c.get("/browse/store/people/").get_data(as_text=True))
+        # and left out again; a next that isn't this site's goes home
+        for bad in ("//example.net/x", "/\\example.net/x", "https://example.net/"):
+            r = c.post("/hidden-files", data={"csrf": tok, "show": "0", "next": bad})
+            self.assertEqual(r.headers["Location"], "/")
+        self.assertNotIn(".profile", c.get(folder).get_data(as_text=True))
+        # someone else's hidden files aren't counted for her
+        c2, _ = self.login("user-2", "staple pony 12345")
+        page = c2.get(folder).get_data(as_text=True)
+        self.assertIn("shared-with-2", page)
+        self.assertNotIn("hidden file(s) not shown", page)
+
     def test_file_linked_from_a_protected_root_says_so(self):
         his = self.file_id("people/user-1/taxes.txt")
         c, _ = self.login("user-1", "correct horse battery")

@@ -224,8 +224,11 @@ def create_app(cfg, connect=None):
             session["csrf"] = secrets.token_urlsafe(24)
         return {"csrf": session["csrf"], "person": g.get("person"), "display": g.get("display"),
                 "stepped_up": g.get("stepped_up"), "roles": g.get("roles", []), "fmt_size": fmt_size,
-                "fmt_meta": fmt_meta,
+                "fmt_meta": fmt_meta, "show_hidden": bool(session.get("show_hidden")),
                 "per_page": PER_PAGE}
+
+    def show_hidden():
+        return bool(session.get("show_hidden"))
 
     def signed_in(view):
         @functools.wraps(view)
@@ -306,7 +309,7 @@ def create_app(cfg, connect=None):
         results = []
         if searched:
             results = pg.done(queries.find_by(g.db, q, by, mapped["creator"], dated, mapped["date"],
-                                              pg.per, pg.offset, **pg.order))
+                                              pg.per, pg.offset, hidden=show_hidden(), **pg.order))
         audit_shown([r["file_id"] for r in results], "find")
         return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
                                results=results, pg=pg)
@@ -316,14 +319,26 @@ def create_app(cfg, connect=None):
     @signed_in
     def browse(root, path):
         pg = Pager(sorts=queries.LISTING_SORT)
-        entries = pg.done(queries.listing(g.db, "%s:%s" % (root, path), pg.per, pg.offset, **pg.order))
+        loc = "%s:%s" % (root, path)
+        entries = pg.done(queries.listing(g.db, loc, pg.per, pg.offset, hidden=show_hidden(), **pg.order))
+        hidden_left_out = 0 if show_hidden() else queries.hidden_in(g.db, loc)
         audit_shown([e["file_id"] for e in entries if e["file_id"]], "browse %s:%s" % (root, path))
         crumbs = []
         acc = ""
         for part in [p for p in path.split("/") if p]:
             acc = acc + "/" + part if acc else part
             crumbs.append((part, acc))
-        return render_template("browse.html", root=root, path=path, entries=entries, crumbs=crumbs, pg=pg)
+        return render_template("browse.html", root=root, path=path, entries=entries, crumbs=crumbs, pg=pg,
+                               hidden_left_out=hidden_left_out)
+
+    @app.route("/hidden-files", methods=["POST"])
+    @signed_in
+    def hidden_files():
+        """Show or leave out hidden files in browse and find, for this session. Reports always count them."""
+        session["show_hidden"] = request.form.get("show") == "1"
+        nxt = request.form.get("next", "")
+        # this site's own path only: "//host" and "/\\host" are other sites to a browser
+        return redirect(nxt if nxt[:1] == "/" and nxt[1:2] not in ("/", "\\") else url_for("home"))
 
     @app.route("/file/<int:file_id>")
     @signed_in

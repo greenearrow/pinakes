@@ -16,7 +16,7 @@ import unittest
 import unittest.mock
 import zipfile
 
-from pinakes import agent, chunker, config, fsinfo, globs, names, outbox, transport
+from pinakes import agent, chunker, config, fsinfo, globs, hidden, names, outbox, transport
 from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone, check, check_verdict
 from pinakes.state import State
 
@@ -502,6 +502,107 @@ class TestScan(Tree):
         self.scan(full=True)
         recs = self.drain()
         self.assertEqual([r["path"] for r in recs if r.get("resend")], ["a"])
+
+
+# user.DOSATTRIB values as Samba writes them: ndr_pack(xattr.DOSATTRIB) from Samba 4.19.5's own Python bindings
+# (python3-samba), versions 1 to 5 and the 0xFFFF compat form; versions 1 to 3 begin with the attributes in hex
+SAMBA_DOSATTRIB = [
+    ("v1 hidden archive", "3078323200000100010000002200000000000000", 0x22),
+    ("v2 hidden", "3078320002000200000000000200000000000000", 0x2),
+    ("v3 hidden archive", "3078323200000300030000000100000022000000", 0x22),
+    ("v4 archive", "0000040004000000010000002000000000000000", 0x20),
+    ("v4 hidden archive", "0000040004000000010000002200000000000000", 0x22),
+    ("v5 hidden archive", "0000050005000000010000002200000000000000", 0x22),
+    ("v5 archive", "0000050005000000010000002000000000000000", 0x20),
+    ("0xFFFF hidden", "30783200", 0x2),
+]
+SAMBA_V5_NOT_VALID = "0000050005000000000000000200000000000000"   # attrib 0x2, valid_flags without ATTRIB
+
+
+def _can_xattr(directory):
+    p = os.path.join(directory, ".probe")
+    open(p, "w").close()
+    try:
+        os.setxattr(p, hidden.XATTR, b"0x20\0")
+        return True
+    except (AttributeError, OSError):
+        return False
+    finally:
+        os.remove(p)
+
+
+class TestHidden(Tree):
+    """Hidden files: a dot in the path, or Samba's hidden attribute on the file or a folder above it."""
+
+    def hide(self, rel, blob=bytes.fromhex(SAMBA_DOSATTRIB[5][1])):
+        os.setxattr(os.path.join(self.top, rel), hidden.XATTR, blob, follow_symlinks=False)
+
+    def need_xattr(self):
+        if not _can_xattr(self.tmp):
+            self.skipTest("no user extended attributes on this filesystem")
+
+    def test_samba_values(self):
+        for what, blob, attrib in SAMBA_DOSATTRIB:
+            self.assertEqual(hidden.dos_attrib(bytes.fromhex(blob)), attrib, what)
+        self.assertIsNone(hidden.dos_attrib(bytes.fromhex(SAMBA_V5_NOT_VALID)))   # not to be trusted
+        for junk in (b"", b"\0", b"0xZZ\0", b"\0\0\x05\0\x04\0", b"\0\0\x09\0\x09\0\0\0" + bytes(8), b"text\0"):
+            self.assertIsNone(hidden.dos_attrib(junk), junk)
+
+    def test_by_name(self):
+        self.write("plain.txt", b"a")
+        self.write(".dotfile", b"b")
+        self.write("photos/.thumbs/t.jpg", b"c")
+        self.write("photos/a.jpg", b"d")
+        self.scan()
+        got = {r["path"]: r.get("hidden", False) for r in self.drain() if r["t"] == "file"}
+        self.assertEqual(got, {"plain.txt": False, ".dotfile": True, "photos/.thumbs/t.jpg": True,
+                               "photos/a.jpg": False})
+
+    def test_by_samba_attribute_on_a_file_or_a_folder_above(self):
+        self.need_xattr()
+        self.write("a.txt", b"a")
+        self.write("b.txt", b"b")
+        self.write("private/deep/c.txt", b"c")
+        self.write("open/d.txt", b"d")
+        self.hide("a.txt")
+        self.hide("private")
+        self.hide("open", bytes.fromhex(SAMBA_DOSATTRIB[6][1]))      # the archive bit alone: not hidden
+        self.scan()
+        got = {r["path"]: r.get("hidden", False) for r in self.drain() if r["t"] == "file"}
+        self.assertEqual(got, {"a.txt": True, "b.txt": False, "private/deep/c.txt": True, "open/d.txt": False})
+
+    def test_a_change_of_attribute_alone_is_sent_without_rehashing(self):
+        self.need_xattr()
+        self.write("a.txt", b"a")
+        self.write("b.txt", b"b")
+        self.scan()
+        self.drain()
+        self.hide("a.txt")
+        self.scan()
+        recs = [r for r in self.drain() if r["t"] == "file"]
+        self.assertEqual([(r["path"], r.get("hidden")) for r in recs], [("a.txt", True)])   # b.txt: unchanged
+        self.assertEqual(self.scanner.counter.get("hashed"), 2)                            # the first scan's only
+        self.hide("a.txt", bytes.fromhex(SAMBA_DOSATTRIB[6][1]))
+        self.scan()
+        self.assertEqual([(r["path"], r.get("hidden")) for r in self.drain() if r["t"] == "file"], [("a.txt", None)])
+        self.scan()
+        self.assertEqual([r for r in self.drain() if r["t"] == "file"], [])
+
+    def test_state_from_before_hidden_files(self):
+        self.write("plain.txt", b"a")
+        self.write(".dotfile", b"b")
+        self.scan()
+        self.drain()
+        self.state.close()
+        db = sqlite3.connect(self.cfg.state)
+        db.execute("ALTER TABLE files DROP COLUMN hidden")
+        db.commit()
+        db.close()
+        self.state = State(self.cfg.state)
+        self.scanner = Scanner(self.cfg, self.state)
+        self.scan()
+        self.assertEqual([(r["path"], r.get("hidden")) for r in self.drain() if r["t"] == "file"],
+                         [(".dotfile", True)])                                # sent once more; plain.txt isn't
 
 
 class TestBackupRoot(Tree):

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_pager.html" import pager, th with context %}
+{% from "_files.html" import hidden_toggle with context %}
 {% block title %}{{ root }}:{{ path }} · pinakes{% endblock %}
 {% block body %}
 <h1><a href="{{ url_for('browse', root=root, path='') }}">{{ root }}</a>{% for name, p in crumbs %} / <a href="{{ url_for('browse', root=root, path=p) }}">{{ name }}</a>{% endfor %}</h1>
@@ -8,12 +9,13 @@
   <a href="{{ url_for('report', name='only-here', loc=root ~ ':' ~ path) }}">Only here</a> ·
   <a href="{{ url_for('report', name='backed-up', loc=root ~ ':' ~ path) }}">Backed up?</a>
 </p>
+{{ hidden_toggle(pg, hidden_left_out) }}
 {{ pager(pg, "entries") }}
 <div class="scroll"><table>
   <tr>{{ th(pg, "name", "Name") }}{{ th(pg, "files", "Files", "num") }}{{ th(pg, "size", "Size", "num") }}{{ th(pg, "newest", "Newest") }}</tr>
   {% for e in entries %}
   <tr><td>{% if e.is_folder %}<a href="{{ url_for('browse', root=root, path=(path ~ '/' if path else '') ~ e.entry) }}">{{ e.entry }}/</a>
-          {% elif e.file_id %}<a href="{{ url_for('file', file_id=e.file_id) }}">{{ e.entry }}</a>{% else %}{{ e.entry }}{% endif %}</td>
+          {% elif e.file_id %}<a href="{{ url_for('file', file_id=e.file_id) }}">{{ e.entry }}</a>{% else %}{{ e.entry }}{% endif %}{% if e.hidden %} <span class="tag">hidden</span>{% endif %}</td>
       <td class="num">{{ e.files }}</td><td class="num">{{ fmt_size(e.size) }}</td>
       <td>{{ e.newest.date() if e.newest else '' }}</td></tr>
   {% else %}<tr><td colspan="4" class="muted">Nothing here that you can see.</td></tr>{% endfor %}

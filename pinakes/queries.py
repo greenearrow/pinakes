@@ -4,7 +4,8 @@ row-level security decides what comes back. A location is ROOT:PATH, where ROOT 
 import datetime
 import re
 
-FILE_COLS = "f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on"
+FILE_COLS = ("f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on, "
+             "f.hidden")
 
 
 def today():
@@ -466,12 +467,12 @@ def _common_cond(mapping, test):
 
 
 def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped_date=(), limit=None, offset=0,
-            sort=None, direction="asc"):
+            sort=None, direction="asc", hidden=True):
     """Files by name, by common fields, or both: `creator`, a substring, over every (schema, field) in
     `mapped_creator`; `dated`, (first, after) with either None for no bound, over every one in `mapped_date`
     (from date_bounds(): "from a day" is its first, "to a day" the next one's). Metadata on a file's content or on
     the file itself counts. Row-level security decides which metadata is searched, so a sensitive field the person
-    may not see finds nothing."""
+    may not see finds nothing. Without `hidden`, no hidden file."""
     where, args = [], []
     if name:
         where.append("f.name ILIKE %s")
@@ -490,6 +491,8 @@ def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped
         args += vals * len(mapping) * 2
     if not where:
         return []
+    if not hidden:
+        where.append("NOT f.hidden")
     return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) WHERE %s""" % (FILE_COLS, TOTAL, " AND ".join(where))
                 + order(FILE_SORT, sort, direction, "f.name, h.name, f.file_id") + PAGE, args + [limit, offset])
@@ -517,8 +520,9 @@ def roots(conn):
                          FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""")
 
 
-def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
-    """The folders and files directly in a folder that the person can see."""
+def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):
+    """The folders and files directly in a folder that the person can see; without `hidden`, none of the hidden
+    files (a folder whose files are all hidden doesn't show). An entry is hidden when all its files are."""
     root, path = split_location(loc)
     pre = _prefix(path)
     depth = path.count("/") + 1 if path else 0
@@ -526,15 +530,23 @@ def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
     return rows(conn, """WITH e AS (
                              SELECT split_part(f.relpath, '/', %s + 1) AS entry,
                                     array_length(string_to_array(f.relpath, '/'), 1) > %s + 1 AS deeper,
-                                    f.file_id, f.size, f.mtime, f.dev, f.ino
+                                    f.file_id, f.size, f.mtime, f.dev, f.ino, f.hidden
                              FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                             WHERE r.label = %s AND f.relpath LIKE %s)
+                             WHERE r.label = %s AND f.relpath LIKE %s""" + ("" if hidden else " AND NOT f.hidden") + """)
                          SELECT entry, bool_or(deeper) AS is_folder, count(*) AS files,
                                 (SELECT sum(s.size) FROM (SELECT DISTINCT ON (x.dev, x.ino) x.size FROM e x
                                                           WHERE x.entry = e.entry) s) AS size,
-                                max(mtime) AS newest, min(file_id) FILTER (WHERE NOT deeper) AS file_id, """ + TOTAL + """
+                                max(mtime) AS newest, min(file_id) FILTER (WHERE NOT deeper) AS file_id,
+                                bool_and(hidden) AS hidden, """ + TOTAL + """
                          FROM e GROUP BY entry"""
                 + order(LISTING_SORT, sort, direction, "2 DESC, 1") + PAGE, (depth, depth, root, pre, limit, offset))
+
+
+def hidden_in(conn, loc):
+    """How many hidden files the person can see in a folder, at any depth."""
+    root, path = split_location(loc)
+    return conn.execute("SELECT count(*) FROM pinakes.present f JOIN pinakes.roots r USING (root_id) "
+                        "WHERE r.label = %s AND f.relpath LIKE %s AND f.hidden", (root, _prefix(path))).fetchone()[0]
 
 
 def audit_mine(conn, limit=None, offset=0, sort=None, direction="asc"):

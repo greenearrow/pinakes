@@ -13,7 +13,7 @@ import tarfile
 import time
 import zipfile
 
-from . import chunker, extract, fsinfo, registry
+from . import chunker, extract, fsinfo, hidden, registry
 from .outbox import BatchWriter
 
 READ_BLOCK = 1024 * 1024
@@ -376,6 +376,8 @@ class Scanner:
         rec.update(t="file", path=relpath)
         if prev["protected_link"]:
             rec["protected_link"] = True
+        if prev["hidden"]:
+            rec["hidden"] = True
         if prev["t"] == "symlink":
             rec.update(t="symlink", target=prev["target"], link_root=prev["link_root"],
                        link_path=prev["link_path"], dangling=_flag(prev["dangling"]))
@@ -435,6 +437,9 @@ class Scanner:
         prot = self._protecting_root(root, fi)
         if prot is not None:
             rec["protected_link"] = True  # another link to this inode is under a protected root: protected here too
+        hid = self.hidden(relpath, abspath)
+        if hid:
+            rec["hidden"] = True          # by a dot in its path, or Samba's hidden attribute on it or a folder above
         cparams = (chunker.Params(root.chunk_average)
                    if rec["t"] == "file" and root.wants_chunks(fi.size) and (prot is None or prot.wants_chunks(fi.size))
                    else None)
@@ -444,6 +449,7 @@ class Scanner:
                      and prev["dev"] == fi.dev and prev["ino"] == fi.ino)
         if same_meta and prev["chunk_params"] == rec["chunk_params"]:
             if (prev["uid"] == fi.uid and bool(prev["protected_link"]) == (prot is not None)
+                    and bool(prev["hidden"]) == hid
                     and (rec["t"] != "symlink" or (prev["t"], prev["target"], prev["link_root"], prev["link_path"],
                                                    _flag(prev["dangling"]))
                          == ("symlink", rec["target"], rec["link_root"], rec["link_path"], rec["dangling"]))
@@ -510,6 +516,7 @@ class Scanner:
         summary = {"root": root.label, "scan": scan_id, "resumed": resumed, "sent": 0, "gone": 0,
                    "errors": 0, "batches": 0}
         self._protected = None  # walked when first needed: see _protecting_root
+        self.hidden = hidden.Hidden(top)   # each folder's hidden attribute read once in this scan
         seen_inodes = {}
         unreadable = []   # directories that couldn't be listed: what's under them is not reported gone
         writer = None

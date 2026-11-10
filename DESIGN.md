@@ -266,6 +266,8 @@ Served by `pinakes-web` behind the site's HTTPS reverse proxy. Stack: Flask with
 waitress; server-rendered pages, with htmx (one vendored file) for partial updates; no JavaScript build step.
 
 - **Browse** by host and root, or by person, or as one merged tree per source with its copies and backups folded in.
+  Hidden files (a dot at the start of a name in the path, or the Windows hidden attribute that Samba keeps) are
+  left out of browsing and search until a person shows them; reports always count them.
 - **Search** by name, path, hash, size, date, and metadata fields (author, place, camera, date taken); saved searches.
 - **A file's page**: every copy and backup, with ages; history (moves, edits); its lineage, with likely and possible
   relatives to confirm or reject; its bundle; metadata by schema, with where each value came from (extracted,

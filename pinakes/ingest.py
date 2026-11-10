@@ -32,7 +32,7 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMATS, extract, names, queries, registry
+from . import BATCH_FORMATS, extract, hidden, names, queries, registry
 from .config import ConfigError
 from .server_config import load as load_server_config
 
@@ -528,7 +528,9 @@ class Ingester:
                 "is_symlink": rec.get("t") == "symlink", "link_target": rec.get("target"),
                 "unstable": bool(rec.get("unstable")), "name_key": key, "ext": ext,
                 "protected_link": bool(rec.get("protected_link")), "link_root": rec.get("link_root"),
-                "link_relpath": rec.get("link_path"), "link_dangling": rec.get("dangling")}
+                "link_relpath": rec.get("link_path"), "link_dangling": rec.get("dangling"),
+                # an agent from before hidden files doesn't say; a dot in the path is known here anyway
+                "hidden": bool(rec.get("hidden")) or hidden.by_name(relpath)}
         ex = self.one("SELECT file_id, content_id, mtime, ctime, btime FROM pinakes.files "
                       "WHERE root_id = %s AND relpath = %s AND gone_on IS NULL", (root["root_id"], relpath))
         if ex:
@@ -692,7 +694,7 @@ class Ingester:
         """g's file_id lives on at n's path, with n's attributes; n's row goes."""
         cols = ("relpath, name, content_id, size, mtime, ctime, btime, mtime_ns, ctime_ns, btime_ns, dev, ino, nlink, "
                 "uid, is_symlink, link_target, unstable, name_key, ext, acl_id, owner_id, backup_of, snapshot, "
-                "protected_link, link_root, link_relpath, link_dangling")
+                "protected_link, link_root, link_relpath, link_dangling, hidden")
         row = self.one("SELECT %s FROM pinakes.files WHERE file_id = %%s" % cols, (n[0],))
         self.q("DELETE FROM pinakes.files WHERE file_id = %s", (n[0],))
         sets = ", ".join("%s = %%s" % c.strip() for c in cols.split(","))

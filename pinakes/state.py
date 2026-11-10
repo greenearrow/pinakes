@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 COLUMNS = ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256", "chunk_params",
-           "protected_link", "t", "target", "link_root", "link_path", "dangling", "meta_v")
+           "protected_link", "t", "target", "link_root", "link_path", "dangling", "meta_v", "hidden")
 
 
 class State:
@@ -29,7 +29,7 @@ class State:
         have = [r["name"] for r in self.db.execute("PRAGMA table_info(files)")]
         # state from an older release: a file whose new fields aren't empty gets sent again by the next scan
         for col, typ in (("protected_link", "INTEGER"), ("t", "TEXT"), ("target", "TEXT"), ("link_root", "TEXT"),
-                         ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT")):
+                         ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT"), ("hidden", "INTEGER")):
             if col not in have:
                 self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
         # meta_v: the schemas and versions extracted for the file ({"exif": 1} as JSON), NULL for none; a state from

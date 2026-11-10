@@ -718,8 +718,8 @@ protected = true
                        "AND root_id = (SELECT root_id FROM pinakes.roots WHERE label = 'store')")[0][0]
         # a catalog from before: no flag, and a listing kept for the linked file
         upgrade_files_match_the_schema(
-            self, ["protected_link", "link_root", "link_relpath", "link_dangling"], ["files_link"],
-            ["protected-links.sql", "symlink-targets.sql"],
+            self, ["protected_link", "link_root", "link_relpath", "link_dangling", "hidden"], ["files_link"],
+            ["protected-links.sql", "symlink-targets.sql", "hidden-files.sql"],
             "INSERT INTO pinakes.members (archive_content_id, entry_path, size, content_id) "
             "VALUES (%d, 'chapter.txt', 9, %d)" % (draft, draft))
         self.assertEqual(self.flags(), {"people/user-1/draft.zip": True, "people/user-1/old.zip": False})
@@ -879,8 +879,8 @@ path = "%(b)s/media"
         self.assertEqual(len(got["links_into"]), 3)
 
     def test_upgrade_file_matches_the_schema(self):
-        upgrade_files_match_the_schema(self, ["link_root", "link_relpath", "link_dangling"], ["files_link"],
-                                       ["symlink-targets.sql"])
+        upgrade_files_match_the_schema(self, ["link_root", "link_relpath", "link_dangling", "hidden"], ["files_link"],
+                                       ["symlink-targets.sql", "hidden-files.sql"])
 
 
 def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
@@ -918,6 +918,46 @@ def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
                 c.execute(f.read())
             c.execute("RESET search_path")              # each file sets its own; compare as before
         case.assertEqual(c.execute(defs).fetchone(), fresh)
+
+
+class TestHiddenFiles(ServerCase):
+    """Hidden files in the catalog: as the agent says (a dot in the path, Samba's hidden attribute), a dot-name also
+    from an agent that doesn't say, following a file that moves."""
+
+    def hidden(self):
+        return {r[0]: r[1] for r in self.q("SELECT relpath, hidden FROM pinakes.present ORDER BY relpath")}
+
+    def test_from_the_scan_and_through_a_move(self):
+        self.write("server-1", "store", "people/user-1/plain.txt", b"plain")
+        self.write("server-1", "store", "people/user-1/.config/app.toml", b"config")
+        self.scan("server-1", "store")
+        self.assertEqual(self.hidden(), {"people/user-1/.config/app.toml": True, "people/user-1/plain.txt": False})
+        fid = self.file("store", "people/user-1/plain.txt")
+        os.makedirs(self.path("server-1", "store", "people/user-1/.trash"))
+        os.rename(self.path("server-1", "store", "people/user-1/plain.txt"),
+                  self.path("server-1", "store", "people/user-1/.trash/plain.txt"))
+        self.scan("server-1", "store")
+        self.assertEqual(self.file("store", "people/user-1/.trash/plain.txt"), fid)        # the same file, moved
+        self.assertTrue(self.hidden()["people/user-1/.trash/plain.txt"])
+
+    def test_what_a_record_says_and_a_dot_without_it(self):
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": 1, "seq": 1,
+                  "started": "2024-01-01T00:00:00Z", "root_def": {"path": "/mnt/store", "kind": "primary"}}
+        recs = [{"t": "file", "path": p, "size": 1, "mtime_ns": 1700000000000000000, "ctime_ns": 1700000000000000000,
+                 "dev": 1, "ino": i, "nlink": 1, "uid": 1000, "sha256": hashlib.sha256(p.encode()).hexdigest(), **kw}
+                for i, (p, kw) in enumerate([("a.txt", {}), ("by-attribute.txt", {"hidden": True}),
+                                             (".from-an-older-agent", {})], 1)]
+        self.assertEqual(self.ing.apply(header, recs, "server-1"), "applied")
+        self.assertEqual(self.hidden(), {".from-an-older-agent": True, "a.txt": False, "by-attribute.txt": True})
+
+    def test_upgrade_file_matches_the_schema_and_fills_in(self):
+        self.write("server-1", "store", "people/user-1/plain.txt", b"plain")
+        self.write("server-1", "store", "people/user-1/.config/app.toml", b"config")
+        self.write("server-1", "store", ".hidden-at-the-top", b"top")
+        self.scan("server-1", "store")
+        upgrade_files_match_the_schema(self, ["hidden"], [], ["hidden-files.sql"])
+        self.assertEqual(self.hidden(), {".hidden-at-the-top": True, "people/user-1/.config/app.toml": True,
+                                         "people/user-1/plain.txt": False})
 
 
 class TestBackupRoots(ServerCase):

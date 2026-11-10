@@ -180,7 +180,8 @@ CREATE TABLE files (
     protected_link boolean NOT NULL DEFAULT false,          -- another link to its inode is under a protected root
     link_root   text,                                       -- a symlink's target, when in a root of its agent: the
     link_relpath text,                                      -- root's label and the path in it ('' for the root)
-    link_dangling boolean                                   -- its target is missing; NULL: not known
+    link_dangling boolean,                                  -- its target is missing; NULL: not known
+    hidden      boolean NOT NULL DEFAULT false              -- a dot in its path, or the hidden attribute (Samba)
 );
 CREATE UNIQUE INDEX files_present_path ON files (root_id, relpath) WHERE gone_on IS NULL;
 CREATE INDEX files_content ON files (content_id);

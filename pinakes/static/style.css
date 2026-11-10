@@ -50,3 +50,4 @@ table.tree td.t1 { padding-left: 1.6rem; } table.tree td.t2 { padding-left: 2.6r
 table.tree td.t3 { padding-left: 3.6rem; } table.tree td.t4 { padding-left: 4.6rem; }
 table.tree td.t5 { padding-left: 5.6rem; } table.tree td.t6 { padding-left: 6.6rem; }
 table.tree td.t7 { padding-left: 7.6rem; } table.tree td.t8 { padding-left: 8.6rem; }
+form.toggle { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .3rem 0 .6rem; }
