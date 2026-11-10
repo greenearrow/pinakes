@@ -76,6 +76,7 @@ def camera(bo="<", offset="+02:00", gps=True, make="Maker-1", when="2019:06:01 1
 EXPECTED = {"make": "Maker-1", "model": "Model-1", "lens": "Lens-1 35mm", "taken": "2019-06-01T10:30:00Z",
             "exposure_time": 0.004, "f_number": 2.8, "iso": 400, "focal_length": 35.0, "width": 640, "height": 480}
 GPS = {"lat": 47.5, "lon": -8.26}
+SENT = dict(EXPECTED, gps=GPS)          # what the agent sends: GPS too, which the catalog keeps for owners only
 
 
 # XMP packets as photo software writes them (XMP 2012 spec, Part 1, 7.9: RDF/XML), placeholders only.

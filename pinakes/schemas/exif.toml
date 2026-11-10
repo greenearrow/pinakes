@@ -2,11 +2,11 @@
 # install. Facts about the bytes, so they attach to the content and every copy has them.
 #
 # `taken` is in UTC with a Z when the camera recorded its offset (OffsetTimeOriginal), else the camera's local
-# time with no zone. GPS is sensitive: until sensitive fields can be kept from other people (ROADMAP 16) it is
-# never sent; that change raises the version, so every photo is read again then.
+# time with no zone. GPS is sensitive: kept in a row of its own that only the owners of a copy see (ROADMAP 16).
+# Version 2: GPS is sent (version 1 left it on the agent).
 
 name = "exif"
-version = 1
+version = 2
 title = "EXIF"
 mime = ["image/jpeg"]
 

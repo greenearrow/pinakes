@@ -133,10 +133,10 @@ class TestCheckVals(unittest.TestCase):
     def setUp(self):
         self.schema = registry.load()["exif"]
 
-    def test_good_values_kept_sensitive_left_out(self):
+    def test_good_values_kept_sensitive_too(self):
         keep, problems = extract.check_vals(self.schema, dict(jpegs.EXPECTED, gps=jpegs.GPS, lens=None))
         self.assertEqual(problems, [])
-        self.assertNotIn("gps", keep)                           # sensitive: never leaves the agent (ROADMAP 16)
+        self.assertEqual(keep["gps"], jpegs.GPS)                # sensitive: sent, kept apart for owners only
         self.assertNotIn("lens", keep)
         self.assertEqual(keep["make"], "Maker-1")
 
@@ -198,7 +198,7 @@ type = "text"
         self.assertEqual(ex.off["photo"], "needs pinakes-no-such-package")
         self.assertIn("ModuleNotFoundError", ex.off["broken"])
         self.assertEqual(set(ex.on), {"exif", "xmp"})
-        self.assertEqual(ex.wanted(None, "a/IMG_0001.JPG"), {"exif": 1, "xmp": 1})
+        self.assertEqual(ex.wanted(None, "a/IMG_0001.JPG"), {"exif": 2, "xmp": 2})
         self.assertEqual(ex.wanted(None, "a/notes.txt"), {})
         self.assertEqual(ex.wanted([], "a/IMG_0001.jpg"), {})
 
@@ -259,8 +259,8 @@ class TestScanExtracts(ScanCase):
         self.put(self.store, "photos/IMG_0001.JPG", jpegs.camera())
         self.put(self.store, "notes.txt", b"text")
         recs = self.scan()
-        self.assertEqual(recs["photos/IMG_0001.JPG"]["meta"], {"exif": {"v": 1, "vals": jpegs.EXPECTED},
-                                                               "xmp": {"v": 1, "vals": {}}})     # read, none there
+        self.assertEqual(recs["photos/IMG_0001.JPG"]["meta"], {"exif": {"v": 2, "vals": jpegs.SENT},
+                                                               "xmp": {"v": 2, "vals": {}}})     # read, none there
         self.assertNotIn("meta", recs["notes.txt"])
         self.assertEqual(self.scan(), {})                       # unchanged: nothing sent, nothing read again
         self.assertNotIn("extracted", self.counter)
@@ -269,18 +269,18 @@ class TestScanExtracts(ScanCase):
         self.put(self.store, "bad.jpg", b"not a jpeg at all")
         self.put(self.store, "good.jpg", jpegs.camera())
         recs = self.scan()
-        self.assertEqual(recs["bad.jpg"]["meta"]["exif"]["v"], 1)
+        self.assertEqual(recs["bad.jpg"]["meta"]["exif"]["v"], 2)
         self.assertIn("BadExif: not a JPEG", recs["bad.jpg"]["meta"]["exif"]["error"])
-        self.assertEqual(recs["good.jpg"]["meta"]["exif"]["vals"], jpegs.EXPECTED)
+        self.assertEqual(recs["good.jpg"]["meta"]["exif"]["vals"], jpegs.SENT)
         self.assertEqual(self.scan(), {})
 
     def test_a_new_schema_version_reads_unchanged_photos_again_without_rehashing(self):
         self.put(self.store, "a.jpg", jpegs.camera())
         self.scan()
         reg = registry.load()
-        reg["exif"].version = 2
+        reg["exif"].version = 3
         recs = self.scan(extractors=extract.Extractors(reg))
-        self.assertEqual(recs["a.jpg"]["meta"]["exif"], {"v": 2, "vals": jpegs.EXPECTED})
+        self.assertEqual(recs["a.jpg"]["meta"]["exif"], {"v": 3, "vals": jpegs.SENT})
         self.assertNotIn("hashed", self.counter)
         self.assertEqual(self.scan(extractors=extract.Extractors(reg)), {})
 
@@ -321,10 +321,10 @@ class TestScanExtracts(ScanCase):
             self.scan(full=True)
         self.assertEqual(read, [os.path.join(self.store, "own.jpg")])   # the others not even opened
 
-    def test_exif_and_xmp_from_one_photo_sensitive_fields_not_sent(self):
+    def test_exif_and_xmp_from_one_photo_sensitive_fields_too(self):
         self.put(self.store, "a.jpg", jpegs.tagged())
         meta = self.scan()["a.jpg"]["meta"]
-        self.assertEqual(meta["xmp"], {"v": 1, "vals": jpegs.XMP_EXPECTED})   # people and places stay here
+        self.assertEqual(meta["xmp"], {"v": 2, "vals": dict(jpegs.XMP_EXPECTED, **jpegs.XMP_SENSITIVE)})
         self.assertEqual(meta["exif"]["vals"]["make"], "Maker-1")
 
     def test_xmp_never_read_on_a_protected_root_or_link(self):

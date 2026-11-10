@@ -1416,11 +1416,11 @@ class TestSchemaRegistry(ServerCase):
     def test_setup_makes_every_enrolled_fields_index(self):
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("schemas dc 1, exif 1, xmp 1, photo 1; 29 metadata indexes, 29 made, 0 dropped", out)
+        self.assertIn("schemas dc 1, exif 2, xmp 2, photo 1; 29 metadata indexes, 29 made, 0 dropped", out)
         self.assertEqual(self.md_indexes(), self.wanted())
         self.assertEqual(len(self.wanted()), 29)
         self.assertEqual(self.setup_cmd()[1].splitlines()[-1],
-                         "schemas dc 1, exif 1, xmp 1, photo 1; 29 metadata indexes, 0 made, 0 dropped")
+                         "schemas dc 1, exif 2, xmp 2, photo 1; 29 metadata indexes, 0 made, 0 dropped")
         # the indexes are partial, per schema: another schema's rows with the same field name don't reach them
         defs = dict(self.q("SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'md\\_%%'"))
         self.assertIn("WHERE (schema = 'photo'::text)", defs["md_photo_iso_num"])
@@ -1664,7 +1664,8 @@ class TestExtracted(ServerCase):
     protected roots and links."""
 
     def metadata(self):
-        return self.q("SELECT c.sha256, m.schema, m.vals, m.source, m.version, h.name FROM pinakes.metadata m "
+        return self.q("SELECT c.sha256, m.schema, m.vals, m.source, m.version, h.name, m.sensitive "
+                      "FROM pinakes.metadata m "
                       "JOIN pinakes.contents c USING (content_id) LEFT JOIN pinakes.hosts h ON h.host_id = m.sent_by "
                       "ORDER BY m.metadata_id")
 
@@ -1690,23 +1691,22 @@ class TestExtracted(ServerCase):
         self.write("laptop-1", "downloads", "IMG_0001 (1).jpg", photo)
         self.scan("laptop-1", "downloads")
         rows = self.metadata()
-        self.assertEqual(len(rows), 1)
-        digest, schema, vals, source, version, host = rows[0]
-        self.assertEqual((digest.hex(), schema, vals, source, version, host),
-                         (hashlib.sha256(photo).hexdigest(), "exif", jpegs.EXPECTED, "embedded", 1, "server-1"))
-        self.assertNotIn("gps", vals)
+        self.assertEqual(len(rows), 2)                          # one content: its fields, and its GPS apart
+        digest = hashlib.sha256(photo).hexdigest()
+        self.assertEqual([(r[0].hex(), r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows],
+                         [(digest, "exif", jpegs.EXPECTED, "embedded", 2, "server-1", False),
+                          (digest, "exif", {"gps": jpegs.GPS}, "embedded", 2, "server-1", True)])
         found = queries.meta(self.conn, "exif", "make", "Maker-1")
         self.assertEqual(sorted(r["relpath"] for r in found), ["IMG_0001 (1).jpg", "people/user-1/IMG_0001.JPG"])
 
-    def test_xmp_kept_without_people_or_places_and_found_by_its_id(self):
+    def test_xmp_people_and_places_apart_and_found_by_its_id(self):
         from pinakes import queries
         self.write("server-1", "store", "people/user-1/IMG_0003.JPG", jpegs.tagged())
         self.scan("server-1", "store")
-        rows = {r[1]: r for r in self.metadata()}
-        self.assertEqual(set(rows), {"exif", "xmp"})
-        self.assertEqual(rows["xmp"][2], jpegs.XMP_EXPECTED)
-        for field in jpegs.XMP_SENSITIVE:
-            self.assertNotIn(field, rows["xmp"][2])
+        rows = {(r[1], r[6]): r[2] for r in self.metadata()}
+        self.assertEqual(set(rows), {("exif", False), ("xmp", False), ("xmp", True)})
+        self.assertEqual(rows[("xmp", False)], jpegs.XMP_EXPECTED)
+        self.assertEqual(rows[("xmp", True)], jpegs.XMP_SENSITIVE)
         found = queries.meta(self.conn, "xmp", "document_id", "xmp.did:doc-1")
         self.assertEqual([r["relpath"] for r in found], ["people/user-1/IMG_0003.JPG"])
         with self.as_person("user-2") as c:
@@ -1718,7 +1718,8 @@ class TestExtracted(ServerCase):
         self.scan("server-1", "store")
         for person, makes in (("user-1", ["Maker-1"]), ("user-2", ["Maker-2"])):
             with self.as_person(person) as c:
-                got = [r[0] for r in c.execute("SELECT vals ->> 'make' FROM pinakes.metadata ORDER BY 1")]
+                got = [r[0] for r in c.execute("SELECT vals ->> 'make' FROM pinakes.metadata WHERE NOT sensitive "
+                                               "ORDER BY 1")]
             self.assertEqual(got, makes, person)
 
     def test_refused_from_a_protected_root_or_link(self):
@@ -1754,7 +1755,8 @@ class TestExtracted(ServerCase):
         self.assertIn("metadata left out for 6 file(s)", err.getvalue())
         self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 8)   # the files themselves are in
         rows = self.metadata()
-        self.assertEqual([(r[2], r[4]) for r in rows], [({"make": "m"}, 1)])     # gps: sensitive, never kept
+        self.assertEqual([(r[2], r[4], r[6]) for r in rows], [({"make": "m"}, 1, False),
+                                                              ({"gps": {"lat": 1.0, "lon": 2.0}}, 1, True)])
         with self.assertRaisesRegex(Refused, "meta is not a table"):
             self.batch([self.rec("x.jpg", ["exif"])], seq=2)
 
@@ -1774,18 +1776,107 @@ class TestExtracted(ServerCase):
         with self.assertRaisesRegex(Refused, "not a batch of format 1 or 2"):
             self.batch([self.rec("b.txt")], seq=2, fmt=3)
 
-    def test_upgrade_file_matches_the_schema(self):
-        cols = ("SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable ORDER BY ordinal_position), "
+    def test_upgrade_files_match_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'metadata'), "
                 "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY 1) FROM pg_constraint "
-                " WHERE conrelid = 'pinakes.metadata'::regclass) "
-                "FROM information_schema.columns WHERE table_schema = 'pinakes' AND table_name = 'metadata'")
+                " WHERE conrelid = 'pinakes.metadata'::regclass), "
+                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
+                " WHERE schemaname = 'pinakes' AND tablename = 'metadata'), "
+                "(SELECT pg_get_functiondef('pinakes.sensitive_visible'::regproc)), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = 'sensitive_visible')")
         with admin_conn(self.db) as c:
-            fresh = c.execute(cols).fetchone()
-            c.execute("ALTER TABLE pinakes.metadata DROP COLUMN version, DROP COLUMN sent_by")
-            with open(os.path.join(UPGRADES, "metadata-extracted.sql")) as f:
-                c.execute(f.read())
-            c.execute("RESET search_path")
-            self.assertEqual(c.execute(cols).fetchone(), fresh)
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP POLICY metadata_visible ON pinakes.metadata")
+            c.execute("CREATE POLICY metadata_visible ON pinakes.metadata FOR SELECT USING ("
+                      "(file_id IS NOT NULL AND EXISTS (SELECT 1 FROM pinakes.files f "
+                      "WHERE f.file_id = metadata.file_id))"
+                      " OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM pinakes.files f "
+                      "WHERE f.content_id = metadata.content_id)))")
+            c.execute("DROP FUNCTION pinakes.sensitive_visible(bigint, bigint)")
+            c.execute("ALTER TABLE pinakes.metadata DROP COLUMN version, DROP COLUMN sent_by, DROP COLUMN sensitive")
+            for name in ("metadata-extracted.sql", "metadata-sensitive.sql"):
+                with open(os.path.join(UPGRADES, name)) as f:
+                    c.execute(f.read())
+                c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+
+
+class TestSensitive(ServerCase):
+    """Sensitive metadata (ROADMAP 16, its first part): GPS, people shown and places, kept in rows of their own that
+    only the owners and co-owners of a copy see, or an administrator in a step-up. Readers of a shared folder see the
+    rest of a file's metadata, not these."""
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER + """
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/co-owned"
+person = "user-2"
+as = "co-owner"
+""")
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        self.write("server-1", "store", "people/user-1/own.jpg", jpegs.camera(make="Maker-1"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/shared.jpg", jpegs.camera(make="Maker-2"))
+        self.write("server-1", "store", "people/user-1/co-owned/co.jpg", jpegs.camera(make="Maker-3"))
+        self.write("server-1", "store", "people/user-2/hers.jpg", jpegs.camera(make="Maker-4"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/tagged.jpg", jpegs.tagged())
+        self.scan("server-1", "store")
+
+    def where(self, c, field="gps"):
+        """The makes of the photos whose sensitive `field` this connection sees."""
+        return sorted(r[0] for r in c.execute(
+            "SELECT e.vals ->> 'make' FROM pinakes.metadata s JOIN pinakes.metadata e "
+            "ON e.content_id = s.content_id AND e.schema = 'exif' AND NOT e.sensitive "
+            "WHERE s.sensitive AND s.vals ? %s", (field,)))
+
+    def test_owners_and_co_owners_only(self):
+        with self.as_person("user-1") as c:
+            self.assertEqual(self.where(c), ["Maker-1", "Maker-2", "Maker-3"])   # all hers; tagged.jpg has no GPS
+            self.assertEqual(self.where(c, "people"), ["Maker-1"])            # tagged.jpg's people shown
+        with self.as_person("user-2") as c:
+            self.assertEqual(self.where(c), ["Maker-3", "Maker-4"])          # co-owner and owner, not as a reader
+            shared = sorted(r[0] for r in c.execute("SELECT vals ->> 'make' FROM pinakes.metadata WHERE NOT sensitive "
+                                                    "AND schema = 'exif'"))
+            self.assertEqual(shared, ["Maker-1", "Maker-2", "Maker-3", "Maker-4"])   # the rest she sees as a reader
+            self.assertEqual(self.where(c, "people"), [])                     # nor the people shown in tagged.jpg
+            keywords = c.execute("SELECT vals -> 'keywords' FROM pinakes.metadata WHERE schema = 'xmp' "
+                                 "AND NOT sensitive").fetchall()
+            self.assertEqual(keywords, [(["walk", "lake"],)])
+
+    def test_a_copy_of_her_own_shows_her_its_gps(self):
+        self.write("server-1", "store", "people/user-2/copy.jpg", jpegs.camera(make="Maker-1"))
+        self.scan("server-1", "store")
+        with self.as_person("user-2") as c:
+            self.assertEqual(self.where(c), ["Maker-1", "Maker-3", "Maker-4"])   # she holds those bytes herself
+
+    def test_an_administrator_only_in_a_step_up(self):
+        with self.as_person("user-1", session="s9") as c:
+            self.assertNotIn("Maker-4", self.where(c))
+            c.execute("SELECT pinakes.begin_step_up('checking a photo', 5)")
+            self.assertIn("Maker-4", self.where(c))
+            c.rollback()
+
+    def test_a_search_by_place_returns_only_what_the_person_owns(self):
+        box = ("SELECT e.vals ->> 'make' FROM pinakes.metadata s JOIN pinakes.metadata e "
+               "ON e.content_id = s.content_id AND e.schema = 'exif' AND NOT e.sensitive "
+               "WHERE s.schema = 'exif' AND point((s.vals -> 'gps' ->> 'lon')::float8, "
+               "(s.vals -> 'gps' ->> 'lat')::float8) <@ box '((-9,47),(-8,48))' ORDER BY 1")
+        with self.as_person("user-2") as c:
+            self.assertEqual([r[0] for r in c.execute(box)], ["Maker-3", "Maker-4"])
+
+    def test_the_web_role_cant_read_around_the_policy(self):
+        with self.as_person("user-2") as c:
+            for sql in ("SELECT count(*) FROM pinakes.metadata WHERE sensitive",):
+                self.assertEqual(c.execute(sql).fetchone()[0], 2)
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("UPDATE pinakes.metadata SET sensitive = false")
+            c.rollback()
 
 
 if __name__ == "__main__":

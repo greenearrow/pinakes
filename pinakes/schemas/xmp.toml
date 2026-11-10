@@ -4,10 +4,10 @@
 #
 # The ids are identity fields (METADATA.md "Identity fields"): DocumentID stays for a document's life, InstanceID
 # changes with each save, DerivedFrom names the parent. People shown and place names are sensitive, as GPS is in
-# exif: until sensitive fields can be kept from other people (ROADMAP 16) they are never sent.
+# exif: kept apart, for the owners of a copy only (ROADMAP 16). Version 2: they are sent (1 left them on the agent).
 
 name = "xmp"
-version = 1
+version = 2
 title = "XMP"
 mime = ["image/jpeg"]
 

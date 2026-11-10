@@ -105,9 +105,9 @@ fields. The agent sends them on the file's record (batch format 2):
 
 or `{"v": 1, "error": "..."}` when it failed. A root's `metadata` (agent config) is `true` (the default: every
 extractor that applies), `false`, or a list of schema names. The agent remembers which versions it read for each
-file and reads a file again only when its content or a schema's version changes; sensitive fields are not sent until
-they can be kept from other people (ROADMAP 16). The ingester checks every value against the registry and keeps it
-on the content; DECISIONS.md has the rules.
+file and reads a file again only when its content or a schema's version changes. The ingester checks every value
+against the registry and keeps it on the content, the sensitive fields in a row of their own that only the owners
+and co-owners of a copy see (or an administrator in a step-up); DECISIONS.md has the rules.
 
 ## Pairing: bundles
 

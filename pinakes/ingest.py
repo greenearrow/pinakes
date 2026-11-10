@@ -381,8 +381,9 @@ class Ingester:
     # backups ---------------------------------------------------------------------------------------------------
     def _meta(self, ctx, content_id, relpath, meta):
         """A file record's extracted metadata (format 2), kept on its content. Only a schema of the registry with an
-        extractor, at most the catalog's version of it, with values of its own fields and types (extract.check_vals:
-        sensitive fields are left out); anything else is left out and reported, not applied. Values replace a
+        extractor, at most the catalog's version of it, with values of its own fields and types (extract.check_vals);
+        anything else is left out and reported, not applied. The schema's sensitive fields go in a row of their own,
+        which only the owners of a copy see (sensitive_visible()). Values replace a
         content's only when of a newer version: the same bytes give the same values, so a copy elsewhere rewrites
         nothing, and a later agent can't overwrite what is known."""
         if not isinstance(meta, dict):
@@ -410,9 +411,12 @@ class Ingester:
                 continue
             self.q("DELETE FROM pinakes.metadata WHERE content_id = %s AND schema = %s AND source = 'embedded'",
                    (content_id, name))
-            self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source, version, sent_by) "
-                   "VALUES (%s, %s, %s, 'embedded', %s, %s)",
-                   (content_id, name, json.dumps(vals, sort_keys=True), e["v"], ctx["host_id"]))
+            for sensitive in (False, True):
+                part = {k: v for k, v in vals.items() if s.fields[k].sensitive == sensitive}
+                if part:
+                    self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source, version, sent_by, "
+                           "sensitive) VALUES (%s, %s, %s, 'embedded', %s, %s, %s)",
+                           (content_id, name, json.dumps(part, sort_keys=True), e["v"], ctx["host_id"], sensitive))
 
     def _backup_source(self, root, relpath):
         """(source root_id, source relpath, snapshot date) of a path in a backup root, by its layout."""

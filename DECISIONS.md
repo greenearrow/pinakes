@@ -273,9 +273,16 @@ were made while building, to keep going, and are open to change.
   also removes what was extracted from that content before. Values replace a content's only from a newer version,
   so the same bytes on another machine rewrite nothing and a later agent can't overwrite what is known. Each row
   records the version and the host that sent it (`sent_by`: not `host_id`, which queries join `hosts` by).
-- **Sensitive fields never leave the agent until ROADMAP 16**, which can keep them from other people: content
-  metadata is visible to anyone who can see a copy, so a shared photo would show where it was taken. The ingester
-  drops them too. When 16 lands, the schema's version goes up and every photo is read again.
+- **Sensitive fields are kept in rows of their own, for owners only** (ROADMAP 16, its first part). Row-level
+  security works on rows, not on keys inside a JSON value, so the ingester splits each schema's values: the fields
+  in one row, the sensitive ones (`metadata.sensitive`) in another. That row is visible only through
+  `sensitive_visible()`: to the owner or a co-owner of a file with that content, or to an administrator in a
+  step-up; readers and annotators of a shared folder see the rest of a photo's metadata, not where it was taken or
+  who is in it. Someone who owns a copy of the same bytes sees them too: they hold the file. The schemas' indexes
+  cover both rows, so a search by place returns only what the person may see. Sharing sensitive fields with a
+  reader, and person-entered metadata, wait for the UI half of 16. Until this, the agent kept them (exif and xmp
+  version 1); version 2 sends them, so every photo is read once more. Older catalogs:
+  `upgrades/metadata-sensitive.sql`, after `metadata-extracted.sql`.
 - **EXIF is read with the standard library** (`pinakes/exif.py`), not Pillow or exifread: the agent stays dependency
   free, and a file's bytes are parsed by bounded Python (offsets and counts checked against the segment, at most
   1 MiB of markers read, no image decoded), not by a C imaging library. JPEG only so far. `taken` is UTC with `Z`
@@ -289,7 +296,7 @@ were made while building, to keep going, and are open to change.
   the generated segments' framing but can't write XMP, so the RDF reading is tested on packets written from the
   spec, not from another program.
 - **People shown and place names are sensitive in XMP**, like GPS in EXIF: a city or a person's name tells as much
-  as a position. They are declared, so ROADMAP 16 can show them to the owner, and not sent until then.
+  as a position. They are kept with GPS, for owners only.
 - **A new extractor reads every photo once more:** a file's `meta_v` lists the schemas read, so adding one makes
   every file it applies to differ; the file is sent again with all its schemas, without rehashing.
 - **MIME types by name, from the standard library's own table** (`mimetypes.MimeTypes(filenames=())`), not the

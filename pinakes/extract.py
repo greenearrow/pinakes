@@ -54,8 +54,8 @@ def _item(kind, v):
 
 
 def check_vals(schema, vals):
-    """(the values to keep, [what's wrong]). Sensitive fields are left out until they can be kept from other people
-    (ROADMAP 16): they never leave the agent. None values are left out."""
+    """(the values to keep, [what's wrong]). None values are left out. Sensitive fields are kept: the ingester stores
+    them apart, for the owners only (sensitive_visible() in schema.sql)."""
     if not isinstance(vals, dict):
         return {}, ["values are not a table"]
     keep, problems = {}, []
@@ -64,7 +64,7 @@ def check_vals(schema, vals):
         if f is None:
             problems.append("%s: not a field of %s" % (name, schema.name))
             continue
-        if v is None or f.sensitive:
+        if v is None:
             continue
         if f.type == "list":
             if not isinstance(v, list):

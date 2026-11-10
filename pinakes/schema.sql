@@ -247,6 +247,7 @@ CREATE TABLE metadata (
     at          timestamptz NOT NULL DEFAULT now(),
     version     int,                                     -- the schema's version it was extracted by (ROADMAP 13)
     sent_by     int REFERENCES hosts ON DELETE SET NULL, -- the agent that sent it, so a revoked one's can be found
+    sensitive   boolean NOT NULL DEFAULT false,          -- the schema's sensitive fields, apart: owners only (ROADMAP 16)
     CHECK ((content_id IS NULL) <> (file_id IS NULL))
 );
 CREATE INDEX metadata_content ON metadata (content_id, schema);
@@ -441,6 +442,17 @@ BEGIN
     RETURN jsonb_build_object('created', to_jsonb(made), 'dropped', to_jsonb(gone), 'wanted', to_jsonb(names));
 END $$;
 
+-- Whether the current person may see sensitive metadata (GPS, people shown, places: METADATA.md) on a content or
+-- a file: as the owner or a co-owner of a file with that content (or of that file), or as an administrator in a
+-- step-up. Readers and annotators of a shared folder see a file's other metadata, not these.
+CREATE FUNCTION sensitive_visible(content bigint, file bigint) RETURNS boolean
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
+    SELECT stepped_up() OR EXISTS (
+        SELECT 1 FROM files f JOIN acl_members am ON am.acl_id = f.acl_id
+        WHERE (f.content_id = content OR f.file_id = file)
+          AND am.person_id = current_person() AND am.role IN ('owner', 'co-owner'))
+$$;
+
 -- row-level security ------------------------------------------------------------------------------------------
 
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
@@ -474,8 +486,9 @@ CREATE POLICY lineage_visible ON lineage FOR SELECT USING (
 
 ALTER TABLE metadata ENABLE ROW LEVEL SECURITY;
 CREATE POLICY metadata_visible ON metadata FOR SELECT USING (
-    (file_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = metadata.file_id))
-    OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.content_id = metadata.content_id)));
+    ((file_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = metadata.file_id))
+     OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.content_id = metadata.content_id)))
+    AND (NOT sensitive OR sensitive_visible(content_id, file_id)));
 
 ALTER TABLE review_marks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY review_marks_visible ON review_marks FOR SELECT USING (
@@ -505,6 +518,7 @@ GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visibl
                           set_my_password(text), set_my_totp(text), my_roles() TO pinakes_app;
 GRANT SELECT ON review_marks TO pinakes_app;              -- written only through mark_changes()
 GRANT EXECUTE ON FUNCTION mark_changes(bigint[], text) TO pinakes_app;
+GRANT EXECUTE ON FUNCTION sensitive_visible(bigint, bigint) TO pinakes_app;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pinakes TO pinakes_ingest;
 REVOKE UPDATE, DELETE ON audit FROM pinakes_ingest;
