@@ -265,6 +265,10 @@ were made while building, to keep going, and are open to change.
   a file. An unchanged file whose versions differ from the registry's (a schema's version went up, a root's
   `metadata` changed) is sent again with only `meta` new, without rehashing; one content is read once per agent (a
   hard link, a copy in another folder or root); `--full` reads everything again, as the server lost it.
+- **What the ingester says about an applied batch reaches the agent's journal.** Over ssh the agent kept the
+  forced command's stderr only for a refused batch, so a warning about metadata left out was lost on success. Now
+  each line is logged after its batch (`batch N: ingest said: ...`), the last 4,000 characters of it, where a
+  summary is. The directory transport's ingester logs to its own journal.
 - **The ingester trusts no agent's metadata:** every value is checked against the registry by the same function the
   agent uses (`extract.check_vals`: the schema's own fields and types, a schema with an extractor, at most the
   catalog's version, text, list and size caps; no `person` or `file` values, which only the catalog names). What

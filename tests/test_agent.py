@@ -9,13 +9,14 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 import unittest.mock
 import zipfile
 
-from pinakes import agent, chunker, config, fsinfo, globs, names, outbox
+from pinakes import agent, chunker, config, fsinfo, globs, names, outbox, transport
 from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone, check, check_verdict
 from pinakes.state import State
 
@@ -950,6 +951,71 @@ class TestCheck(Tree):
         self.assertIn("the disk matches the last scan", line)
         for name in ("docs", "a.txt", "b.txt", "link", self.top):
             self.assertNotIn(name, line)
+
+
+class TestSshTransport(Tree):
+    """What the ingester says on stderr about a batch it applied (metadata left out, progress) reaches the agent's
+    journal, not only when a batch is refused. A stand-in ssh on PATH plays the forced ingest command."""
+
+    FAKE = r"""#!%(py)s
+import gzip, json, os, sys
+lines = gzip.decompress(sys.stdin.buffer.read()).decode().splitlines()
+seq = json.loads(lines[0])["seq"]
+said = os.environ.get("FAKE_SAID", "")
+if said:
+    sys.stderr.write(said.replace("SEQ", str(seq)) + "\n")
+if os.environ.get("FAKE_REFUSE"):
+    sys.exit(3)
+print("ack %%d" %% seq)
+"""
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "ssh"), "w") as f:
+            f.write(self.FAKE % {"py": sys.executable})
+        os.chmod(os.path.join(bindir, "ssh"), 0o755)
+        self.cfg.transport = {"kind": "ssh", "target": "pinakes@server-1", "timeout": 30}
+        env = {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")}
+        patcher = unittest.mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def send(self, said="", refuse=False):
+        heard = []
+        with unittest.mock.patch.dict(os.environ, {"FAKE_SAID": said, "FAKE_REFUSE": "1" if refuse else ""}):
+            sent, err = transport.send_pending(self.cfg, say=heard.append)
+        return sent, err, heard
+
+    def test_what_the_ingester_said_is_passed_on(self):
+        self.write("a.txt", b"a")
+        self.scan()
+        warning = "pinakes-ingest: host test-1 batch SEQ: metadata left out for 1 file(s), first: a.jpg exif: x"
+        sent, err, heard = self.send(warning)
+        self.assertEqual((sent, err), (1, None))
+        self.assertEqual(heard, ["batch 1: ingest said: " + warning.replace("SEQ", "1")])
+        self.assertEqual(outbox.pending(self.cfg.outbox), [])
+
+    def test_nothing_said_nothing_logged_and_a_long_message_keeps_its_end(self):
+        self.write("a.txt", b"a")
+        self.scan()
+        self.assertEqual(self.send()[2], [])
+        self.write("b.txt", b"b")
+        self.scan()
+        long = "\n".join("progress line %d" % i for i in range(2000)) + "\nthe summary"
+        heard = self.send(long)[2]
+        self.assertEqual(heard[-1], "batch 2: ingest said: the summary")
+        self.assertLessEqual(sum(len(h) for h in heard), transport.SAID_MAX + len(heard) * 30)
+        self.assertTrue(all(h.startswith("batch 2: ingest said: progress line ") for h in heard[:-1]))
+
+    def test_a_refused_batch_still_says_why_and_stays(self):
+        self.write("a.txt", b"a")
+        self.scan()
+        sent, err, heard = self.send("refused: unknown root", refuse=True)
+        self.assertEqual((sent, heard), (0, []))
+        self.assertIn("refused: unknown root", err)
+        self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
 
 
 if __name__ == "__main__":

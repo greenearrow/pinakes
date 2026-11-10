@@ -1,13 +1,18 @@
 """Sending batches to the ingester.
 
 ssh: each batch goes on stdin to `ssh -i KEY TARGET`; the server's authorized_keys forces the key to
-`pinakes-ingest --host NAME`, which answers `ack SEQ` on success. directory: the batch is copied into a folder the
-ingester reads (for an agent on the catalog server itself).
+`pinakes-ingest --host NAME`, which answers `ack SEQ` on success. What the ingester writes to stderr (metadata it
+left out, progress while a scan completes) is passed on to the agent's own stderr, the journal under systemd, after
+every batch, not only a refused one. directory: the batch is copied into a folder the ingester reads (for an agent on
+the catalog server itself; the ingester's messages go to its own journal).
 """
+
+SAID_MAX = 4000   # characters of the ingester's stderr passed on per batch: its end, where the summary is
 
 import os
 import shutil
 import subprocess
+import sys
 
 from . import outbox
 
@@ -17,6 +22,7 @@ class SendError(Exception):
 
 
 def send_ssh(path, seq, transport):
+    """Send one batch; returns what the ingester wrote to stderr (stripped, possibly empty)."""
     timeout = transport.get("timeout", 600)
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
     if transport.get("identity"):
@@ -29,9 +35,11 @@ def send_ssh(path, seq, transport):
             last = (e.stderr or b"").decode(errors="replace").strip().splitlines()[-1:]
             raise SendError("timed out after %ds%s" % (timeout, " (%s)" % last[0] if last else ""))
     out = p.stdout.decode(errors="replace").strip().splitlines()
+    said = p.stderr.decode(errors="replace").strip()
     if p.returncode != 0 or not out or out[-1] != "ack %d" % seq:
         raise SendError("ingest refused batch %d (exit %d): %s" % (
-            seq, p.returncode, (p.stderr.decode(errors="replace") or "\n".join(out)).strip()[-500:]))
+            seq, p.returncode, (said or "\n".join(out)).strip()[-500:]))
+    return said
 
 
 def send_directory(path, seq, transport):
@@ -45,17 +53,26 @@ def send_directory(path, seq, transport):
     os.replace(tmp, final)
 
 
-def send_pending(cfg):
-    """Send every waiting batch in order; stop at the first failure. Returns (sent, error or None)."""
+def _say(text):
+    print(text, file=sys.stderr, flush=True)
+
+
+def send_pending(cfg, say=_say):
+    """Send every waiting batch in order; stop at the first failure. Returns (sent, error or None). What the
+    ingester said about a batch it applied goes to say(), one line each, marked with the batch."""
     sent = 0
     for seq, path in outbox.pending(cfg.outbox):
         try:
             if cfg.transport["kind"] == "ssh":
-                send_ssh(path, seq, cfg.transport)
+                said = send_ssh(path, seq, cfg.transport)
             else:
-                send_directory(path, seq, cfg.transport)
+                said = send_directory(path, seq, cfg.transport)
         except (OSError, SendError) as e:
             return sent, "batch %d: %s" % (seq, e)
+        if said:
+            cut = len(said) > SAID_MAX
+            for line in said[-SAID_MAX:].splitlines()[1 if cut else 0:]:
+                say("batch %d: ingest said: %s" % (seq, line))
         outbox.ack(cfg.outbox, seq)
         sent += 1
     return sent, None
