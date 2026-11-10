@@ -6,7 +6,8 @@ import re
 import time
 import unittest
 
-from tests.test_server import PGHOST, ServerCase, admin_conn, psycopg
+from pinakes import queries
+from tests.test_server import FAR_ZONES, PGHOST, ServerCase, admin_conn, in_time_zone, psycopg
 
 try:
     from pinakes import auth, server_config, web
@@ -206,6 +207,19 @@ class TestWeb(ServerCase):
         self.assertIn("Second factor saved", r.get_data(as_text=True))
         self.assertIn("A second factor is set up", c2.get("/account").get_data(as_text=True))
 
+    def test_seen_up_to_defaults_to_the_utc_date(self):
+        """The bulk form's "seen up to" is the catalog's (UTC) date, whatever the server's own zone."""
+        self.write("server-1", "store", "people/user-1/a.txt", b"a")
+        self.scan("server-1", "store")
+        os.remove(self.path("server-1", "store", "people/user-1/a.txt"))     # a gone file: the bulk form shows
+        self.scan("server-1", "store")
+        c1, _ = self.login("user-1", "correct horse battery")
+        for tz in FAR_ZONES:
+            with self.subTest(tz=tz), in_time_zone(tz):
+                page = c1.get("/reports/changes?loc=store:people/user-1/").get_data(as_text=True)
+                utc = datetime.datetime.now(datetime.timezone.utc).date()
+                self.assertIn('name="until" value="%s"' % utc.isoformat(), page)
+
     def test_mark_by_row_in_bulk_and_restore(self):
         """Marking by row and in bulk, with the session's CSRF token; the restore page names the backup; a second
         person's marks of the owner's changes are skipped and said so."""
@@ -243,7 +257,7 @@ class TestWeb(ServerCase):
         self.assertIn("snapshots · 2026-01-01: 2026-01-01_0140/" + u + "a.txt", restore)
         # in bulk: the rest, seen up to today; a mark already made stays
         r = c1.post("/reports/changes/mark", data={"csrf": tok, "mark": "intended", "scope": "all", "loc": "store:" + u,
-                                                   "days": "7", "until": datetime.date.today().isoformat()})
+                                                   "days": "7", "until": queries.today().isoformat()})
         self.assertIn("marked=2", r.headers["Location"])
         marks = dict(self.q("SELECT h.old_relpath, m.mark FROM pinakes.review_marks m JOIN pinakes.history h "
                             "USING (history_id)"))

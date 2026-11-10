@@ -348,7 +348,7 @@ def create_app(cfg, connect=None):
                 kinds = [k for k in request.args.getlist("what") if k in queries.KINDS]
                 review = request.args.get("review") if request.args.get("review") in queries.REVIEWS else None
                 ch = {"days": _int_arg("days", 7, 1, 3650), "depth": _int_arg("depth", 3, 1, 8), "kinds": kinds,
-                      "review": review, "today": datetime.date.today().isoformat(),
+                      "review": review, "today": queries.today().isoformat(),
                       "marked": _int_arg("marked", None, 0, 10 ** 9), "asked": _int_arg("asked", None, 0, 10 ** 9)}
                 tree = queries.change_tree(g.db, ch["days"], loc or None, ch["depth"], kinds, review)
                 ch["tree_cut"] = len(tree) > queries.TREE_LIMIT

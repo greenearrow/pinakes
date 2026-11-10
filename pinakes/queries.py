@@ -6,6 +6,12 @@ import datetime
 FILE_COLS = "f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on"
 
 
+def today():
+    """Today's date in UTC: the catalog's dates (a scan's seen_on, from the agent's UTC start time) are UTC dates,
+    so a window or a cutoff from the server's local date would be a day off for part of every day."""
+    return datetime.datetime.now(datetime.timezone.utc).date()
+
+
 def split_location(loc):
     if ":" not in loc:
         raise ValueError("a location is ROOT:PATH, e.g. store:people/user-1/")
@@ -229,7 +235,7 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
     content is still in another root you can see, not a backup (`elsewhere`). Each row has its review mark, and for
     a gone file the copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in
     `elsewhere_at`) and `backups`."""
-    since = datetime.date.today() - datetime.timedelta(days=days)
+    since = today() - datetime.timedelta(days=days)
     root, pre = (None, None)
     if loc:
         root, path = split_location(loc)
@@ -323,7 +329,7 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
     there as both in and out. From the folder `loc` (ROOT:PATH; None: every root) down `depth` levels, in tree order.
     `unreviewed` counts the gone files and moves under it with no review mark (a move once), and `review` filters
     as in changes(). `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
-    since = datetime.date.today() - datetime.timedelta(days=days)
+    since = today() - datetime.timedelta(days=days)
     root, pre, base = None, "%", 0
     if loc:
         root, path = split_location(loc)

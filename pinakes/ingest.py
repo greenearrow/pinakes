@@ -32,7 +32,7 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMATS, extract, names, registry
+from . import BATCH_FORMATS, extract, names, queries, registry
 from .config import ConfigError
 from .server_config import load as load_server_config
 
@@ -1115,7 +1115,7 @@ def main(argv=None):
             return 0
         if args.cmd == "tidy":
             with conn.transaction():
-                for k, v in ing.tidy(datetime.date.today()).items():
+                for k, v in ing.tidy(queries.today()).items():
                     print("%s: %d" % (k, v))
                 if args.dry_run:
                     print("dry run: nothing changed")

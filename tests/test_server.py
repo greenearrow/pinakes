@@ -25,7 +25,7 @@ except ImportError:
     psycopg = None
 
 import pinakes
-from pinakes import config, outbox, registry, server_config
+from pinakes import config, outbox, queries, registry, server_config
 import jpegs
 from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
 from pinakes.scan import Scanner, check, check_verdict
@@ -65,6 +65,26 @@ expected_every = "never"
 [lineage]
 chunk_overlap = 0.6
 """
+
+
+@contextlib.contextmanager
+def in_time_zone(tz):
+    """This process's local time zone set to tz (the server's, as the web and CLI would see it)."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = tz
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+
+# 26 hours apart: at any moment the local date in one of them differs from the UTC date
+FAR_ZONES = ("Etc/GMT+12", "Etc/GMT-14")
 
 
 def admin_conn(db="postgres"):
@@ -442,7 +462,7 @@ class TestReview(ServerCase):
         os.remove(self.path("server-1", "store", "people/user-1/shared-with-2/plan.txt"))
         os.remove(self.path("server-1", "store", "people/user-2/hers.txt"))
         self.scan("server-1", "store")
-        self.today = datetime.date.today()
+        self.today = queries.today()
 
     def unreviewed(self, c, loc="store:people/user-1/cleanup/"):
         from pinakes import queries
@@ -473,6 +493,21 @@ class TestReview(ServerCase):
         self.scan("server-1", "store")
         with self.as_person("user-1") as c:
             self.assertEqual(self.unreviewed(c), [self.U + "cleanup/d.txt"])   # the gone; its "new" needs no review
+
+    def test_today_is_the_catalogs_utc_date_in_any_local_zone(self):
+        """Seen-on dates are UTC dates; "the last 7 days, seen up to today" must mean the same anywhere. With the
+        server's local date, a server west of UTC marked nothing in bulk in its evenings (the window's end was the
+        day before the scan's date)."""
+        for tz in FAR_ZONES:
+            with self.subTest(tz=tz), in_time_zone(tz), self.as_person("user-1") as c:
+                self.assertEqual(queries.today(), datetime.datetime.now(datetime.timezone.utc).date())
+                ids = [r["history_id"] for r in queries.changes(c, 7, loc="store:" + self.U + "cleanup/",
+                                                                review="unreviewed", until=queries.today())]
+                self.assertEqual(len(ids), 4, tz)
+                (tree,) = [t for t in queries.change_tree(c, 1, "store:" + self.U, 1)
+                           if t["folder"] == self.U + "cleanup"]
+                self.assertEqual(tree["unreviewed"], 4, tz)              # a 1-day window still holds today's scan
+                c.rollback()
 
     def test_a_disk_move_is_recognised_by_its_copy(self):
         from pinakes import queries
@@ -970,14 +1005,14 @@ class TestBackupRoots(ServerCase):
         src = self.file("store", "a.txt")
         src_history = self.history(src)
         with self.conn.transaction():
-            n = self.ing.tidy(datetime.date.today())
+            n = self.ing.tidy(queries.today())
         self.assertEqual((n["backup history rows"], n["backup gone rows"]), (2, 1))
         self.assertEqual(self.q("SELECT file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
                                 "WHERE r.label = 'snapshots'"), [(kept,)])
         self.assertEqual(self.history(kept), [])
         self.assertEqual(self.history(src), src_history)                          # a primary root's history stays
         with self.conn.transaction():
-            n = self.ing.tidy(datetime.date.today())                            # a second run finds nothing
+            n = self.ing.tidy(queries.today())                            # a second run finds nothing
         self.assertEqual(set(n.values()), {0})
 
 
@@ -1071,12 +1106,12 @@ class TestNameLineage(ServerCase):
                    "VALUES (%s, %s, 'derived_from', 'similar name, same folder name', 'possible') RETURNING 1",
                    (frm, to))
         with self.conn.transaction():
-            n = self.ing.tidy(datetime.date.today())
+            n = self.ing.tidy(queries.today())
         self.assertEqual((n["name keys updated"], n["name edges removed"], n["name edges kept"]), (1, 2, 0))
         self.assertEqual(self.q("SELECT name_key FROM pinakes.files WHERE file_id = %s", (neg,)), [("r -1 1",)])
         self.assertEqual(self.edges(), [])
         with self.conn.transaction():
-            self.assertEqual(set(self.ing.tidy(datetime.date.today()).values()), {0})
+            self.assertEqual(set(self.ing.tidy(queries.today()).values()), {0})
 
     def test_tidy_redoes_name_edges(self):
         """Edges by name alone from an older release: the unrelated ones go, a decided one stays."""
@@ -1098,7 +1133,7 @@ class TestNameLineage(ServerCase):
                    "VALUES (%s, %s, 'derived_from', 'similar name', 'possible', %s) RETURNING 1",
                    (self.file("store", frm), self.file("store", to), decision))
         with self.conn.transaction():
-            n = self.ing.tidy(datetime.date.today())
+            n = self.ing.tidy(queries.today())
         self.assertEqual((n["name edges kept"], n["name edges removed"], n["name edges to another source"]), (1, 1, 0))
         self.assertEqual(self.edges(), [("c/level.dat", "d/level.dat", "similar name"),        # decided: a person's
                                         ("x/notes.txt", "y/notes.txt", "similar name, similar size")])
@@ -1134,7 +1169,7 @@ class TestEmptyFiles(ServerCase):
                "(%s, %s, 'copied_from', 'same sha256', 'certain'), (%s, %s, 'copied_from', 'same sha256', 'certain') "
                "RETURNING 1", (e1, e2, self.file("store", "c/kept.txt"), self.file("store", "d/kept.txt")))
         with self.conn.transaction():
-            n = self.ing.tidy(datetime.date.today())
+            n = self.ing.tidy(queries.today())
         self.assertEqual(n["empty-file edges"], 1)
         self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage"), [(1,)])
 

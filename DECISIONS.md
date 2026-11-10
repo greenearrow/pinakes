@@ -129,6 +129,10 @@ were made while building, to keep going, and are open to change.
   or a copy kept somewhere); backups are counted apart, as they are what a restore comes from. A catalog built
   before this needs `pinakes/upgrades/review-marks.sql` once, as the schema's owner; a test checks it creates what
   `schema.sql` does.
+- **"Today" is the UTC date** (`queries.today()`), in the changes windows, the bulk form's "seen up to" and `tidy`:
+  a scan's `seen_on` is the UTC date of its start (the agent writes `started` in UTC). With the server's local date,
+  a server west of UTC marked nothing in bulk in its evenings, as the form's date was the day before the scan's, and
+  the last-N-days window was a day off. The tests check it under UTC-12 and UTC+14, so a run at any hour sees it.
 - **The walk check reports what changed since the scan.** On a live disk a plain count can't tell "changed since
   the scan" from "the scan missed it": the first server's check by hand came out higher than the catalog on two
   roots, and only counting files whose mtime or ctime is after the last complete scan's *start* (a file changed
