@@ -1,0 +1,103 @@
+# XMP (with IPTC Core and Extension), embedded in a JPEG (METADATA.md "Schemas"), by pinakes/xmp.py: the standard
+# library, nothing to install. Facts about the bytes, so they attach to the content and every copy has them.
+# Sidecar .xmp files come with bundles (ROADMAP 14).
+#
+# The ids are identity fields (METADATA.md "Identity fields"): DocumentID stays for a document's life, InstanceID
+# changes with each save, DerivedFrom names the parent. People shown and place names are sensitive, as GPS is in
+# exif: until sensitive fields can be kept from other people (ROADMAP 16) they are never sent.
+
+name = "xmp"
+version = 1
+title = "XMP"
+mime = ["image/jpeg"]
+
+[extractor]
+module = "pinakes.xmp"
+requires = []
+
+[common]
+title = "title"
+description = "description"
+creator = "creator"
+subject = "keywords"
+date = "created"
+rights = "rights"
+
+[fields.title]
+type = "text"
+index = "trigram"
+
+[fields.description]
+type = "text"
+index = "trigram"
+
+[fields.creator]
+type = "list"
+of = "text"
+index = "trigram"
+
+[fields.keywords]
+type = "list"
+of = "text"
+index = "exact"
+description = "dc:subject"
+
+[fields.rights]
+type = "text"
+
+[fields.rating]
+type = "number"
+index = "range"
+description = "xmp:Rating, -1 (rejected) to 5"
+
+[fields.created]
+type = "date"
+index = "range"
+description = "xmp:CreateDate, else photoshop:DateCreated"
+
+[fields.document_id]
+type = "text"
+index = "exact"
+identity = true
+description = "xmpMM:DocumentID"
+
+[fields.instance_id]
+type = "text"
+index = "exact"
+identity = true
+description = "xmpMM:InstanceID"
+
+[fields.derived_document_id]
+type = "text"
+index = "exact"
+identity = true
+description = "xmpMM:DerivedFrom's documentID: the parent document"
+
+[fields.derived_instance_id]
+type = "text"
+index = "exact"
+identity = true
+description = "xmpMM:DerivedFrom's instanceID: the parent's version"
+
+[fields.people]
+type = "list"
+of = "text"
+sensitive = true
+description = "Iptc4xmpExt:PersonInImage"
+
+[fields.location]
+type = "text"
+sensitive = true
+description = "Iptc4xmpCore:Location"
+
+[fields.city]
+type = "text"
+sensitive = true
+
+[fields.state]
+type = "text"
+sensitive = true
+
+[fields.country]
+type = "text"
+sensitive = true

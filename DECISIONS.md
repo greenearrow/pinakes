@@ -281,6 +281,17 @@ were made while building, to keep going, and are open to change.
   1 MiB of markers read, no image decoded), not by a C imaging library. JPEG only so far. `taken` is UTC with `Z`
   when the camera recorded its offset (EXIF 2.31's `OffsetTimeOriginal`), else the camera's local time without a
   zone, which keeps text order within one camera's photos but not across zones.
+- **XMP is read with expat directly, and refuses what XML can ask for** (`pinakes/xmp.py`): a DOCTYPE, an entity
+  declaration or an external entity refuses the packet before anything is built (billion laughs, external
+  entities), elements nest at most 32 deep, and a packet is at most one APP1 segment (64 KiB). Every RDF form is
+  read (attributes or elements, Bag/Seq/Alt, a language alternative's x-default, structures in all three spellings),
+  as software writes all of them. Extended XMP (a packet over several segments) isn't read yet. Pillow 10.2 confirmed
+  the generated segments' framing but can't write XMP, so the RDF reading is tested on packets written from the
+  spec, not from another program.
+- **People shown and place names are sensitive in XMP**, like GPS in EXIF: a city or a person's name tells as much
+  as a position. They are declared, so ROADMAP 16 can show them to the owner, and not sent until then.
+- **A new extractor reads every photo once more:** a file's `meta_v` lists the schemas read, so adding one makes
+  every file it applies to differ; the file is sent again with all its schemas, without rehashing.
 - **MIME types by name, from the standard library's own table** (`mimetypes.MimeTypes(filenames=())`), not the
   machine's `/etc/mime.types`, so the same files get the same extractors on every machine. An extractor checks the
   bytes itself (a `.jpg` that isn't a JPEG is an error entry).

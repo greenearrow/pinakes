@@ -93,7 +93,7 @@ Extraction reads file content, so it never runs on a protected root, nor on a ha
 another root (its record says `protected_link`), and it runs on the agent, on the machine that has the file, never on
 the server.
 
-### Extraction (built for EXIF: ROADMAP 13)
+### Extraction (built for EXIF and embedded XMP in JPEGs: ROADMAP 13)
 
 An extractor is a module with `extract(f)`, given the file opened read-only by the agent; it returns the schema's
 fields. The agent sends them on the file's record (batch format 2):

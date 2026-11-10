@@ -1416,11 +1416,11 @@ class TestSchemaRegistry(ServerCase):
     def test_setup_makes_every_enrolled_fields_index(self):
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("schemas dc 1, exif 1, photo 1; 19 metadata indexes, 19 made, 0 dropped", out)
+        self.assertIn("schemas dc 1, exif 1, xmp 1, photo 1; 29 metadata indexes, 29 made, 0 dropped", out)
         self.assertEqual(self.md_indexes(), self.wanted())
-        self.assertEqual(len(self.wanted()), 19)
+        self.assertEqual(len(self.wanted()), 29)
         self.assertEqual(self.setup_cmd()[1].splitlines()[-1],
-                         "schemas dc 1, exif 1, photo 1; 19 metadata indexes, 0 made, 0 dropped")
+                         "schemas dc 1, exif 1, xmp 1, photo 1; 29 metadata indexes, 0 made, 0 dropped")
         # the indexes are partial, per schema: another schema's rows with the same field name don't reach them
         defs = dict(self.q("SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'md\\_%%'"))
         self.assertIn("WHERE (schema = 'photo'::text)", defs["md_photo_iso_num"])
@@ -1463,7 +1463,7 @@ class TestSchemaRegistry(ServerCase):
         self.write_schema("photo", PHOTO_SCHEMA.replace('type = "number"\nindex = "range"', 'type = "number"'))
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("18 metadata indexes, 0 made, 1 dropped", out)
+        self.assertIn("28 metadata indexes, 0 made, 1 dropped", out)
         self.assertNotIn("md_photo_iso_num", self.md_indexes())
         os.remove(os.path.join(self.site, "photo.toml"))
         self.setup_cmd()
@@ -1697,6 +1697,20 @@ class TestExtracted(ServerCase):
         self.assertNotIn("gps", vals)
         found = queries.meta(self.conn, "exif", "make", "Maker-1")
         self.assertEqual(sorted(r["relpath"] for r in found), ["IMG_0001 (1).jpg", "people/user-1/IMG_0001.JPG"])
+
+    def test_xmp_kept_without_people_or_places_and_found_by_its_id(self):
+        from pinakes import queries
+        self.write("server-1", "store", "people/user-1/IMG_0003.JPG", jpegs.tagged())
+        self.scan("server-1", "store")
+        rows = {r[1]: r for r in self.metadata()}
+        self.assertEqual(set(rows), {"exif", "xmp"})
+        self.assertEqual(rows["xmp"][2], jpegs.XMP_EXPECTED)
+        for field in jpegs.XMP_SENSITIVE:
+            self.assertNotIn(field, rows["xmp"][2])
+        found = queries.meta(self.conn, "xmp", "document_id", "xmp.did:doc-1")
+        self.assertEqual([r["relpath"] for r in found], ["people/user-1/IMG_0003.JPG"])
+        with self.as_person("user-2") as c:
+            self.assertEqual(queries.meta(c, "xmp", "document_id", "xmp.did:doc-1"), [])   # not hers to see
 
     def test_seen_only_by_who_can_see_a_copy(self):
         self.write("server-1", "store", "people/user-1/IMG_0001.JPG", jpegs.camera())

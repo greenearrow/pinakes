@@ -10,7 +10,7 @@ import unittest
 import unittest.mock
 
 import jpegs
-from pinakes import config, exif, extract, outbox, registry
+from pinakes import config, exif, extract, outbox, registry, xmp
 from pinakes.scan import Scanner
 from pinakes.state import State
 
@@ -72,6 +72,61 @@ class TestExifReader(unittest.TestCase):
         f.seek(0)
         exif.extract(f)
         self.assertLess(f.tell(), 4096)
+
+
+class TestXmpReader(unittest.TestCase):
+    ALL = dict(jpegs.XMP_EXPECTED, **jpegs.XMP_SENSITIVE)
+
+    def read(self, data):
+        return xmp.extract(io.BytesIO(data))
+
+    def packet(self, body):
+        return jpegs.jpeg(xmp=body)
+
+    def test_attributes_and_elements_read_alike(self):
+        for name in ("XMP_ATTRIBUTES", "XMP_ELEMENTS"):
+            with self.subTest(form=name):
+                self.assertEqual(self.read(jpegs.tagged(getattr(jpegs, name))), self.ALL)
+
+    def test_no_xmp_and_exif_alone(self):
+        self.assertEqual(self.read(jpegs.camera()), {})
+        self.assertEqual(exif.extract(io.BytesIO(jpegs.tagged()))["make"], "Maker-1")   # each reads its own segment
+
+    def test_what_xml_can_ask_for_is_refused(self):
+        laughs = ('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;">'
+                  '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;">]><x:xmpmeta xmlns:x="adobe:ns:meta/">&c;</x:xmpmeta>')
+        external = ('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e SYSTEM "file:///etc/hostname">]>'
+                    '<x:xmpmeta xmlns:x="adobe:ns:meta/">&e;</x:xmpmeta>')
+        doctype = '<!DOCTYPE x SYSTEM "http://example.net/x.dtd"><x:xmpmeta xmlns:x="adobe:ns:meta/"/>'
+        for body, why in ((laughs, "a DOCTYPE"), (external, "a DOCTYPE"), (doctype, "a DOCTYPE"),
+                          ('<x:xmpmeta xmlns:x="adobe:ns:meta/">&nosuch;</x:xmpmeta>', "not well-formed"),
+                          ("<a><b></a>", "not well-formed"), ("", "not well-formed"),
+                          ("<a>" * (xmp.MAX_DEPTH + 1) + "</a>" * (xmp.MAX_DEPTH + 1), "nested more than"),
+                          ('<x:xmpmeta xmlns:x="adobe:ns:meta/"/>', "no rdf:RDF")):
+            with self.subTest(why=why, body=body[:40]), self.assertRaisesRegex(xmp.BadXmp, why):
+                self.read(self.packet(body))
+
+    def test_odd_values_left_out(self):
+        body = jpegs.XMP_ATTRIBUTES.replace('xmp:Rating="4"', 'xmp:Rating="9"').replace(
+            "2019-06-01T12:30:00+02:00", "2019-13-01T00:00:00Z").replace(
+            '<rdf:li xml:lang="de">Titel-1</rdf:li><rdf:li xml:lang="x-default">Title-1</rdf:li>',
+            '<rdf:li xml:lang="de">Titel-1</rdf:li><rdf:li xml:lang="fr">Titre-1</rdf:li>')
+        got = self.read(self.packet(body))
+        self.assertNotIn("rating", got)
+        self.assertNotIn("created", got)
+        self.assertEqual(got["title"], "Titel-1")               # no x-default: the first
+
+    def test_dates(self):
+        for given, want in (("2019", "2019"), ("2019-06", "2019-06"), ("2019-06-01", "2019-06-01"),
+                            ("2019-06-01T12:30:00+02:00", "2019-06-01T10:30:00Z"),
+                            ("2019-06-01T12:30+02:00", "2019-06-01T10:30Z"),
+                            ("2019-06-01T12:30:00.5-05:00", "2019-06-01T17:30:00.5Z"),
+                            ("2019-06-01T12:30:00", "2019-06-01T12:30:00"),
+                            ("2019-13", None), ("2019-02-30T00:00:00Z", None), ("2019-06-01T25:00", None),
+                            ("June 2019", None), (None, None)):
+            self.assertEqual(xmp.date(given), want, given)
+            if want:
+                self.assertEqual(extract.check_vals(registry.load()["xmp"], {"created": want})[1], [], want)
 
 
 class TestCheckVals(unittest.TestCase):
@@ -142,8 +197,8 @@ type = "text"
         ex = extract.Extractors(registry.load(os.path.join(tmp, "schemas")))
         self.assertEqual(ex.off["photo"], "needs pinakes-no-such-package")
         self.assertIn("ModuleNotFoundError", ex.off["broken"])
-        self.assertEqual(set(ex.on), {"exif"})
-        self.assertEqual(ex.wanted(None, "a/IMG_0001.JPG"), {"exif": 1})
+        self.assertEqual(set(ex.on), {"exif", "xmp"})
+        self.assertEqual(ex.wanted(None, "a/IMG_0001.JPG"), {"exif": 1, "xmp": 1})
         self.assertEqual(ex.wanted(None, "a/notes.txt"), {})
         self.assertEqual(ex.wanted([], "a/IMG_0001.jpg"), {})
 
@@ -204,7 +259,8 @@ class TestScanExtracts(ScanCase):
         self.put(self.store, "photos/IMG_0001.JPG", jpegs.camera())
         self.put(self.store, "notes.txt", b"text")
         recs = self.scan()
-        self.assertEqual(recs["photos/IMG_0001.JPG"]["meta"], {"exif": {"v": 1, "vals": jpegs.EXPECTED}})
+        self.assertEqual(recs["photos/IMG_0001.JPG"]["meta"], {"exif": {"v": 1, "vals": jpegs.EXPECTED},
+                                                               "xmp": {"v": 1, "vals": {}}})     # read, none there
         self.assertNotIn("meta", recs["notes.txt"])
         self.assertEqual(self.scan(), {})                       # unchanged: nothing sent, nothing read again
         self.assertNotIn("extracted", self.counter)
@@ -224,7 +280,7 @@ class TestScanExtracts(ScanCase):
         reg = registry.load()
         reg["exif"].version = 2
         recs = self.scan(extractors=extract.Extractors(reg))
-        self.assertEqual(recs["a.jpg"]["meta"], {"exif": {"v": 2, "vals": jpegs.EXPECTED}})
+        self.assertEqual(recs["a.jpg"]["meta"]["exif"], {"v": 2, "vals": jpegs.EXPECTED})
         self.assertNotIn("hashed", self.counter)
         self.assertEqual(self.scan(extractors=extract.Extractors(reg)), {})
 
@@ -264,6 +320,28 @@ class TestScanExtracts(ScanCase):
             self.scan("writing", full=True)
             self.scan(full=True)
         self.assertEqual(read, [os.path.join(self.store, "own.jpg")])   # the others not even opened
+
+    def test_exif_and_xmp_from_one_photo_sensitive_fields_not_sent(self):
+        self.put(self.store, "a.jpg", jpegs.tagged())
+        meta = self.scan()["a.jpg"]["meta"]
+        self.assertEqual(meta["xmp"], {"v": 1, "vals": jpegs.XMP_EXPECTED})   # people and places stay here
+        self.assertEqual(meta["exif"]["vals"]["make"], "Maker-1")
+
+    def test_xmp_never_read_on_a_protected_root_or_link(self):
+        self.put(self.writing, "a.jpg", jpegs.tagged())
+        self.assertNotIn("meta", self.scan("writing")["a.jpg"])
+        os.link(os.path.join(self.writing, "a.jpg"), os.path.join(self.store, "a.jpg"))
+        self.assertNotIn("meta", self.scan()["a.jpg"])
+
+    def test_a_new_extractor_reads_known_photos_once(self):
+        self.put(self.store, "a.jpg", jpegs.tagged())
+        reg = registry.load()
+        del reg.schemas["xmp"]
+        self.assertEqual(set(self.scan(extractors=extract.Extractors(reg))["a.jpg"]["meta"]), {"exif"})
+        again = self.scan()                                     # xmp enrolled since: read, without rehashing
+        self.assertEqual(set(again["a.jpg"]["meta"]), {"exif", "xmp"})
+        self.assertNotIn("hashed", self.counter)
+        self.assertEqual(self.scan(), {})
 
     def test_unknown_metadata_names_refused(self):
         self.cfg.root("store").metadata = ["dc"]                # a schema, but no extractor
