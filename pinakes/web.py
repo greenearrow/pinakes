@@ -21,7 +21,7 @@ import time
 import psycopg
 from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
 
-from . import auth, queries
+from . import auth, queries, registry
 from .server_config import load as load_server_config
 
 LOGIN_LIMIT = 5          # failed sign-ins per address
@@ -177,6 +177,9 @@ def create_app(cfg, connect=None):
     failures = {}
 
     connect = connect or _connector(web)
+    reg = registry.load(getattr(cfg, "schemas_dir", None))     # what metadata is shown by; a bad schema stops startup
+    mapped = {c: [(registry.COMMON, c)] + [(s.name, s.common[c]) for s in reg if c in s.common]
+              for c in ("creator", "date")}
 
     @app.route("/health")
     def health():
@@ -221,6 +224,7 @@ def create_app(cfg, connect=None):
             session["csrf"] = secrets.token_urlsafe(24)
         return {"csrf": session["csrf"], "person": g.get("person"), "display": g.get("display"),
                 "stepped_up": g.get("stepped_up"), "roles": g.get("roles", []), "fmt_size": fmt_size,
+                "fmt_meta": fmt_meta,
                 "per_page": PER_PAGE}
 
     def signed_in(view):
@@ -288,10 +292,24 @@ def create_app(cfg, connect=None):
     @signed_in
     def find():
         q = request.args.get("q", "").strip()
+        by = request.args.get("by", "").strip()
+        since, until = request.args.get("from", "").strip(), request.args.get("to", "").strip()
         pg = Pager(sorts=queries.FILE_SORT)
-        results = pg.done(queries.find(g.db, q, pg.per, pg.offset, **pg.order)) if q else []
+        error, dated = None, None
+        try:
+            if since or until:
+                dated = (queries.date_bounds(since)[0] if since else None,
+                         queries.date_bounds(until)[1] if until else None)
+        except ValueError:
+            error = "A date is a year, a month or a day: 2019, 2019-06 or 2019-06-01."
+        searched = bool(q or by or dated) and not error
+        results = []
+        if searched:
+            results = pg.done(queries.find_by(g.db, q, by, mapped["creator"], dated, mapped["date"],
+                                              pg.per, pg.offset, **pg.order))
         audit_shown([r["file_id"] for r in results], "find")
-        return render_template("find.html", q=q, results=results, pg=pg)
+        return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
+                               results=results, pg=pg)
 
     @app.route("/browse/<root>/", defaults={"path": ""})
     @app.route("/browse/<root>/<path:path>")
@@ -321,7 +339,14 @@ def create_app(cfg, connect=None):
                 "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset, **pv.order)), "pv": pv,
                 "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset, **ph.order)), "ph": ph,
                 "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down")}
-        audit_shown([file_id] + [c["file_id"] for c in copies], "file %d" % file_id)
+        meta = queries.file_metadata(g.db, file_id, f["content_id"])
+        page["metadata"] = metadata_view(reg, meta)
+        # a note for those who can't see the sensitive fields: the same whether this file has any or not
+        page["sensitive_hidden"] = [] if queries.sensitive_visible(g.db, file_id, f["content_id"]) else sorted(
+            {fd.description or fd.name for s in page["metadata"] if s["schema"]
+             for fd in s["schema"].fields.values() if fd.sensitive})
+        shown = "file %d" % file_id + (", with sensitive metadata" if any(m["sensitive"] for m in meta) else "")
+        audit_shown([file_id] + [c["file_id"] for c in copies], shown)
         return render_template("file.html", **page)
 
     @app.route("/reports/<name>")
@@ -468,6 +493,51 @@ def create_app(cfg, connect=None):
         return render_template("access.html", rows=rows, pg=pg)
 
     return app
+
+
+SOURCES = ("person", "sidecar", "embedded", "derived")   # the order searches use (METADATA.md "Where values come from")
+
+
+def metadata_view(reg, rows):
+    """A file's metadata for its page: per schema (the registry's order, then any it no longer has), per field (the
+    schema's order), every value with its source, first source first: when sources disagree, all are shown."""
+    by = {}
+    for r in rows:
+        by.setdefault(r["schema"], []).append(r)
+    out = []
+    for name in [s.name for s in reg if s.name in by] + sorted(n for n in by if n not in reg.schemas):
+        schema = reg.schemas.get(name)
+        values = {}
+        for r in sorted(by[name], key=lambda r: SOURCES.index(r["source"]) if r["source"] in SOURCES else 9):
+            for k, v in r["vals"].items():
+                values.setdefault(k, []).append({"value": v, "source": r["source"], "version": r["version"],
+                                                 "author": r["author"], "at": r["at"]})
+        known = schema.fields if schema else {}
+        names = [k for k in known if k in values] + sorted(k for k in values if k not in known)
+        out.append({"name": name, "title": schema.title if schema else name, "schema": schema,
+                    "fields": [{"name": k, "field": known.get(k), "values": values[k]} for k in names]})
+    return out
+
+
+def fmt_meta(value, field=None):
+    """A metadata value as text, by its field's type (registry.TYPES); a value of no known field as it came."""
+    typ = field.type if field else None
+    if typ == "list" and isinstance(value, list):
+        item = registry.Field("", field.of or "text")
+        return ", ".join(fmt_meta(v, item) for v in value)
+    if typ == "point" and isinstance(value, dict):
+        try:
+            return "%.5f, %.5f" % (float(value["lat"]), float(value["lon"]))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if typ == "duration" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        s = int(round(value))
+        return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value)
 
 
 def _int_arg(name, default, lo, hi):

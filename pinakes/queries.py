@@ -2,6 +2,7 @@
 row-level security decides what comes back. A location is ROOT:PATH, where ROOT is a root's label."""
 
 import datetime
+import re
 
 FILE_COLS = "f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on"
 
@@ -29,6 +30,16 @@ def rows(conn, sql, args=()):
     cur = conn.execute(sql, args)
     cols = [d.name for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _like(text, wildcards=False):
+    """ILIKE pattern for a substring, LIKE's own wildcards escaped; with `wildcards`, * and ? work as wildcards, and
+    a pattern with none matches anywhere in the text."""
+    like = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    if wildcards:
+        like = like.replace("*", "%").replace("?", "_")
+        return like if "%" in like or "_" in like else "%" + like + "%"
+    return "%" + like + "%"
 
 
 # Paging: a paged query selects TOTAL among its columns (the number of rows the whole query has, counted after any
@@ -70,9 +81,7 @@ def order(sorts, sort, direction, default):
 
 
 def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc"):
-    like = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("*", "%").replace("?", "_")
-    if "%" not in like and "_" not in like:
-        like = "%" + like + "%"
+    like = _like(pattern, wildcards=True)
     return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %%s""" % (FILE_COLS, TOTAL)
                 + order(FILE_SORT, sort, direction, "f.name, h.name, f.file_id") + PAGE, (like, limit, offset))
@@ -408,6 +417,82 @@ def meta(conn, schema, field, value, limit=None, offset=0):
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                          WHERE m.schema = %%s AND m.vals ->> %%s = %%s ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL)
                 + PAGE, (schema, field, value, limit, offset))
+
+
+def file_metadata(conn, file_id, content_id):
+    """The metadata the person may see on a file: its content's (extracted, true of every copy) and the file's own
+    (entered by people). Sensitive rows come back only where row-level security lets them (sensitive_visible())."""
+    return rows(conn, """SELECT m.schema, m.vals, m.source, m.version, m.at, m.sensitive, p.display AS author
+                         FROM pinakes.metadata m LEFT JOIN pinakes.people p ON p.person_id = m.author
+                         WHERE m.file_id = %s OR m.content_id = %s
+                         ORDER BY m.schema, m.sensitive, m.source, m.metadata_id""", (file_id, content_id))
+
+
+def sensitive_visible(conn, file_id, content_id):
+    return conn.execute("SELECT pinakes.sensitive_visible(%s, %s)", (content_id, file_id)).fetchone()[0]
+
+
+_FIELD = re.compile(r"[a-z][a-z0-9_]{0,29}\Z")
+_DAY = re.compile(r"(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?\Z")
+
+
+def date_bounds(text):
+    """(first, after) for a date as precise as given (2019, 2019-06, 2019-06-01), as ISO 8601 text: a stored date in
+    it is >= first and < after, since text order is time order. ValueError for anything else."""
+    m = _DAY.match(text)
+    if not m:
+        raise ValueError("a date is YYYY, YYYY-MM or YYYY-MM-DD")
+    y, mo, d = int(m.group(1)), m.group(2), m.group(3)
+    if d:
+        day = datetime.date(y, int(mo), int(d))
+        return day.isoformat(), (day + datetime.timedelta(days=1)).isoformat()
+    if mo:
+        datetime.date(y, int(mo), 1)                                # a month out of range raises
+        return "%04d-%s" % (y, mo), "%04d-%02d" % ((y + 1, 1) if mo == "12" else (y, int(mo) + 1))
+    return "%04d" % y, "%04d" % (y + 1)
+
+
+def _common_cond(mapping, test):
+    """One condition on metadata over every schema mapping a common field: (schema, field) pairs from the registry.
+    `test` has {v} for the value's expression. The names are the registry's own, checked again here, and written as
+    literals so that each matches its partial index (md_SCHEMA_FIELD_KIND, WHERE schema = 'SCHEMA'); values stay
+    parameters."""
+    parts = []
+    for schema, field in mapping:
+        if not (_FIELD.match(schema) and _FIELD.match(field)):
+            raise ValueError("not a schema and field: %r" % ((schema, field),))
+        parts.append("(m.schema = '%s' AND %s)" % (schema, test.format(v="(m.vals ->> '%s')" % field)))
+    return "(" + " OR ".join(parts) + ")" if parts else "false"
+
+
+def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped_date=(), limit=None, offset=0,
+            sort=None, direction="asc"):
+    """Files by name, by common fields, or both: `creator`, a substring, over every (schema, field) in
+    `mapped_creator`; `dated`, (first, after) with either None for no bound, over every one in `mapped_date`
+    (from date_bounds(): "from a day" is its first, "to a day" the next one's). Metadata on a file's content or on
+    the file itself counts. Row-level security decides which metadata is searched, so a sensitive field the person
+    may not see finds nothing."""
+    where, args = [], []
+    if name:
+        where.append("f.name ILIKE %s")
+        args.append(_like(name, wildcards=True))
+    first, after = dated or (None, None)
+    on_date = [t for t, b in (("{v} >= %s", first), ("{v} < %s", after)) if b]
+    for mapping, cond, vals in ((mapped_creator, "{v} ILIKE %s", [_like(creator)] if creator else None),
+                                (mapped_date, "(" + " AND ".join(on_date) + ")",
+                                 [b for b in (first, after) if b] if on_date else None)):
+        if vals is None:
+            continue
+        c = _common_cond(mapping, cond)
+        where.append("(f.content_id IN (SELECT m.content_id FROM pinakes.metadata m WHERE m.content_id IS NOT NULL "
+                     "AND %s) OR f.file_id IN (SELECT m.file_id FROM pinakes.metadata m WHERE m.file_id IS NOT NULL "
+                     "AND %s))" % (c, c))
+        args += vals * len(mapping) * 2
+    if not where:
+        return []
+    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                         JOIN pinakes.hosts h USING (host_id) WHERE %s""" % (FILE_COLS, TOTAL, " AND ".join(where))
+                + order(FILE_SORT, sort, direction, "f.name, h.name, f.file_id") + PAGE, args + [limit, offset])
 
 
 def stale(conn):

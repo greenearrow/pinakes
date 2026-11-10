@@ -17,6 +17,21 @@
   <dt>In the catalog</dt><dd>{{ f.first_seen.date() }} to {{ f.last_seen.date() }}</dd>
 </dl>
 
+<h2>Metadata</h2>
+{% for s in metadata %}
+<h3 class="muted">{{ s.title }}</h3>
+<div class="scroll"><table class="meta">
+  <tr><th>Field</th><th>Value</th><th>From</th></tr>
+  {% for fd in s.fields %}{% for v in fd["values"] %}<tr>
+    <td>{% if loop.first %}<span{% if fd.field and fd.field.description %} title="{{ fd.field.description }}"{% endif %}>{{ fd.name.replace('_', ' ') }}</span>{% if fd.field and fd.field.sensitive %} <span class="tag" title="Shown only to the owners and co-owners of a copy">sensitive</span>{% endif %}{% endif %}</td>
+    <td>{% if fd.field and fd.field.type == 'file' %}<a href="{{ url_for('file', file_id=v.value) }}">file {{ v.value }}</a>{% else %}{{ fmt_meta(v.value, fd.field) }}{% endif %}</td>
+    <td class="muted">{{ v.source }}{% if v.author %}, {{ v.author }}{% endif %}{% if v.version %} <span class="tag">v{{ v.version }}</span>{% endif %}{% if v.at %} {{ v.at.date() }}{% endif %}</td>
+  </tr>{% endfor %}{% endfor %}
+</table></div>
+{% else %}<p class="muted">None recorded.{% if f.root_protected or f.protected_link %} Nothing is read from a protected file.{% endif %}</p>
+{% endfor %}
+{% if sensitive_hidden %}<p class="muted notice">Sensitive fields ({{ sensitive_hidden|join(', ') }}) are shown only to the owners and co-owners of a copy.</p>{% endif %}
+
 <h2>Every copy</h2>
 {{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc) }}{{ pager(pc, "paths") }}
 

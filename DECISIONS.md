@@ -308,3 +308,14 @@ were made while building, to keep going, and are open to change.
   bytes itself (a `.jpg` that isn't a JPEG is an error entry).
 - **A requirement is checked by its installed distribution's version** (`importlib.metadata`), `>=` only; any other
   specifier counts as not met. A missing one turns that extractor off (`Extractors.off` says why), not the scan.
+- **Metadata on a file's page, and find by common fields** (ROADMAP 16, showing it). The page lists each schema's
+  fields in the schema's order, each value with its source, version and date; when sources disagree all are shown,
+  person first, then sidecar, embedded, derived. A sensitive field is tagged as such. Someone who may not see a
+  file's sensitive fields gets a note naming the shown schemas' sensitive fields, the same whether this file has
+  any or not, so the note gives nothing away. An administrator's step-up that showed sensitive rows is audited as
+  `file N, with sensitive metadata`, so the owner sees that the place or people were shown too. Find takes a name,
+  "made by" (a substring of `creator`) and "dated" from and to (a year, a month or a day, both ends inclusive).
+  The common fields are not stored as rows of their own: a search reads every schema's mapped field at query time,
+  one condition per schema, its names written as literals from the registry so that each part uses that schema's
+  partial index. A file matches by its content's metadata or its own. The search runs under the same row-level
+  security, so a sensitive field (if a site maps one onto a common field) finds nothing for a reader.

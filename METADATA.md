@@ -109,6 +109,13 @@ file and reads a file again only when its content or a schema's version changes.
 against the registry and keeps it on the content, the sensitive fields in a row of their own that only the owners
 and co-owners of a copy see (or an administrator in a step-up); DECISIONS.md has the rules.
 
+### On a file's page and in find (built: ROADMAP 16, showing it)
+
+A file's page lists its metadata per schema: every field the person may see, each value with its source, version
+and date, and sensitive fields tagged as such. Someone who may not see them gets the same note whether the file has
+any or not. Find searches by name, by "made by" (`creator`) and by "dated" (`date`, from and to, a year, a month or
+a day), over every schema that maps onto the common field, each through its own index.
+
 ## Pairing: bundles
 
 Some files only make sense together. A **bundle** is a set of files with a lead file; each schema declares its

@@ -4,6 +4,15 @@
 {% block title %}Find {{ q }} · pinakes{% endblock %}
 {% block body %}
 <h1>Find</h1>
-{% if q %}<p class="muted">Names containing “{{ q }}” (<code>*</code> and <code>?</code> work as wildcards).</p>
-{{ pager(pg, "files") }}{{ file_table(results, "No file you can see has a name like that.", pg) }}{{ pager(pg, "files") }}{% endif %}
+<form class="filters" action="{{ url_for('find') }}">
+  <label>Name <input name="q" value="{{ q }}" placeholder="* and ? as wildcards"></label>
+  <label>Made by <input name="by" value="{{ by }}" placeholder="author, artist, photographer"></label>
+  <fieldset><legend>Dated</legend>
+    <label>from <input name="from" value="{{ since }}" placeholder="2019" size="10"></label>
+    <label>to <input name="to" value="{{ until }}" placeholder="2019-06-01" size="10"></label></fieldset>
+  <button>Find</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if searched %}<p class="muted">{% if q %}Names containing “{{ q }}”{% endif %}{% if q and (by or since or until) %}; {% endif %}{% if by %}made by “{{ by }}”{% endif %}{% if by and (since or until) %}; {% endif %}{% if since or until %}dated {% if since %}from {{ since }}{% endif %}{% if since and until %} {% endif %}{% if until %}to {{ until }}{% endif %}{% endif %}.</p>
+{{ pager(pg, "files") }}{{ file_table(results, "No file you can see matches.", pg) }}{{ pager(pg, "files") }}{% endif %}
 {% endblock %}

@@ -7,6 +7,7 @@ import time
 import unittest
 
 from pinakes import queries
+from tests import jpegs
 from tests.test_server import FAR_ZONES, PGHOST, ServerCase, admin_conn, in_time_zone, psycopg
 
 try:
@@ -628,6 +629,163 @@ def call_find(c):
 def call_dupes(c):
     from pinakes import queries
     return queries.dupes(c, sort="where", direction="desc")
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestMetadataPage(ServerCase):
+    """Extracted metadata on a file's page and in find (ROADMAP 16): every field a person may see, the sensitive
+    ones (GPS, people shown, places) only for the owners of a copy or an administrator in a step-up, audited."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/own.jpg", jpegs.camera(make="Maker-1"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/shared.jpg", jpegs.camera(make="Maker-2"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/tagged.jpg", jpegs.tagged())
+        self.write("server-1", "store", "people/user-1/private-tagged.jpg", jpegs.tagged(jpegs.XMP_ELEMENTS))
+        self.write("server-1", "store", "people/user-2/hers.jpg", jpegs.camera(make="Maker-4", when="2021:03:04 08:00:00"))
+        self.write("server-1", "store", "people/user-2/notes.txt", b"no metadata")
+        self.scan("server-1", "store")
+        self.secret = auth.new_totp_secret()
+        for name, pw, secret in (("user-1", "correct horse battery", self.secret), ("user-2", "staple pony 12345", None)):
+            pid = self.q("SELECT person_id FROM pinakes.people WHERE name = %s", (name,))[0][0]
+            self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash, totp_secret) "
+                              "VALUES (%s, %s, %s)", (pid, auth.hash_password(pw), secret))
+        cfg = server_config.loads(TestWeb.SERVER_WEB)
+        self.app = web.create_app(cfg, connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db))
+        self.app.testing = True
+
+    def login(self, name, pw):
+        c = self.app.test_client()
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").get_data(as_text=True)).group(1)
+        c.post("/login", data={"csrf": tok, "name": name, "password": pw})
+        return c
+
+    def page(self, c, rel):
+        r = c.get("/file/%d" % self.file("store", rel))
+        self.assertEqual(r.status_code, 200)
+        return r.get_data(as_text=True)
+
+    def found(self, c, **args):
+        page = c.get("/find", query_string=args).get_data(as_text=True)
+        return sorted(set(re.findall(r'href="/file/\d+">(people/[^<]+)</a>', page)))
+
+    def test_the_owner_sees_every_field_and_gps(self):
+        c = self.login("user-1", "correct horse battery")
+        page = self.page(c, "people/user-1/own.jpg")
+        for text in ("EXIF", "Maker-1", "Model-1", "Lens-1 35mm", "2019-06-01T10:30:00Z", "640", "400",
+                     "47.50000, -8.26000", "embedded", "v2"):
+            self.assertIn(text, page)
+        self.assertIn('title="where it was taken">gps</span> <span class="tag"', page)    # marked sensitive
+        self.assertNotIn("are shown only to the owners", page)
+        page = self.page(c, "people/user-1/shared-with-2/tagged.jpg")
+        for text in ("XMP", "Title-1", "User One", "walk, lake", "City-1", "Country-1", "Place-1", "User Two",
+                     "xmp.did:doc-1"):
+            self.assertIn(text, page)
+
+    def test_a_reader_sees_the_rest_not_the_sensitive_fields(self):
+        c = self.login("user-2", "staple pony 12345")
+        page = self.page(c, "people/user-1/shared-with-2/shared.jpg")
+        for text in ("Maker-2", "Model-1", "2019-06-01T10:30:00Z"):
+            self.assertIn(text, page)
+        self.assertNotIn("47.50000", page)
+        self.assertNotIn(">gps</span>", page)
+        self.assertIn("Sensitive fields (", page)
+        page = self.page(c, "people/user-1/shared-with-2/tagged.jpg")
+        for text in ("Title-1", "User One", "walk, lake"):
+            self.assertIn(text, page)
+        for text in ("City-1", "Country-1", "Place-1", ">people</span>", ">location</span>"):
+            self.assertNotIn(text, page)
+        # the note is the same for a photo without GPS: it says nothing about whether this one has any
+        page = self.page(c, "people/user-2/hers.jpg")
+        self.assertIn("47.50000", page)                                    # her own
+        self.assertNotIn("are shown only to the owners", page)
+        self.assertIn("None recorded.", self.page(c, "people/user-2/notes.txt"))
+
+    def test_an_administrator_sees_them_only_in_a_step_up_and_the_owner_is_told(self):
+        c = self.login("user-1", "correct horse battery")
+        hers = self.file("store", "people/user-2/hers.jpg")
+        self.assertEqual(c.get("/file/%d" % hers).status_code, 404)
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/step-up").get_data(as_text=True)).group(1)
+        c.post("/step-up", data={"csrf": tok, "reason": "checking a photo", "code": auth.totp(self.secret)})
+        self.assertIn("47.50000", c.get("/file/%d" % hers).get_data(as_text=True))
+        access = self.login("user-2", "staple pony 12345").get("/access").get_data(as_text=True)
+        self.assertIn("file %d, with sensitive metadata" % hers, access)
+
+    def test_find_by_creator_and_date_under_row_level_security(self):
+        c1 = self.login("user-1", "correct horse battery")
+        c2 = self.login("user-2", "staple pony 12345")
+        both = ["people/user-1/private-tagged.jpg", "people/user-1/shared-with-2/tagged.jpg"]
+        self.assertEqual(self.found(c1, by="user one"), both)
+        self.assertEqual(self.found(c2, by="user one"), ["people/user-1/shared-with-2/tagged.jpg"])
+        self.assertEqual(self.found(c1, by="user one", q="private"), ["people/user-1/private-tagged.jpg"])
+        self.assertEqual(self.found(c1, by="nobody"), [])
+        self.assertEqual(self.found(c1, by="%"), [])                      # LIKE's wildcards are only text here
+        # dated: EXIF's taken and XMP's created both map onto the common date
+        self.assertEqual(self.found(c1, **{"from": "2019-06", "to": "2019-06-01"}),
+                         ["people/user-1/own.jpg"] + both[:1] + ["people/user-1/shared-with-2/shared.jpg"] + both[1:])
+        self.assertEqual(self.found(c1, **{"from": "2019-06-02"}), [])
+        self.assertEqual(self.found(c2, **{"from": "2021"}), ["people/user-2/hers.jpg"])
+        self.assertEqual(self.found(c1, **{"from": "2021"}), [])          # hers: not his to find
+        self.assertEqual(self.found(c2, **{"to": "2019"}), ["people/user-1/shared-with-2/shared.jpg",
+                                                            "people/user-1/shared-with-2/tagged.jpg"])
+        page = c1.get("/find", query_string={"from": "June"}).get_data(as_text=True)
+        self.assertIn("A date is a year", page)
+
+    def test_a_sensitive_field_finds_nothing_for_a_reader(self):
+        # a site mapping a sensitive field onto a common one: the search still goes through row-level security
+        with self.as_person("user-2") as c:
+            got = queries.find_by(c, creator="user two", mapped_creator=[("xmp", "people")])
+            self.assertEqual(got, [])
+        with self.as_person("user-1") as c:
+            got = queries.find_by(c, creator="user two", mapped_creator=[("xmp", "people")])
+            self.assertEqual(sorted(r["relpath"] for r in got), ["people/user-1/private-tagged.jpg",
+                                                                 "people/user-1/shared-with-2/tagged.jpg"])
+
+    def test_find_by_common_fields_uses_each_schemas_index(self):
+        from pinakes import registry
+        self.ing.enroll(registry.load())
+
+        class Explain:          # find_by's own SQL, explained: rows() reads the plan's lines as its rows
+            def __init__(self, c):
+                self.c = c
+
+            def execute(self, sql, args=()):
+                return self.c.execute("EXPLAIN " + sql, args)
+
+        # each schema's index serves its part of the search, when the table has only those (on a few rows the
+        # planner would take any index that covers "schema = ...")
+        pid = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0]
+        others = {r[0] for r in self.q("SELECT indexname FROM pg_indexes WHERE schemaname = 'pinakes' AND "
+                                       "tablename = 'metadata' AND indexname <> 'metadata_pkey'")}
+        with admin_conn(self.db) as c:
+            for kw, wanted, n in [({"creator": "user", "mapped_creator": [("dc", "creator"), ("xmp", "creator")]},
+                                   {"md_dc_creator_trgm", "md_xmp_creator_trgm"}, 2),
+                                  ({"dated": ("2019", "2020"), "mapped_date": [("exif", "taken"), ("xmp", "created")]},
+                                   {"md_exif_taken_date", "md_xmp_created_date"}, 4)]:
+                with c.transaction(force_rollback=True):
+                    for other in others - wanted:
+                        c.execute("DROP INDEX pinakes.%s" % other)
+                    c.execute("SET LOCAL ROLE pinakes_app")
+                    c.execute("SELECT set_config('pinakes.person', %s, true)", (str(pid),))
+                    c.execute("SET LOCAL enable_seqscan = off")
+                    plan = "\n".join(r["QUERY PLAN"] for r in queries.find_by(Explain(c), **kw))
+                    for idx in wanted:
+                        self.assertIn(idx, plan)
+                    self.assertEqual(len(queries.find_by(c, **kw)), n)       # his tagged photos; his from 2019
+
+    def test_only_registry_names_reach_the_sql(self):
+        with self.as_person("user-1") as c:
+            for bad in [("xmp", "x') OR true --"), ("Xmp", "creator")]:
+                with self.assertRaises(ValueError):
+                    queries.find_by(c, creator="a", mapped_creator=[bad])
+
+    def test_markup_in_a_value_is_text(self):
+        evil = jpegs.camera(make="<script>x</script>")
+        self.write("server-1", "store", "people/user-1/evil.jpg", evil)
+        self.scan("server-1", "store")
+        page = self.page(self.login("user-1", "correct horse battery"), "people/user-1/evil.jpg")
+        self.assertNotIn("<script>x", page)
+        self.assertIn("&lt;script&gt;x", page)
 
 
 class TestAuth(unittest.TestCase):
