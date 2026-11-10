@@ -58,7 +58,7 @@ tests. When to run what:
   (`tools/test --agent-only`, about 3 s; `PINAKES_SKIP_TESTS=1` skips them once). Run the full `tools/test` yourself
   (about 75 s).
 - A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
-- Before a release: `tools/test --matrix full` and `tools/test --wheel`.
+- Before a release: `tools/test --matrix` and `tools/test --wheel`.
 
 The matrix needs each PostgreSQL major version side by side (PGDG's apt packages, with `create_main_cluster =
 false` so none starts a cluster of its own) and `tools/test --setup` once.
@@ -67,8 +67,8 @@ Tests: `tools/test` starts a throwaway PostgreSQL (from `/usr/lib/postgresql/N/b
 every test with `.venv`'s Python, removes the cluster, and fails if anything was skipped for lack of a database or a
 dependency; `tools/test --agent-only` needs neither. Its last line says what it ran on. Across versions:
 `tools/test --setup` makes an environment per Python under `.matrix/` (with [uv](https://docs.astral.sh/uv/)),
-then `tools/test --matrix [full] --jobs 4` runs them against every PostgreSQL installed (PGDG's packages put several
-side by side). `tools/test --wheel` tests what a release would ship: the wheel, built from a clean copy and
+then `tools/test --matrix --jobs 4` runs each Python and each PostgreSQL installed once, paired oldest with oldest
+(PGDG's packages put several side by side; `--matrix full` runs every pair). `tools/test --wheel` tests what a release would ship: the wheel, built from a clean copy and
 installed in a new environment.
 
 Run `git config core.hooksPath githooks` once. The hooks run `tools/leak-scan`, which blocks addresses, MACs, LAN

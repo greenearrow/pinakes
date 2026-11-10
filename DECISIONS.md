@@ -162,9 +162,10 @@ were made while building, to keep going, and are open to change.
   link of the file is no copy. The first deployment had its backup roots on the same disk as their source. A device
   is the filesystem's number (`st_dev`), not the physical disk: two partitions of one disk, or two btrfs subvolumes,
   look like two disks, and so count as safe. A device the catalog doesn't know counts as the same disk.
-- **The test matrix is lean by default** (ROADMAP 27): each Python on the newest PostgreSQL and each PostgreSQL on
-  one Python, 9 runs; Python and PostgreSQL meet only through psycopg's protocol, so the 24-pair `--matrix full` is
-  for before a release. Each run has its own cluster on a Unix socket in its own folder, so runs go side by side
+- **The test matrix runs each version once** (ROADMAP 27): each Python and each PostgreSQL in one run, paired oldest
+  with oldest, the shorter list repeated (6 Pythons and 4 PostgreSQL: 6 runs). Python and PostgreSQL meet only
+  through psycopg's protocol, so pairs add little; the 24-pair `--matrix full` is kept but no longer run routinely,
+  not even before a release. Each run has its own cluster on a Unix socket in its own folder, so runs go side by side
   (`--jobs`); 8 at once take under two minutes on the desktop. A test that compared the bulk move matching with the
   old per-file one built its tree twice: a freed inode reused by a file written just after made a gone and a new
   path "the same inode" in one build only, under load. It now scans once and replays the same batches into both.

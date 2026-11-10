@@ -7,9 +7,10 @@
   tools/test --agent-only            only the agent's tests (test_agent, test_extract, test_registry): no
                                      PostgreSQL, standard library only
   tools/test test_server.TestSymlinks ...   only these
-  tools/test --matrix [--jobs N]     each Python in .matrix/ on the newest PostgreSQL, and each PostgreSQL installed
-                                     on .venv's Python; --matrix full: every pair. One line per run; logs in
-                                     .matrix/logs/. Make the environments with tools/test --setup (needs uv).
+  tools/test --matrix [--jobs N]     each Python in .matrix/ and each PostgreSQL installed once, paired oldest with
+                                     oldest (the shorter list repeats); --matrix full: every pair. One line per
+                                     run; logs in .matrix/logs/. Make the environments with tools/test --setup
+                                     (needs uv).
   tools/test --wheel [--pg N]        build the sdist and, from it, the wheel (python -m build); install the wheel with
                                      the server extras into a new environment (uv); run every test there against the
                                      installed copy, not this tree: what a release would ship.
@@ -97,11 +98,12 @@ def matrix(args):
         sys.exit("tools/test: no environments in .matrix/: make them with tools/test --setup")
     if not pgs:
         sys.exit("tools/test: no PostgreSQL under /usr/lib/postgresql")
-    default = os.path.join(HERE, ".venv/bin/python")
     if args.matrix == "full":
         runs = [(py, pg) for py in pythons for pg in pgs]
     else:
-        runs = [(py, pgs[-1]) for py in pythons] + [(default, pg) for pg in pgs[:-1]]
+        # every version once: the longer list in order, the shorter spread over it, oldest with oldest
+        n = max(len(pythons), len(pgs))
+        runs = [(pythons[i * len(pythons) // n], pgs[i * len(pgs) // n]) for i in range(n)]
     logs = os.path.join(HERE, ".matrix", "logs")
     os.makedirs(logs, exist_ok=True)
 
