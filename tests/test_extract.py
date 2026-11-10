@@ -4,6 +4,7 @@ generated JPEGs (tests/jpegs.py) in a temporary directory. Standard library only
 import io
 import os
 import shutil
+import sqlite3
 import struct
 import tempfile
 import unittest
@@ -264,6 +265,32 @@ class TestScanExtracts(ScanCase):
         self.assertNotIn("meta", recs["notes.txt"])
         self.assertEqual(self.scan(), {})                       # unchanged: nothing sent, nothing read again
         self.assertNotIn("extracted", self.counter)
+
+    def test_a_state_from_before_file_types_still_extracts(self):
+        # rows saved before the agent kept a file's type (27650a5) and before it extracted: t and meta_v NULL. A row
+        # with a SHA-256 was a regular file then (symlinks had none); it must be read like any other photo, by a
+        # plain scan or a --full one
+        self.put(self.store, "photos/IMG_0001.JPG", jpegs.camera())
+        os.symlink("photos/IMG_0001.JPG", os.path.join(self.store, "latest.jpg"))
+        for full in (False, True):
+            with self.subTest(full=full):
+                self.scan()
+                self.state.close()
+                db = sqlite3.connect(self.cfg.state)
+                db.execute("UPDATE files SET t = NULL, target = NULL, link_root = NULL, link_path = NULL, "
+                           "dangling = NULL, meta_v = NULL")
+                db.execute("UPDATE files SET sha256 = NULL WHERE relpath = 'latest.jpg'")     # as it was then
+                db.execute("DELETE FROM meta WHERE key = 'types_filled'")                     # an older release's
+                db.commit()
+                db.close()
+                self.state = State(self.cfg.state)
+                recs = self.scan(full=full)
+                self.assertEqual(recs["photos/IMG_0001.JPG"]["meta"]["exif"]["vals"], jpegs.SENT)
+                self.assertNotIn("hashed", self.counter)                 # only the metadata is new: no rehash
+                self.assertEqual(recs["latest.jpg"]["t"], "symlink")     # a link of then is sent as one, not read
+                self.assertNotIn("meta", recs["latest.jpg"])
+                self.assertEqual(self.state.get("store", "photos/IMG_0001.JPG")["t"], "file")
+                self.assertEqual(self.scan(), {})                        # and then it is like any other
 
     def test_a_broken_photo_is_an_error_entry_and_not_tried_again(self):
         self.put(self.store, "bad.jpg", b"not a jpeg at all")

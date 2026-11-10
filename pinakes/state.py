@@ -35,6 +35,15 @@ class State:
         # meta_v: the schemas and versions extracted for the file ({"exif": 1} as JSON), NULL for none; a state from
         # before extraction has none, so the next scan extracts. By content: another copy here already sent it
         self.db.execute("CREATE INDEX IF NOT EXISTS files_content ON files (sha256)")
+        # t: a row saved before the agent kept a file's type (27650a5) has none, and extraction asks for a regular
+        # file, so it was never read. A row with a hash was a regular file then (a symlink got none); one without is
+        # an old symlink, resent anyway as its type now differs, or a file not hashed, which nothing is read from.
+        # Once: every row written since has its type
+        if self.db.execute("SELECT 1 FROM meta WHERE key = 'types_filled'").fetchone() is None:
+            self.db.execute("BEGIN IMMEDIATE")
+            self.db.execute("UPDATE files SET t = 'file' WHERE t IS NULL AND sha256 IS NOT NULL")
+            self.db.execute("INSERT INTO meta (key, value) VALUES ('types_filled', '1')")
+            self.db.execute("COMMIT")
 
     def close(self):
         self.db.close()

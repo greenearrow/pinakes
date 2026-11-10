@@ -331,3 +331,10 @@ were made while building, to keep going, and are open to change.
   says how many it left out (of those the person may see). Reports (only here, safe to delete, duplicates, changes)
   always count them: deleting a folder deletes its hidden files too. Older catalogs: `upgrades/hidden-files.sql`,
   after `symlink-targets.sql`; it marks the dot-names, and the agents' next scans send the attribute.
+- **A state from before the agent kept a file's type is read as files** (found by the first deployment's first
+  metadata pass: most photos weren't read). Extraction asks for a regular file, and rows saved before `27650a5` have
+  no type, so an unchanged photo was never extracted, even with `--full`. Opening such a state now sets `t =
+  'file'` once on every row with a hash (a symlink then had none). A row without one is an old symlink, which is
+  sent again anyway as its type now differs, or a file not hashed, from which nothing is read. The other columns
+  added later (`protected_link`, `dangling`, `meta_v`, `hidden`) read NULL as false or "not extracted", which is
+  right for an old row. Checked on a state written by the agent from before `27650a5`.
