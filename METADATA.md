@@ -1,8 +1,9 @@
 # Metadata
 
-Status: design only. Files carry metadata of their own (a photo's camera and place, a song's artist, a book's author)
-and people add more (tags, notes, "this is the master copy"). The catalog stores both, typed by enrolled schemas,
-indexed, and attached so that it follows files through copies and moves.
+Status: partly built (schemas, EXIF and embedded XMP from JPEGs, sensitive fields, a file's page and find: ROADMAP.md
+12 to 16); the rest is design. Files carry metadata of their own (a photo's camera and place, a song's artist, a
+book's author) and people add more (tags, notes, "this is the master copy"). The catalog stores both, typed by
+enrolled schemas, indexed, and attached so that it follows files through copies and moves.
 
 ## Two places metadata attaches
 

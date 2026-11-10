@@ -9,7 +9,8 @@ The name is the *Pinakes*, the catalogue Callimachus compiled of the Library of 
 who wrote what, how long it was, where it was shelved. It held none of the scrolls; this holds none of the files.
 
 **Status: early.** The agent, ingester, queries, CLI and a read-only web UI with sign-in are built and tested;
-metadata, file operations and more are not (ROADMAP.md).
+so are the metadata schemas, EXIF and XMP from JPEGs (sensitive fields for owners only) and hidden files. Other
+extractors, person-entered metadata, file operations and more are not (ROADMAP.md).
 
 - [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
   the web UI, managing files, queries.
