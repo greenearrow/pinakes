@@ -93,6 +93,22 @@ Extraction reads file content, so it never runs on a protected root, nor on a ha
 another root (its record says `protected_link`), and it runs on the agent, on the machine that has the file, never on
 the server.
 
+### Extraction (built for EXIF: ROADMAP 13)
+
+An extractor is a module with `extract(f)`, given the file opened read-only by the agent; it returns the schema's
+fields. The agent sends them on the file's record (batch format 2):
+
+```json
+{"t": "file", "path": "photos/IMG_0001.JPG", "sha256": "...",
+ "meta": {"exif": {"v": 1, "vals": {"make": "Maker-1", "taken": "2019-06-01T10:30:00Z"}}}}
+```
+
+or `{"v": 1, "error": "..."}` when it failed. A root's `metadata` (agent config) is `true` (the default: every
+extractor that applies), `false`, or a list of schema names. The agent remembers which versions it read for each
+file and reads a file again only when its content or a schema's version changes; sensitive fields are not sent until
+they can be kept from other people (ROADMAP 16). The ingester checks every value against the registry and keeps it
+on the content; DECISIONS.md has the rules.
+
 ## Pairing: bundles
 
 Some files only make sense together. A **bundle** is a set of files with a lead file; each schema declares its

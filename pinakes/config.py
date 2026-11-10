@@ -63,8 +63,21 @@ class Root:
         self.mirrors = d.get("mirrors")
         if self.kind == "backup" and not self.mirrors:
             raise ConfigError("root %s: a backup root needs mirrors" % self.label)
-        if self.protected and d.get("metadata"):
+        # which schemas' extractors run here (METADATA.md): true or left out, every one that applies; false or [],
+        # none; or a list of schema names
+        m = d.get("metadata", True)
+        if self.protected and m not in (False, [], None) and "metadata" in d:
             raise ConfigError("root %s: a protected root can't extract metadata" % self.label)
+        if m is True:
+            self.metadata = None
+        elif m is False:
+            self.metadata = []
+        elif isinstance(m, list) and all(isinstance(n, str) for n in m):
+            self.metadata = list(m)
+        else:
+            raise ConfigError("root %s: metadata is true, false or a list of schema names" % self.label)
+        if self.protected:
+            self.metadata = []
 
     def wants_chunks(self, size):
         return self.chunks and self.chunk_min_size <= size <= self.chunk_max_size

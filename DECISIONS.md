@@ -248,5 +248,36 @@ were made while building, to keep going, and are open to change.
   `Z`, so text order is time order. A trigram index on a list of text covers its JSON text, which is enough for
   "creator contains". Places use PostgreSQL's own `point` and GiST: no PostGIS.
 - **Only what the registry needs now is in the form:** sidecar patterns and pairing rules come with ROADMAP 14 and
-  are refused as unknown keys until then; `[extractor]` is checked (a dotted module name, a list of packages) but
-  nothing imports it before ROADMAP 13.
+  are refused as unknown keys until then; `[extractor]` is checked (a dotted module name, a list of packages) and
+  imported by the agent (ROADMAP 13).
+- **Extracted metadata rides on the file record** (batch format 2): `"meta": {"exif": {"v": 1, "vals": {...}}}`, or
+  `{"v": 1, "error": "..."}` when the extractor failed, so a broken file isn't read again until the schema's version
+  changes. Extraction reads the file when the record is built, and the ingester already has the content there; a
+  record of its own would only add sending metadata without the file, which a resent file record covers. The agent
+  doesn't send `source`: the ingester sets `embedded`. Format 1 is still accepted; an older ingester refuses 2, so the
+  server is upgraded first.
+- **The agent keeps what it extracted, not the values:** `meta_v` in its state is the schemas and versions read for
+  a file. An unchanged file whose versions differ from the registry's (a schema's version went up, a root's
+  `metadata` changed) is sent again with only `meta` new, without rehashing; one content is read once per agent (a
+  hard link, a copy in another folder or root); `--full` reads everything again, as the server lost it.
+- **The ingester trusts no agent's metadata:** every value is checked against the registry by the same function the
+  agent uses (`extract.check_vals`: the schema's own fields and types, a schema with an extractor, at most the
+  catalog's version, text, list and size caps; no `person` or `file` values, which only the catalog names). What
+  fails is left out and reported on stderr, not refused: a batch that can never apply would stop the host's queue.
+  `meta` on a protected root or a protected link is refused, as the agent never sends it there; a protected link
+  also removes what was extracted from that content before. Values replace a content's only from a newer version,
+  so the same bytes on another machine rewrite nothing and a later agent can't overwrite what is known. Each row
+  records the version and the host that sent it (`sent_by`: not `host_id`, which queries join `hosts` by).
+- **Sensitive fields never leave the agent until ROADMAP 16**, which can keep them from other people: content
+  metadata is visible to anyone who can see a copy, so a shared photo would show where it was taken. The ingester
+  drops them too. When 16 lands, the schema's version goes up and every photo is read again.
+- **EXIF is read with the standard library** (`pinakes/exif.py`), not Pillow or exifread: the agent stays dependency
+  free, and a file's bytes are parsed by bounded Python (offsets and counts checked against the segment, at most
+  1 MiB of markers read, no image decoded), not by a C imaging library. JPEG only so far. `taken` is UTC with `Z`
+  when the camera recorded its offset (EXIF 2.31's `OffsetTimeOriginal`), else the camera's local time without a
+  zone, which keeps text order within one camera's photos but not across zones.
+- **MIME types by name, from the standard library's own table** (`mimetypes.MimeTypes(filenames=())`), not the
+  machine's `/etc/mime.types`, so the same files get the same extractors on every machine. An extractor checks the
+  bytes itself (a `.jpg` that isn't a JPEG is an error entry).
+- **A requirement is checked by its installed distribution's version** (`importlib.metadata`), `>=` only; any other
+  specifier counts as not met. A missing one turns that extractor off (`Extractors.off` says why), not the scan.

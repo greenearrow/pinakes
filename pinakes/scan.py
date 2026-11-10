@@ -6,13 +6,14 @@ reading) only inside this agent's own roots, to say which root and path it leads
 """
 
 import hashlib
+import json
 import os
 import stat
 import tarfile
 import time
 import zipfile
 
-from . import chunker, fsinfo
+from . import chunker, extract, fsinfo, registry
 from .outbox import BatchWriter
 
 READ_BLOCK = 1024 * 1024
@@ -229,9 +230,11 @@ def check_verdict(c):
 class Scanner:
     PROGRESS_EVERY = 60  # seconds between progress lines (to stdout: the journal under systemd)
 
-    def __init__(self, cfg, state, hook=None, progress=None):
+    def __init__(self, cfg, state, hook=None, progress=None, extractors=None):
         self.cfg = cfg
         self.state = state
+        # the project's schemas' extractors; those missing a dependency are off (self.extractors.off says why)
+        self.extractors = extractors if extractors is not None else extract.Extractors(registry.load())
         self.hook = hook          # tests: called with (relpath) before each file; may raise Interrupted
         self.counter = {}
         self.progress = progress  # callable(str), e.g. print; None: quiet
@@ -359,8 +362,61 @@ class Scanner:
                     inodes.setdefault((st.st_dev, st.st_ino), p)
         return inodes, uncertain
 
-    def _record(self, root, relpath, abspath, prev, seen_inodes):
-        """The record to send for one path, and the state row to keep; (None, None) if unchanged."""
+    def _wanted(self, root, relpath, t, protected_link, sha256):
+        """{schema: version} to extract from this file: none on a protected root or a protected link, none for a
+        symlink or a file not hashed (there is no content to attach them to)."""
+        if root.protected or protected_link or t != "file" or not sha256:
+            return {}
+        return self.extractors.wanted(root.metadata, relpath)
+
+    def _from_state(self, prev, relpath):
+        """A file's record rebuilt from its state row, as last sent."""
+        rec = {k: prev[k] for k in ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid",
+                                    "sha256", "chunk_params")}
+        rec.update(t="file", path=relpath)
+        if prev["protected_link"]:
+            rec["protected_link"] = True
+        if prev["t"] == "symlink":
+            rec.update(t="symlink", target=prev["target"], link_root=prev["link_root"],
+                       link_path=prev["link_path"], dangling=_flag(prev["dangling"]))
+        return rec
+
+    def _record(self, root, relpath, abspath, prev, seen_inodes, full=False):
+        """The record to send for one path, and the state row to keep; (None, None) if unchanged. With extracted
+        metadata (METADATA.md) when the schemas' versions differ from what was extracted last, or with full (the
+        server lost what it had)."""
+        rec, keep = self._record_file(root, relpath, abspath, prev, seen_inodes)
+        if rec == "unchanged":
+            wanted = self._wanted(root, relpath, prev["t"], prev["protected_link"], prev["sha256"])
+            want = json.dumps(wanted, sort_keys=True) if wanted else None
+            if prev["meta_v"] == want and not (full and wanted):
+                return None, None
+            rec = keep = self._from_state(prev, relpath)   # only the metadata is new
+        elif rec is None or rec == "vanished" or keep is None or rec["t"] == "error":
+            return rec, keep
+        else:
+            wanted = self._wanted(root, relpath, rec["t"], rec.get("protected_link"), rec.get("sha256"))
+            want = json.dumps(wanted, sort_keys=True) if wanted else None
+        keep = dict(keep, meta_v=want)
+        if not wanted:
+            return rec, keep
+        if not full and ((prev is not None and prev["sha256"] == rec["sha256"] and prev["meta_v"] == want)
+                         or self.state.extracted(rec["sha256"], want)):
+            return rec, keep             # this content's metadata, at these versions, is already sent
+        meta = self.extractors.run(abspath, wanted)
+        self.counter["extracted"] = self.counter.get("extracted", 0) + 1
+        try:
+            after = fsinfo.info(abspath)
+        except FileNotFoundError:
+            return "vanished", None
+        if (after.size, after.mtime_ns, after.ino) != (rec["size"], rec["mtime_ns"], rec["ino"]):
+            return rec, dict(keep, meta_v=None)   # changed since it was hashed: the next scan reads it again
+        rec["meta"] = meta
+        return rec, keep
+
+    def _record_file(self, root, relpath, abspath, prev, seen_inodes):
+        """The record to send for one path, and the state row to keep; (None, None) for what isn't a file,
+        ("unchanged", None) if nothing changed."""
         try:
             fi = fsinfo.info(abspath)
         except FileNotFoundError:
@@ -394,7 +450,7 @@ class Scanner:
                     and (root.kind == "backup" or (prev["ctime_ns"] == fi.ctime_ns and prev["nlink"] == fi.nlink))):
                 # unchanged: nothing to send. In a backup root a new hard-linked snapshot changes every shared
                 # inode's link count and ctime; that says nothing about the copy, so it isn't sent
-                return None, None
+                return "unchanged", None
             rec["sha256"] = prev["sha256"]  # metadata only (permissions, links): no rehash
             return rec, rec
 
@@ -443,6 +499,11 @@ class Scanner:
     def scan(self, root, full=False, accept_gone=False):
         """Scan one root. Returns a summary dict. full=True also resends every unchanged file's record."""
         top = root.path
+        unknown = sorted(set(root.metadata or ()) - self.extractors.known)
+        if unknown:
+            from .config import ConfigError
+            raise ConfigError("root %s: metadata names %s: no schema with an extractor (there are: %s)"
+                              % (root.label, ", ".join(unknown), ", ".join(sorted(self.extractors.known))))
         if not os.path.isdir(top):
             raise FileNotFoundError("root %s: %s is not a directory" % (root.label, top))
         scan_id, started, resumed = self.state.open_scan(root.label)
@@ -495,18 +556,12 @@ class Scanner:
                 prev = self.state.get(root.label, relpath)
                 if prev is not None and prev["seen_scan"] == scan_id:
                     continue  # already handled before an interruption
-                rec, keep = self._record(root, relpath, abspath, prev, seen_inodes)
+                rec, keep = self._record(root, relpath, abspath, prev, seen_inodes, full)
                 if rec == "vanished":
                     continue  # gone between listing and reading; the end of the scan reports it if so
                 if rec is None and full and prev is not None:
-                    rec = {k: prev[k] for k in ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino",
-                                                "nlink", "uid", "sha256", "chunk_params")}
-                    rec.update(t="file", path=relpath, resend=True)
-                    if prev["protected_link"]:
-                        rec["protected_link"] = True
-                    if prev["t"] == "symlink":
-                        rec.update(t="symlink", target=prev["target"], link_root=prev["link_root"],
-                                   link_path=prev["link_path"], dangling=_flag(prev["dangling"]))
+                    rec = self._from_state(prev, relpath)
+                    rec["resend"] = True
                 w = ensure_writer()
                 if rec is None:
                     self.state.mark_seen(root.label, relpath, scan_id)

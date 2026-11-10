@@ -26,6 +26,7 @@ except ImportError:
 
 import pinakes
 from pinakes import config, outbox, registry, server_config
+import jpegs
 from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
 from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
@@ -1380,11 +1381,11 @@ class TestSchemaRegistry(ServerCase):
     def test_setup_makes_every_enrolled_fields_index(self):
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("schemas dc 1, photo 1; 14 metadata indexes, 14 made, 0 dropped", out)
+        self.assertIn("schemas dc 1, exif 1, photo 1; 19 metadata indexes, 19 made, 0 dropped", out)
         self.assertEqual(self.md_indexes(), self.wanted())
-        self.assertEqual(len(self.wanted()), 14)
-        self.assertEqual(self.setup_cmd()[1].splitlines()[-1], "schemas dc 1, photo 1; 14 metadata indexes, 0 made, "
-                                                                 "0 dropped")
+        self.assertEqual(len(self.wanted()), 19)
+        self.assertEqual(self.setup_cmd()[1].splitlines()[-1],
+                         "schemas dc 1, exif 1, photo 1; 19 metadata indexes, 0 made, 0 dropped")
         # the indexes are partial, per schema: another schema's rows with the same field name don't reach them
         defs = dict(self.q("SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'md\\_%%'"))
         self.assertIn("WHERE (schema = 'photo'::text)", defs["md_photo_iso_num"])
@@ -1427,7 +1428,7 @@ class TestSchemaRegistry(ServerCase):
         self.write_schema("photo", PHOTO_SCHEMA.replace('type = "number"\nindex = "range"', 'type = "number"'))
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("13 metadata indexes, 0 made, 1 dropped", out)
+        self.assertIn("18 metadata indexes, 0 made, 1 dropped", out)
         self.assertNotIn("md_photo_iso_num", self.md_indexes())
         os.remove(os.path.join(self.site, "photo.toml"))
         self.setup_cmd()
@@ -1621,6 +1622,121 @@ class TestIngesterStops(ServerCase):
             b.rollback()
             b.close()
         self.assertRolledBack()
+
+
+class TestExtracted(ServerCase):
+    """Extracted metadata in batches (ROADMAP 13): kept on the content, checked against the registry, refused from
+    protected roots and links."""
+
+    def metadata(self):
+        return self.q("SELECT c.sha256, m.schema, m.vals, m.source, m.version, h.name FROM pinakes.metadata m "
+                      "JOIN pinakes.contents c USING (content_id) LEFT JOIN pinakes.hosts h ON h.host_id = m.sent_by "
+                      "ORDER BY m.metadata_id")
+
+    def batch(self, records, protected=False, seq=1, fmt=2, host="server-1", root="store"):
+        header = {"t": "batch", "format": fmt, "host": host, "root": root, "scan": seq, "seq": seq,
+                  "started": "2024-01-01T00:00:00Z",
+                  "root_def": {"path": "/mnt/store", "kind": "primary", "protected": protected}}
+        return self.ing.apply(header, records, host)
+
+    def rec(self, path, meta=None, **kw):
+        r = {"t": "file", "path": path, "size": 10, "mtime_ns": 1700000000000000000, "ctime_ns": 1700000000000000000,
+             "dev": 1, "ino": 1, "nlink": 1, "uid": 1000, "sha256": hashlib.sha256(path.encode()).hexdigest()}
+        if meta is not None:
+            r["meta"] = meta
+        r.update(kw)
+        return r
+
+    def test_a_photo_and_its_copy_elsewhere_one_row(self):
+        from pinakes import queries
+        photo = jpegs.camera()
+        self.write("server-1", "store", "people/user-1/IMG_0001.JPG", photo)
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "IMG_0001 (1).jpg", photo)
+        self.scan("laptop-1", "downloads")
+        rows = self.metadata()
+        self.assertEqual(len(rows), 1)
+        digest, schema, vals, source, version, host = rows[0]
+        self.assertEqual((digest.hex(), schema, vals, source, version, host),
+                         (hashlib.sha256(photo).hexdigest(), "exif", jpegs.EXPECTED, "embedded", 1, "server-1"))
+        self.assertNotIn("gps", vals)
+        found = queries.meta(self.conn, "exif", "make", "Maker-1")
+        self.assertEqual(sorted(r["relpath"] for r in found), ["IMG_0001 (1).jpg", "people/user-1/IMG_0001.JPG"])
+
+    def test_seen_only_by_who_can_see_a_copy(self):
+        self.write("server-1", "store", "people/user-1/IMG_0001.JPG", jpegs.camera())
+        self.write("server-1", "store", "people/user-2/IMG_0002.JPG", jpegs.camera(make="Maker-2"))
+        self.scan("server-1", "store")
+        for person, makes in (("user-1", ["Maker-1"]), ("user-2", ["Maker-2"])):
+            with self.as_person(person) as c:
+                got = [r[0] for r in c.execute("SELECT vals ->> 'make' FROM pinakes.metadata ORDER BY 1")]
+            self.assertEqual(got, makes, person)
+
+    def test_refused_from_a_protected_root_or_link(self):
+        meta = {"exif": {"v": 1, "vals": {"make": "Maker-1"}}}
+        with self.assertRaisesRegex(Refused, "metadata from a protected root"):
+            self.batch([self.rec("a.jpg", meta)], protected=True)
+        with self.assertRaisesRegex(Refused, "metadata from a protected link"):
+            self.batch([self.rec("b.jpg", meta, protected_link=True)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)   # nothing of either applied
+        self.assertEqual(self.metadata(), [])
+
+    def test_a_link_into_a_protected_root_takes_what_was_known(self):
+        meta = {"exif": {"v": 1, "vals": {"make": "Maker-1"}}}
+        self.batch([self.rec("a.jpg", meta)])
+        self.assertEqual(len(self.metadata()), 1)
+        self.batch([self.rec("a.jpg", nlink=2, protected_link=True)], seq=2)
+        self.assertEqual(self.metadata(), [])
+
+    def test_what_the_registry_doesnt_allow_is_left_out(self):
+        recs = [self.rec("unknown.jpg", {"nosuch": {"v": 1, "vals": {"x": 1}}}),
+                self.rec("no-extractor.jpg", {"dc": {"v": 1, "vals": {"title": "t"}}}),
+                self.rec("newer.jpg", {"exif": {"v": 9, "vals": {"make": "m"}}}),
+                self.rec("field.jpg", {"exif": {"v": 1, "vals": {"make": "m", "owner": "user-2"}}}),
+                self.rec("type.jpg", {"exif": {"v": 1, "vals": {"iso": "400"}}}),
+                self.rec("shape.jpg", {"exif": {"v": 1, "vals": {}, "extra": 1}}),
+                self.rec("failed.jpg", {"exif": {"v": 1, "error": "BadExif: not a JPEG"}}),
+                self.rec("gps.jpg", {"exif": {"v": 1, "vals": {"make": "m", "gps": {"lat": 1.0, "lon": 2.0}}}})]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self.batch(recs), "applied")
+        self.assertEqual([d[0] for d in self.ing.dropped],
+                         ["unknown.jpg", "no-extractor.jpg", "newer.jpg", "field.jpg", "type.jpg", "shape.jpg"])
+        self.assertIn("metadata left out for 6 file(s)", err.getvalue())
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 8)   # the files themselves are in
+        rows = self.metadata()
+        self.assertEqual([(r[2], r[4]) for r in rows], [({"make": "m"}, 1)])     # gps: sensitive, never kept
+        with self.assertRaisesRegex(Refused, "meta is not a table"):
+            self.batch([self.rec("x.jpg", ["exif"])], seq=2)
+
+    def test_a_newer_version_replaces_the_same_does_not(self):
+        self.ing.registry["exif"].version = 2
+        self.batch([self.rec("a.jpg", {"exif": {"v": 2, "vals": {"make": "new"}}})])
+        self.batch([self.rec("a.jpg", {"exif": {"v": 1, "vals": {"make": "old"}}}, mtime_ns=1)], seq=2)
+        self.assertEqual([r[2] for r in self.metadata()], [{"make": "new"}])
+        self.batch([self.rec("a.jpg", {"exif": {"v": 2, "vals": {"make": "other"}}}, mtime_ns=2)], seq=3)
+        self.assertEqual([r[2] for r in self.metadata()], [{"make": "new"}])     # the same version: kept
+        self.ing.registry["exif"].version = 3
+        self.batch([self.rec("a.jpg", {"exif": {"v": 3, "vals": {"make": "newer"}}}, mtime_ns=3)], seq=4)
+        self.assertEqual([r[2] for r in self.metadata()], [{"make": "newer"}])
+
+    def test_formats(self):
+        self.assertEqual(self.batch([self.rec("a.txt")], fmt=1), "applied")
+        with self.assertRaisesRegex(Refused, "not a batch of format 1 or 2"):
+            self.batch([self.rec("b.txt")], seq=2, fmt=3)
+
+    def test_upgrade_file_matches_the_schema(self):
+        cols = ("SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable ORDER BY ordinal_position), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY 1) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.metadata'::regclass) "
+                "FROM information_schema.columns WHERE table_schema = 'pinakes' AND table_name = 'metadata'")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(cols).fetchone()
+            c.execute("ALTER TABLE pinakes.metadata DROP COLUMN version, DROP COLUMN sent_by")
+            with open(os.path.join(UPGRADES, "metadata-extracted.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(cols).fetchone(), fresh)
 
 
 if __name__ == "__main__":

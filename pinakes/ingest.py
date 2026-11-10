@@ -32,7 +32,7 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMAT, names, registry
+from . import BATCH_FORMATS, extract, names, registry
 from .config import ConfigError
 from .server_config import load as load_server_config
 
@@ -195,6 +195,8 @@ class Ingester:
         self.conn = conn
         self.cfg = cfg
         self.patterns = names.load_patterns(cfg.name_patterns_file)
+        self.registry = registry.load(getattr(cfg, "schemas_dir", None))   # what a batch's metadata is checked by
+        self.dropped = []   # the last batch's metadata left out: (path, schema, why)
         self._acl_cache = {}
         # files worked out per round of lineage: a few queries per round, not per file (1 gives the per-file order)
         self.lineage_round = 2000
@@ -377,6 +379,41 @@ class Ingester:
                    "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING", (archive_id, entry, size, cid))
 
     # backups ---------------------------------------------------------------------------------------------------
+    def _meta(self, ctx, content_id, relpath, meta):
+        """A file record's extracted metadata (format 2), kept on its content. Only a schema of the registry with an
+        extractor, at most the catalog's version of it, with values of its own fields and types (extract.check_vals:
+        sensitive fields are left out); anything else is left out and reported, not applied. Values replace a
+        content's only when of a newer version: the same bytes give the same values, so a copy elsewhere rewrites
+        nothing, and a later agent can't overwrite what is known."""
+        if not isinstance(meta, dict):
+            raise Refused("%s: meta is not a table" % relpath)
+        for name, e in meta.items():
+            s = self.registry.schemas.get(name)
+            why = None
+            if s is None or s.extractor is None:
+                why = "no schema with an extractor"
+            elif not isinstance(e, dict) or not set(e) <= {"v", "vals", "error"}:
+                why = "not {v, vals} or {v, error}"
+            elif isinstance(e.get("v"), bool) or not isinstance(e.get("v"), int) or not 1 <= e["v"] <= s.version:
+                why = "version %r; the catalog has %d" % (e.get("v"), s.version)
+            if why is None and "vals" in e:
+                vals, problems = extract.check_vals(s, e["vals"])
+                why = "; ".join(problems) or None
+            if why:
+                self.dropped.append((relpath, name, why))
+                continue
+            if "vals" not in e or not vals:
+                continue                            # the extractor failed or found nothing: what is known stays
+            old = self.one("SELECT max(version) FROM pinakes.metadata WHERE content_id = %s AND schema = %s "
+                           "AND source = 'embedded'", (content_id, name))[0]
+            if old is not None and old >= e["v"]:
+                continue
+            self.q("DELETE FROM pinakes.metadata WHERE content_id = %s AND schema = %s AND source = 'embedded'",
+                   (content_id, name))
+            self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source, version, sent_by) "
+                   "VALUES (%s, %s, %s, 'embedded', %s, %s)",
+                   (content_id, name, json.dumps(vals, sort_keys=True), e["v"], ctx["host_id"]))
+
     def _backup_source(self, root, relpath):
         """(source root_id, source relpath, snapshot date) of a path in a backup root, by its layout."""
         layout = root["mirrors_layout"] or "{relpath}"
@@ -409,8 +446,9 @@ class Ingester:
 
     # applying a batch ------------------------------------------------------------------------------------------
     def apply(self, header, records, host):
-        if header.get("t") != "batch" or header.get("format") != BATCH_FORMAT:
-            raise Refused("not a batch of format %d" % BATCH_FORMAT)
+        if header.get("t") != "batch" or header.get("format") not in BATCH_FORMATS:
+            raise Refused("not a batch of format %s" % " or ".join(map(str, BATCH_FORMATS)))
+        self.dropped = []
         if header.get("host") != host:
             raise Refused("batch says host %r, key is for %r" % (header.get("host"), host))
         if host not in self.cfg.hosts:
@@ -436,7 +474,7 @@ class Ingester:
             self.q("INSERT INTO pinakes.scans (root_id, scan, started_on) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                    (root_id, scan, started_on))
             ctx = {"root": root, "scan": scan, "on": started_on, "after": root["last_complete_on"],
-                   "uid_map": self.cfg.hosts[host]["uid_map"]}
+                   "uid_map": self.cfg.hosts[host]["uid_map"], "host_id": host_id}
             gone = []
             for rec in records:
                 t = rec.get("t")
@@ -455,6 +493,9 @@ class Ingester:
             self.q("INSERT INTO pinakes.ingested (host_id, seq, records) VALUES (%s, %s, %s)",
                    (host_id, seq, len(records)))
             self.q("UPDATE pinakes.hosts SET last_seq = %s WHERE host_id = %s", (seq, host_id))
+        if self.dropped:
+            sys.stderr.write("pinakes-ingest: host %s batch %d: metadata left out for %d file(s), first: %s %s: %s\n"
+                             % ((host, seq, len(self.dropped)) + self.dropped[0]))
         return "applied"
 
     def _file(self, ctx, rec):
@@ -462,12 +503,19 @@ class Ingester:
         relpath = rec["path"]
         name = relpath.rsplit("/", 1)[-1]
         content_id = self.content(rec.get("sha256"), rec.get("size") or 0, rec.get("chunks"), rec.get("chunk_params"))
+        if rec.get("meta") is not None and (root["protected"] or rec.get("protected_link")):
+            # the agent never extracts there (METADATA.md): one that says it did is refused, not trusted
+            raise Refused("%s: metadata from a protected %s" % (relpath, "root" if root["protected"] else "link"))
         if rec.get("protected_link") and content_id:
             # another link to this inode is under a protected root: nothing readable is kept from it, even a
-            # listing made before the link was
+            # listing or metadata got before the link was
             self.q("DELETE FROM pinakes.members WHERE archive_content_id = %s", (content_id,))
+            self.q("DELETE FROM pinakes.metadata WHERE content_id = %s AND source IN ('embedded', 'derived')",
+                   (content_id,))
         elif rec.get("members") and content_id and not root["protected"]:
             self._members(content_id, rec["members"])
+        if rec.get("meta") is not None and content_id:
+            self._meta(ctx, content_id, relpath, rec["meta"])
         key, ext = names.normalize(name, self.patterns)
         cols = {"name": name, "content_id": content_id, "size": rec.get("size"),
                 "mtime": _ts(rec.get("mtime_ns")), "ctime": _ts(rec.get("ctime_ns")), "btime": _ts(rec.get("btime_ns")),

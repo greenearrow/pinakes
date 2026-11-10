@@ -245,6 +245,8 @@ CREATE TABLE metadata (
     source      text NOT NULL CHECK (source IN ('person', 'sidecar', 'embedded', 'derived')),
     author      int REFERENCES people,
     at          timestamptz NOT NULL DEFAULT now(),
+    version     int,                                     -- the schema's version it was extracted by (ROADMAP 13)
+    sent_by     int REFERENCES hosts ON DELETE SET NULL, -- the agent that sent it, so a revoked one's can be found
     CHECK ((content_id IS NULL) <> (file_id IS NULL))
 );
 CREATE INDEX metadata_content ON metadata (content_id, schema);

@@ -1,0 +1,164 @@
+"""Running the schemas' extractors (METADATA.md, ROADMAP 13), and checking the values they give.
+
+The agent runs extractors, on the machine that has the file, never on a protected root nor on a hard link of a
+protected file. An extractor is a module with `extract(f)`: f is the file opened read-only by the agent (O_NOFOLLOW,
+O_NOATIME where permitted), and it returns {field: value} in the schema's types. A schema's extractor whose `requires`
+aren't installed is off, and says why; the scan goes on without it.
+
+check_vals() is shared: the agent checks what an extractor gives before sending it, and the ingester checks again
+what a batch says, so an agent can only write values of a schema's own fields and types into the catalog.
+Standard library only.
+"""
+
+import importlib
+import importlib.metadata
+import json
+import math
+import mimetypes
+import os
+import re
+
+MAX_TEXT = 1000          # characters in one text value
+MAX_LIST = 200           # items in one list
+MAX_VALS = 16 * 1024     # bytes of one schema's values as JSON
+MAX_ERROR = 300          # characters of an extractor's error, as sent
+
+# ISO 8601 as the registry stores dates: as precise as known; a time in UTC ends with Z, a time with no zone (a
+# camera's local time, its offset unknown) has none
+_DATE = re.compile(r"\d{4}(-\d{2}(-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?Z?)?)?)?\Z")
+_REQ = re.compile(r"([A-Za-z0-9][A-Za-z0-9._-]*)(.*)\Z")
+
+
+def _number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _item(kind, v):
+    """None if v is a fine value of this kind, else what's wrong."""
+    if kind == "text":
+        if not isinstance(v, str):
+            return "not text"
+        return "longer than %d characters" % MAX_TEXT if len(v) > MAX_TEXT else None
+    if kind in ("number", "duration"):
+        return None if _number(v) else "not a number"
+    if kind == "date":
+        return None if isinstance(v, str) and _DATE.match(v) else "not an ISO 8601 date"
+    if kind == "point":
+        if (not isinstance(v, dict) or set(v) != {"lat", "lon"} or not _number(v["lat"]) or not _number(v["lon"])
+                or not -90 <= v["lat"] <= 90 or not -180 <= v["lon"] <= 180):
+            return "not a point {lat, lon}"
+        return None
+    if kind in ("person", "file"):
+        return "a %s is named by the catalog, not by an extractor" % kind
+    return "unknown type %s" % kind
+
+
+def check_vals(schema, vals):
+    """(the values to keep, [what's wrong]). Sensitive fields are left out until they can be kept from other people
+    (ROADMAP 16): they never leave the agent. None values are left out."""
+    if not isinstance(vals, dict):
+        return {}, ["values are not a table"]
+    keep, problems = {}, []
+    for name, v in vals.items():
+        f = schema.fields.get(name) if isinstance(name, str) else None
+        if f is None:
+            problems.append("%s: not a field of %s" % (name, schema.name))
+            continue
+        if v is None or f.sensitive:
+            continue
+        if f.type == "list":
+            if not isinstance(v, list):
+                bad = "not a list"
+            elif len(v) > MAX_LIST:
+                bad = "more than %d items" % MAX_LIST
+            else:
+                bad = next((b for b in (_item(f.of, i) for i in v) if b), None)
+        else:
+            bad = _item(f.type, v)
+        if bad:
+            problems.append("%s: %s" % (name, bad))
+        else:
+            keep[name] = v
+    if len(json.dumps(keep)) > MAX_VALS:
+        problems.append("values over %d bytes" % MAX_VALS)
+    return keep, problems
+
+
+def _version(text):
+    return tuple(int(p) for p in re.findall(r"\d+", text)[:4])
+
+
+def missing(requires):
+    """The first requirement not met, or None. A requirement is a distribution's name, optionally with >= and a
+    version; any other specifier can't be checked here and counts as not met."""
+    for r in requires:
+        m = _REQ.match(r)
+        name, spec = m.group(1), m.group(2)
+        try:
+            have = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            return r
+        for clause in filter(None, spec.split(",")):
+            if not clause.startswith(">=") or _version(have) < _version(clause[2:]):
+                return "%s (%s installed)" % (r, have)
+    return None
+
+
+def _mime_fits(patterns, mime):
+    return any(p == "*/*" or p == mime or (p.endswith("/*") and mime.startswith(p[:-1])) for p in patterns)
+
+
+def _open_readonly(path):
+    from .scan import _open_readonly as opener   # one definition of how the agent opens a file
+    return os.fdopen(opener(path), "rb")
+
+
+class Extractors:
+    """The registry's extractors that can run here: on, {name: (schema, extract)}; off, {name: why}."""
+
+    def __init__(self, reg, opener=_open_readonly):
+        self.on, self.off = {}, {}
+        self.known = set()
+        self.opener = opener
+        # the standard library's own table of types by suffix, not this machine's /etc/mime.types: the same
+        # extractors run for the same names everywhere
+        self.mimes = mimetypes.MimeTypes(filenames=())
+        for s in reg:
+            if not s.extractor:
+                continue
+            self.known.add(s.name)
+            need = missing(s.extractor["requires"])
+            if need:
+                self.off[s.name] = "needs %s" % need
+                continue
+            try:
+                fn = importlib.import_module(s.extractor["module"]).extract
+            except Exception as e:                  # ImportError, or a module with no extract()
+                self.off[s.name] = "%s: %s" % (type(e).__name__, e)
+                continue
+            self.on[s.name] = (s, fn)
+
+    def wanted(self, select, relpath):
+        """{schema: version} of the extractors on here that apply to this name; select: a root's `metadata` (None:
+        all)."""
+        mime = self.mimes.guess_type(relpath.rsplit("/", 1)[-1], strict=False)[0]
+        if not mime:
+            return {}
+        return {n: s.version for n, (s, _) in self.on.items()
+                if (select is None or n in select) and _mime_fits(s.mime, mime)}
+
+    def run(self, path, wanted):
+        """{schema: {"v": version, "vals": {...}}} or, where one failed, {"v": version, "error": "..."}: a failure
+        is kept too, so the file isn't tried again until the schema's version changes."""
+        out = {}
+        for name in sorted(wanted):
+            s, fn = self.on[name]
+            try:
+                with self.opener(path) as f:
+                    vals, problems = check_vals(s, fn(f))
+                if problems:
+                    raise ValueError("; ".join(problems))
+                out[name] = {"v": s.version, "vals": vals}
+            except Exception as e:
+                out[name] = {"v": s.version, "error": ("%s: %s" % (type(e).__name__, e))[:MAX_ERROR]}
+        return out

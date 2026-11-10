@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 COLUMNS = ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256", "chunk_params",
-           "protected_link", "t", "target", "link_root", "link_path", "dangling")
+           "protected_link", "t", "target", "link_root", "link_path", "dangling", "meta_v")
 
 
 class State:
@@ -29,9 +29,12 @@ class State:
         have = [r["name"] for r in self.db.execute("PRAGMA table_info(files)")]
         # state from an older release: a file whose new fields aren't empty gets sent again by the next scan
         for col, typ in (("protected_link", "INTEGER"), ("t", "TEXT"), ("target", "TEXT"), ("link_root", "TEXT"),
-                         ("link_path", "TEXT"), ("dangling", "INTEGER")):
+                         ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT")):
             if col not in have:
                 self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
+        # meta_v: the schemas and versions extracted for the file ({"exif": 1} as JSON), NULL for none; a state from
+        # before extraction has none, so the next scan extracts. By content: another copy here already sent it
+        self.db.execute("CREATE INDEX IF NOT EXISTS files_content ON files (sha256)")
 
     def close(self):
         self.db.close()
@@ -80,6 +83,11 @@ class State:
         return self.db.execute(
             "SELECT * FROM files WHERE dev = ? AND ino = ? AND size = ? AND mtime_ns = ? AND sha256 IS NOT NULL "
             "LIMIT 1", (dev, ino, size, mtime_ns)).fetchone()
+
+    def extracted(self, sha256, meta_v):
+        """Whether another path here has this content with these schemas extracted, so already sent."""
+        return self.db.execute("SELECT 1 FROM files WHERE sha256 = ? AND meta_v = ? LIMIT 1",
+                               (sha256, meta_v)).fetchone() is not None
 
     def put(self, root, relpath, rec, scan_id):
         self.db.execute(

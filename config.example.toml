@@ -30,6 +30,7 @@ label = "store"
 path = "/mnt/store"
 kind = "primary"
 archives = true                        # list zip and tar members
+metadata = true                        # extract every schema that applies (the default); false, or a list: ["exif"]
 exclude = ["**/lost+found", "**/.Trash-*"]
 managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operations may do here; [] for none
 

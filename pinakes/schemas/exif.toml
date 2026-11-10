@@ -1,0 +1,65 @@
+# EXIF, from a JPEG's own header (METADATA.md "Schemas"), by pinakes/exif.py: the standard library, nothing to
+# install. Facts about the bytes, so they attach to the content and every copy has them.
+#
+# `taken` is in UTC with a Z when the camera recorded its offset (OffsetTimeOriginal), else the camera's local
+# time with no zone. GPS is sensitive: until sensitive fields can be kept from other people (ROADMAP 16) it is
+# never sent; that change raises the version, so every photo is read again then.
+
+name = "exif"
+version = 1
+title = "EXIF"
+mime = ["image/jpeg"]
+
+[extractor]
+module = "pinakes.exif"
+requires = []
+
+[common]
+date = "taken"
+
+[fields.make]
+type = "text"
+index = "exact"
+description = "the camera's maker"
+
+[fields.model]
+type = "text"
+index = "exact"
+description = "the camera's model"
+
+[fields.lens]
+type = "text"
+index = "exact"
+
+[fields.taken]
+type = "date"
+index = "range"
+description = "when the photo was taken (DateTimeOriginal)"
+
+[fields.exposure_time]
+type = "number"
+description = "seconds"
+
+[fields.f_number]
+type = "number"
+
+[fields.iso]
+type = "number"
+
+[fields.focal_length]
+type = "number"
+description = "millimetres"
+
+[fields.width]
+type = "number"
+description = "pixels"
+
+[fields.height]
+type = "number"
+description = "pixels"
+
+[fields.gps]
+type = "point"
+index = "spatial"
+sensitive = true
+description = "where it was taken"
