@@ -525,6 +525,12 @@ def roots(conn, hidden=True):
                          FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""", (hidden,))
 
 
+def roots_of_host(conn, host):
+    """The roots a host reports (label, path on that host, kind), for finding which one a local folder is in."""
+    return rows(conn, """SELECT r.label, r.path, r.kind FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id)
+                         WHERE h.name = %s""", (host,))
+
+
 def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):
     """The folders and files directly in a folder that the person can see; without `hidden`, none of the hidden
     files (a folder whose files are all hidden doesn't show). An entry is hidden when all its files are."""

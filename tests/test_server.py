@@ -370,6 +370,60 @@ class TestHardLinks(ServerCase):
         sizes = {e["entry"]: e["size"] for e in queries.listing(self.conn, "snapshots:")}
         self.assertEqual(sizes, {"2026-01-01_0140": 10000, "2026-01-02_0140": 10000})
 
+    def test_cli_backups_from_inside_a_folder(self):
+        import json
+        from pinakes import cli
+        data = os.urandom(10000)
+        self.write("server-1", "store", "people/user-1/docs/photo.jpg", data)
+        self.write("server-1", "store", "people/user-1/docs/lonely.txt", b"only one copy")
+        self.write("server-1", "store", "people/user-2/theirs.txt", b"not user-1's")
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup",
+                   extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/docs/photo.jpg", data)
+        self.scan("server-2", "snapshots")
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write(SERVER + '[web]\ndsn = "host=%s user=pinakes_app dbname=%s"\n' % (PGHOST, self.db))
+
+        def run(*args, cwd=None, code=0):
+            out = io.StringIO()
+            old = os.getcwd()
+            try:
+                if cwd:
+                    os.chdir(cwd)
+                with contextlib.redirect_stdout(out):
+                    rc = None
+                    try:
+                        rc = cli.main(["--config", conf, "--as", "user-1", "--host", "server-1", *args])
+                    except SystemExit as e:
+                        rc = e.code
+                self.assertEqual(rc, code)
+            finally:
+                os.chdir(old)
+            return out.getvalue()
+
+        docs = self.path("server-1", "store", "people/user-1/docs")
+        text = run("--backups", cwd=docs)                          # from inside the folder, no argument
+        self.assertIn("store:people/user-1/docs: 2 file(s) you can see, 1 with no backup", text)
+        self.assertLess(text.index("lonely.txt"), text.index("photo.jpg"))      # the least backed up first
+        got = json.loads(run("--backups", "--json", docs))          # or given the folder
+        self.assertEqual(got["folder"], "store:people/user-1/docs")
+        self.assertEqual({r["relpath"]: r["backup_copies"] for r in got["shown"]},
+                         {"people/user-1/docs/lonely.txt": 0, "people/user-1/docs/photo.jpg": 1})
+        # the whole root; and user-2's file is not user-1's to see
+        whole = run("--backups", cwd=self.path("server-1", "store", ""))
+        self.assertIn("store: 2 file(s) you can see", whole)
+        self.assertNotIn("theirs.txt", whole)
+        # refusals: outside any root, and inside a backup root
+        with self.assertRaises(SystemExit) as e:
+            cli.main(["--config", conf, "--as", "user-1", "--host", "server-1", "--backups", self.tmp])
+        self.assertIn("is not inside a root", str(e.exception))
+        with self.assertRaises(SystemExit) as e:
+            cli.main(["--config", conf, "--as", "user-1", "--host", "server-2", "--backups",
+                      self.path("server-2", "snapshots", "")])
+        self.assertIn("itself a backup root", str(e.exception))
+
     def test_dupes_count_copies_not_links(self):
         from pinakes import queries
         data = os.urandom(5000)
