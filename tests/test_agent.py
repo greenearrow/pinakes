@@ -1,5 +1,6 @@
 """Agent tests on generated trees in a temporary directory. Standard library only: python3 -m unittest."""
 
+import argparse
 import contextlib
 import gzip
 import hashlib
@@ -1117,6 +1118,146 @@ print("ack %%d" %% seq)
         self.assertEqual((sent, heard), (0, []))
         self.assertIn("refused: unknown root", err)
         self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
+
+
+class TestCheckIn(Tree):
+    """Check-in before sending (pinakes-agent run): locked while the server is incompatible, scanning on and batches
+    held, one line naming both sides, exit 4; unlocked by the next run once the server is in range. A stand-in ssh
+    plays the server: FAKE_SERVER is its hello answer (JSON), "before" for an ingester from before check-in (it
+    reads a hello as a batch and refuses it), or "down" (ssh fails to connect)."""
+
+    FAKE = r"""#!%(py)s
+import gzip, json, os, sys
+mode = os.environ["FAKE_SERVER"]
+if mode == "down":
+    sys.stderr.write("ssh: connect to host server-1 port 22: No route to host\n")
+    sys.exit(255)
+data = sys.stdin.buffer.read()
+log = open(os.environ["FAKE_LOG"], "a")
+if sys.argv[-1] == "hello" and mode != "before":
+    log.write(json.dumps({"hello": json.loads(data)}) + "\n")
+    print(mode)
+    sys.exit(0)
+try:
+    lines = gzip.decompress(data).decode().splitlines()
+except OSError:
+    sys.stderr.write("refused: not gzip\n")
+    sys.exit(1)
+header = json.loads(lines[0])
+log.write(json.dumps({"batch": header}) + "\n")
+print("ack %%d" %% header["seq"])
+"""
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "ssh"), "w") as f:
+            f.write(self.FAKE % {"py": sys.executable})
+        os.chmod(os.path.join(bindir, "ssh"), 0o755)
+        self.cfg.transport = {"kind": "ssh", "target": "pinakes@server-1", "timeout": 30}
+        self.log = os.path.join(self.tmp, "server.log")
+        for p in (unittest.mock.patch.dict(os.environ, {"PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+                                                        "FAKE_LOG": self.log}),
+                  unittest.mock.patch.object(agent, "on_ac_power", return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def server(self, protocol, min_agent=0, release=11, schema_applied=True, missing=()):
+        return json.dumps({"release": release, "protocol": protocol, "min_agent_protocol": min_agent,
+                           "schema_applied": schema_applied, "upgrades_missing": list(missing)})
+
+    def run_agent(self, server, **compat_now):
+        """One `pinakes-agent run` against that server, with pinakes/compat.py's values as given: (exit, stderr
+        lines, what the server got)."""
+        err = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for k, v in compat_now.items():
+                stack.enter_context(unittest.mock.patch.object(agent.compat, k, v))
+            stack.enter_context(unittest.mock.patch.dict(os.environ, {"FAKE_SERVER": server}))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            open(self.log, "w").close()
+            rc = agent.cmd_run(self.cfg, argparse.Namespace(root=None))
+        with open(self.log) as f:
+            got = [json.loads(l) for l in f]
+        return rc, err.getvalue().splitlines(), got
+
+    def batches(self, got):
+        return [g["batch"] for g in got if "batch" in g]
+
+    def test_too_far_ahead_locks_and_unlocks_when_the_server_catches_up(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(1), PROTOCOL=3, MIN_SERVER_PROTOCOL=2, RELEASE=13)
+        self.assertEqual(rc, 4)
+        self.assertEqual(self.batches(got), [])                         # nothing sent
+        self.assertEqual(got[0]["hello"], {"release": 13, "protocol": 3, "min_server_protocol": 2})
+        self.assertEqual(len(err), 1)
+        self.assertEqual(err[0], "pinakes-agent: locked: agent release 13 protocol 3, server release 11 protocol 1: "
+                                 "the server must update (the agent (protocol 3) needs a server of protocol 2 or "
+                                 "later; the server is at 1); scanning goes on, 1 batch(es) held, nothing sent until "
+                                 "then")
+        self.write("b.txt", b"b")                                       # still scanning, still holding
+        rc, err, got = self.run_agent(self.server(1), PROTOCOL=3, MIN_SERVER_PROTOCOL=2, RELEASE=13)
+        self.assertEqual((rc, self.batches(got), len(outbox.pending(self.cfg.outbox))), (4, [], 2))
+        self.assertIn("2 batch(es) held", err[0])
+        st = State(self.cfg.state)
+        self.assertEqual(st.db.execute("SELECT count(*) FROM files").fetchone()[0], 2)   # state saved locally
+        st.close()
+        rc, err, got = self.run_agent(self.server(2), PROTOCOL=3, MIN_SERVER_PROTOCOL=2, RELEASE=13)  # updated
+        self.assertEqual((rc, err), (0, []))
+        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2, 3])  # the two held, in order, then this run's
+        self.assertEqual(outbox.pending(self.cfg.outbox), [])
+
+    def test_ahead_but_compatible_sends(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(1), PROTOCOL=2, MIN_SERVER_PROTOCOL=1, RELEASE=12)
+        self.assertEqual((rc, err), (0, []))
+        (b,), = [self.batches(got)]
+        self.assertEqual((b["release"], b["protocol"], b["min_server_protocol"]), (12, 2, 1))
+
+    def test_behind_locks(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(3, min_agent=2, release=14), PROTOCOL=1)
+        self.assertEqual((rc, self.batches(got)), (4, []))
+        self.assertIn("server release 14 protocol 3: the agent must update (the server (protocol 3) accepts agents "
+                      "of protocol 2 or later; the agent is at 1)", err[0])
+
+    def test_a_server_without_its_upgrade_locks(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(1, schema_applied=False, missing=["checkins.sql"]))
+        self.assertEqual((rc, self.batches(got)), (4, []))
+        self.assertIn("the server must update (its catalog lacks checkins.sql)", err[0])
+
+    def test_a_server_from_before_check_in(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent("before", MIN_SERVER_PROTOCOL=1)  # this agent needs check-in: locked
+        self.assertEqual((rc, self.batches(got)), (4, []))
+        self.assertIn("server from before check-in protocol 0: the server must update", err[0])
+        rc, err, got = self.run_agent("before", MIN_SERVER_PROTOCOL=0)  # this one doesn't: it sends
+        self.assertEqual((rc, err, len(self.batches(got))), (0, [], 2))  # the one held, and this run's
+
+    def test_unreachable_holds_and_retries_as_before(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent("down")
+        self.assertEqual(rc, 1)                                         # as a failed send always was
+        self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
+        self.assertFalse(any("locked" in e for e in err))
+        self.assertIn("No route to host", err[0])
+        rc, err, got = self.run_agent(self.server(1))
+        self.assertEqual((rc, len(self.batches(got))), (0, 2))         # the one held, and this run's
+
+    def test_send_alone_checks_in_too(self):
+        self.write("a.txt", b"a")
+        self.scan()
+        with unittest.mock.patch.dict(os.environ, {"FAKE_SERVER": self.server(1, min_agent=5)}), \
+                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(agent.cmd_send(self.cfg, argparse.Namespace()), 4)
+        self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
+
+    def test_the_directory_transport_needs_no_check_in(self):
+        self.cfg.transport = {"kind": "directory", "path": os.path.join(self.tmp, "inbox")}
+        self.assertEqual(agent.check_in(self.cfg), ("ok", None))
 
 
 if __name__ == "__main__":

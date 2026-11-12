@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""The newest release that changes a role, from RELEASES.toml and the release-N tags.
+
+  tools/latest-release ROLE              its tag (release-N): ROLE is server, agent or cli
+  tools/latest-release ROLE --json       its entry, with its tag and commit
+  tools/latest-release --upgrades-after N   the upgrade_sql of every release after N, in the order to run them
+
+Only cut releases count: an entry whose tag release-N doesn't exist yet is being prepared, and is left out (said on
+stderr). Exits 1 if no cut release affects ROLE.
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROLES = ("server", "agent", "cli")
+
+
+def commit_of(repo, tag):
+    p = subprocess.run(["git", "-C", repo, "rev-parse", "-q", "--verify", "refs/tags/%s^{commit}" % tag],
+                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="latest-release", description=__doc__.split("\n")[0])
+    ap.add_argument("role", nargs="?", choices=ROLES)
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--upgrades-after", type=int, metavar="N")
+    ap.add_argument("--manifest", default=os.path.join(HERE, "RELEASES.toml"))
+    a = ap.parse_args(argv)
+    if (a.role is None) == (a.upgrades_after is None):
+        ap.error("give a ROLE or --upgrades-after N")
+    with open(a.manifest, "rb") as f:
+        releases = tomllib.load(f)["release"]
+    repo = os.path.dirname(os.path.abspath(a.manifest))
+    cut = []
+    for r in releases:
+        c = commit_of(repo, "release-%d" % r["id"])
+        if c:
+            cut.append(dict(r, tag="release-%d" % r["id"], commit=c))
+        else:
+            print("latest-release: release %d is not cut yet (no tag release-%d)" % (r["id"], r["id"]),
+                  file=sys.stderr)
+    if a.upgrades_after is not None:
+        for r in cut:
+            if r["id"] > a.upgrades_after:
+                for u in r["upgrade_sql"]:
+                    print(u)
+        return 0
+    mine = [r for r in cut if a.role in r["affects"]]
+    if not mine:
+        print("latest-release: no cut release affects %s" % a.role, file=sys.stderr)
+        return 1
+    print(json.dumps(mine[-1], indent=1) if a.json else mine[-1]["tag"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

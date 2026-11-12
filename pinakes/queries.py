@@ -514,6 +514,17 @@ def health(conn):
                          FROM pinakes.hosts h ORDER BY h.name""")
 
 
+def agent_versions(conn):
+    """Per host: its last check-in (release, protocol, the oldest server it works with, whether it is locked), its
+    newest batch and the protocol that batch declared (0: none, an agent before check-in), and its last batch refused
+    for its protocol. Host names, numbers and times only: no root, person or file."""
+    return rows(conn, """SELECT h.name AS host, c.at AS checked_in, c.release, c.protocol,
+                                c.min_server_protocol AS min_server, c.locked,
+                                (SELECT max(i.at) FROM pinakes.ingested i WHERE i.host_id = h.host_id) AS newest_batch,
+                                c.batch_release, c.batch_protocol, c.refused_at, c.refused
+                         FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id) ORDER BY h.name""")
+
+
 def roots(conn, hidden=True):
     """Every root with the files the person can see in it; without `hidden`, not counting the hidden ones, which
     `hidden_files` still counts."""

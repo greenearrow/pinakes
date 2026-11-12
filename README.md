@@ -60,6 +60,11 @@ tests. When to run what:
   (about 75 s).
 - A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
 - Before a release: `tools/test --matrix` and `tools/test --wheel`.
+- Cutting a release: its entry in `RELEASES.toml` (what it affects, its protocol, the `upgrades/*.sql` it needs)
+  and the same numbers in `pinakes/compat.py`, in one commit, tagged `release-N`. A change to the batch fields, the
+  agent's state or the schema raises the protocol (`tests/test_releases.py` fails otherwise). `tools/latest-release
+  ROLE` prints the newest cut release that changes `server`, `agent` or `cli`; `--upgrades-after N` the upgrade
+  files to run coming from release N.
 
 The matrix needs each PostgreSQL major version side by side (PGDG's apt packages, with `create_main_cluster =
 false` so none starts a cluster of its own) and `tools/test --setup` once.

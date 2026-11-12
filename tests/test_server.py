@@ -4,6 +4,7 @@ Needs PINAKES_TEST_PGHOST (a socket directory or host of a throwaway server wher
 default postgres, is a superuser) and psycopg. Each test class gets a fresh database. Skipped otherwise.
 """
 
+import argparse
 import contextlib
 import datetime
 import hashlib
@@ -17,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 import zipfile
 
 try:
@@ -25,9 +27,9 @@ except ImportError:
     psycopg = None
 
 import pinakes
-from pinakes import config, outbox, queries, registry, server_config
+from pinakes import compat, config, outbox, queries, registry, server_config
 import jpegs
-from pinakes.ingest import Ingester, Refused, apply_schema, main as ingest_main
+from pinakes.ingest import Incompatible, Ingester, Refused, apply_schema, main as ingest_main, schema_missing
 from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
 
@@ -972,6 +974,203 @@ def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
                 c.execute(f.read())
             c.execute("RESET search_path")              # each file sets its own; compare as before
         case.assertEqual(c.execute(defs).fetchone(), fresh)
+
+
+class TestCheckIn(ServerCase):
+    """Check-in and the protocol of each batch: hello records an agent and answers this server's release; a batch
+    from an agent outside the range is refused, and the refusal kept; one that declares nothing counts as 0."""
+
+    def checkin(self, host="server-1"):
+        cols = ("at", "release", "protocol", "min_server_protocol", "locked", "batch_at", "batch_release",
+                "batch_protocol", "refused_at", "refused")
+        r = self.q("SELECT %s FROM pinakes.checkins c JOIN pinakes.hosts h USING (host_id) WHERE h.name = %%s"
+                   % ", ".join("c." + c for c in cols), (host,))
+        return dict(zip(cols, r[0])) if r else None
+
+    def test_hello_records_and_answers(self):
+        answer = self.ing.hello("server-1", {"release": 11, "protocol": 1, "min_server_protocol": 0})
+        self.assertEqual(answer, {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
+                                  "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": True,
+                                  "upgrades_missing": []})
+        c = self.checkin()
+        self.assertEqual((c["release"], c["protocol"], c["min_server_protocol"], c["locked"]), (11, 1, 0, None))
+        self.assertIsNotNone(c["at"])
+        with self.assertRaises(Refused):
+            self.ing.hello("server-9", {})
+        self.ing.hello("laptop-1", {"protocol": "x", "release": -3})   # malformed: protocol 0, no release
+        c = self.checkin("laptop-1")
+        self.assertEqual((c["release"], c["protocol"]), (None, 0))
+
+    def test_hello_from_an_agent_behind_is_recorded_as_locked(self):
+        with unittest.mock.patch.multiple(compat, PROTOCOL=3, MIN_AGENT_PROTOCOL=2):
+            self.assertEqual(self.ing.hello("server-1", {"protocol": 1})["min_agent_protocol"], 2)
+        self.assertEqual(self.checkin()["locked"], "agent must update: the server (protocol 3) accepts agents of "
+                                                   "protocol 2 or later; the agent is at 1")
+
+    def pending(self, host="server-1"):
+        st, cfg, _ = self.agent(host, "store")
+        return [outbox.read(p) for _, p in outbox.pending(cfg.outbox)]
+
+    def test_an_agent_behind_is_refused_and_says_why(self):
+        self.write("server-1", "store", "a.txt", b"a")
+        st, cfg, _ = self.agent("server-1", "store")
+        Scanner(cfg, st).scan(cfg.roots[0])                              # an agent of protocol 1
+        (header, recs), = self.pending()
+        with unittest.mock.patch.multiple(compat, PROTOCOL=3, MIN_AGENT_PROTOCOL=2):
+            with self.assertRaises(Incompatible) as e:
+                self.ing.apply(header, recs, "server-1")
+            self.assertEqual(str(e.exception), "batch 1: the server (protocol 3) accepts agents of protocol 2 or "
+                                               "later; the agent is at 1; the agent must update")
+            # through the forced command: refused on stderr, to the agent, and to the system log
+            path = os.path.join(self.tmp, "server.toml")
+            with open(path, "w") as f:
+                f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s' % (PGHOST, self.db, SERVER))
+            (_, batch), = outbox.pending(cfg.outbox)
+            with open(batch, "rb") as f:
+                stdin = io.TextIOWrapper(io.BytesIO(f.read()))
+            err = io.StringIO()
+            # in this process the watchdog would outlive the call, and exit the tests once stdout closes
+            dog = unittest.mock.patch("pinakes.ingest.Watchdog", **{"return_value.batch.return_value":
+                                                                     contextlib.nullcontext()})
+            with unittest.mock.patch("sys.stdin", stdin), unittest.mock.patch("pinakes.ingest._syslog") as log, \
+                    dog, tempfile.TemporaryFile("w") as out, contextlib.redirect_stderr(err), \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(ingest_main(["--config", path, "--host", "server-1"]), 1)
+        self.assertEqual(err.getvalue(), "refused: %s\n" % e.exception)
+        log.assert_called_once_with("host server-1: refused %s" % e.exception)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)      # nothing applied
+        self.assertEqual(self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0], 0)
+        c = self.checkin()
+        self.assertEqual(c["refused"], str(e.exception))
+        self.assertIsNotNone(c["refused_at"])
+        self.assertEqual(self.ing.apply(header, recs, "server-1"), "applied")     # the server it was made for
+
+    def test_an_agent_too_far_ahead_is_refused(self):
+        self.write("server-1", "store", "a.txt", b"a")
+        st, cfg, _ = self.agent("server-1", "store")
+        with unittest.mock.patch.multiple(compat, PROTOCOL=5, MIN_SERVER_PROTOCOL=4):
+            Scanner(cfg, st).scan(cfg.roots[0])
+        (header, recs), = self.pending()
+        with self.assertRaises(Incompatible) as e:
+            self.ing.apply(header, recs, "server-1")
+        self.assertIn("the agent (protocol 5) needs a server of protocol 4 or later; the server is at %d; the server "
+                      "must update" % compat.PROTOCOL, str(e.exception))
+
+    def test_ahead_but_compatible_and_before_check_in_are_applied(self):
+        self.write("server-1", "store", "a.txt", b"a")
+        st, cfg, _ = self.agent("server-1", "store")
+        with unittest.mock.patch.multiple(compat, RELEASE=12, PROTOCOL=compat.PROTOCOL + 1):
+            Scanner(cfg, st).scan(cfg.roots[0])
+        (header, recs), = self.pending()
+        self.assertEqual(self.ing.apply(header, recs, "server-1"), "applied")
+        c = self.checkin()
+        self.assertEqual((c["batch_release"], c["batch_protocol"], c["at"]), (12, compat.PROTOCOL + 1, None))
+        outbox.ack(cfg.outbox, header["seq"])
+        # an agent from before check-in: no release or protocol in its header
+        self.write("server-1", "store", "b.txt", b"b")
+        Scanner(cfg, st).scan(cfg.roots[0])
+        (header, recs), = self.pending()
+        for k in ("release", "protocol", "min_server_protocol"):
+            del header[k]
+        with unittest.mock.patch.multiple(compat, PROTOCOL=2, MIN_AGENT_PROTOCOL=0):
+            self.assertEqual(self.ing.apply(header, recs, "server-1"), "applied")
+        c = self.checkin()
+        self.assertEqual((c["batch_release"], c["batch_protocol"]), (None, 0))
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.present")[0][0], 2)
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'checkins'), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' "
+                " AND table_name = 'checkins'), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.checkins'::regclass)")
+        self.assertEqual(schema_missing(self.conn), [])
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP TABLE pinakes.checkins")
+            self.assertEqual(schema_missing(self.conn), ["checkins.sql"])
+            self.assertFalse(self.ing.hello("server-1", {"protocol": 1})["schema_applied"])
+            with open(os.path.join(UPGRADES, "checkins.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+            self.assertEqual(schema_missing(self.conn), [])
+            c.execute("ALTER TABLE pinakes.files DROP COLUMN hidden CASCADE")
+            self.assertEqual(schema_missing(self.conn), ["hidden-files.sql"])
+            c.execute("DROP SCHEMA pinakes CASCADE")
+            self.assertEqual(schema_missing(self.conn), ["schema.sql"])
+
+    def test_through_the_forced_key_locked_until_the_upgrade_then_reported(self):
+        """The real route: a stand-in ssh runs pinakes-ingest --host as an agent's forced key would, with what was
+        asked for in SSH_ORIGINAL_COMMAND. The catalog lacks checkins.sql: the agent locks; once it runs, the next
+        run sends what was held, and pinakes --versions shows it."""
+        from pinakes import agent, cli
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s[web]\ndsn = "host=%s '
+                    'user=pinakes_app dbname=%s"\n' % (PGHOST, self.db, SERVER, PGHOST, self.db))
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "ssh"), "w") as f:
+            f.write("#!%s\nimport os, subprocess, sys\nos.environ['SSH_ORIGINAL_COMMAND'] = sys.argv[-1]\n"
+                    "sys.exit(subprocess.call([sys.executable, '-m', 'pinakes.ingest', '--config', %r, '--host', "
+                    "'server-1']))\n" % (sys.executable, conf))
+        os.chmod(os.path.join(bindir, "ssh"), 0o755)
+        env = {"PATH": bindir + os.pathsep + os.environ.get("PATH", ""),
+               "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.abspath(pinakes.__file__)))}
+        st, cfg, _ = self.agent("server-1", "store")
+        cfg.transport = {"kind": "ssh", "target": "pinakes@server-1", "timeout": 60}
+        self.write("server-1", "store", "a.txt", b"a")
+
+        def run():
+            err = io.StringIO()
+            with unittest.mock.patch.dict(os.environ, env), \
+                    unittest.mock.patch.object(agent, "on_ac_power", return_value=True), \
+                    contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = agent.cmd_run(cfg, argparse.Namespace(root=None))
+            return rc, err.getvalue()
+
+        with admin_conn(self.db) as c:
+            c.execute("DROP TABLE pinakes.checkins")
+        rc, err = run()
+        self.assertEqual(rc, 4)
+        self.assertIn("pinakes-agent: locked: agent release %d protocol %d, server release %d protocol %d: the "
+                      "server must update (its catalog lacks checkins.sql)" % ((compat.RELEASE, compat.PROTOCOL) * 2),
+                      err)
+        self.assertEqual(len(outbox.pending(cfg.outbox)), 1)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)
+        with admin_conn(self.db) as c:
+            with open(os.path.join(UPGRADES, "checkins.sql")) as f:
+                c.execute(f.read())
+        self.write("server-1", "store", "b.txt", b"b")
+        rc, err = run()
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(outbox.pending(cfg.outbox), [])
+        self.assertEqual(self.q("SELECT relpath FROM pinakes.present ORDER BY 1"), [("a.txt",), ("b.txt",)])
+        c = self.checkin()
+        self.assertEqual((c["release"], c["protocol"], c["locked"], c["batch_protocol"]),
+                         (compat.RELEASE, compat.PROTOCOL, None, compat.PROTOCOL))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["--config", conf, "--as", "user-2", "--versions"]), 0)
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "server: release %d, protocol %d, accepts agents of protocol %d or later; schema "
+                                   "applied" % (compat.RELEASE, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL))
+        self.assertEqual(lines[1].split(), ["host", "checked_in", "release", "protocol", "min_server", "state",
+                                            "newest_batch", "batch_protocol"])
+        rows = {l.split()[0]: l for l in lines[2:]}
+        self.assertEqual(sorted(rows), ["laptop-1", "server-1", "server-2"])
+        self.assertIn("sending", rows["server-1"])
+        self.assertIn("never heard from", rows["server-2"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli.main(["--config", conf, "--as", "user-2", "--versions", "--json"])
+        got = json.loads(out.getvalue())
+        self.assertTrue(got["server"]["schema_applied"])
+        self.assertEqual([a["host"] for a in got["agents"] if a["locked"] is None and a["checked_in"]], ["server-1"])
 
 
 class TestHiddenFiles(ServerCase):

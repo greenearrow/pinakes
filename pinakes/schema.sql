@@ -100,6 +100,21 @@ CREATE TABLE ingested (
     records     int NOT NULL,
     PRIMARY KEY (host_id, seq)
 );
+-- each agent's last check-in (pinakes-ingest hello) and the protocol of its last batch: which release and protocol
+-- it runs, and whether it holds its batches for want of a compatible server (pinakes --versions)
+CREATE TABLE checkins (
+    host_id     int PRIMARY KEY REFERENCES hosts ON DELETE CASCADE,
+    at          timestamptz,                                -- the last hello; NULL: none (an agent before check-in)
+    release     int,
+    protocol    int,
+    min_server_protocol int,
+    locked      text,                                       -- NULL: compatible; else which side must update, and why
+    batch_at    timestamptz,                                -- the last batch applied, and what its header declared
+    batch_release int,
+    batch_protocol int,                                     -- 0: none declared (an agent before check-in)
+    refused_at  timestamptz,                                -- the last batch refused for its protocol, and why
+    refused     text
+);
 CREATE TABLE scan_errors (
     root_id     int REFERENCES roots,
     relpath     text NOT NULL,
@@ -512,6 +527,7 @@ GRANT USAGE ON SCHEMA pinakes TO pinakes_app, pinakes_ingest;
 GRANT SELECT ON files, present, contents, content_chunks, members, history, lineage, metadata, hosts, roots,
                scans, audit, scan_errors TO pinakes_app;
 GRANT SELECT ON ingested TO pinakes_app;                 -- when each host's batches came in: for /health
+GRANT SELECT ON checkins TO pinakes_app;                 -- releases and protocols: pinakes --versions
 GRANT SELECT (person_id, name, display) ON people TO pinakes_app;
 GRANT SELECT ON groups TO pinakes_app;
 GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visible_acls(), begin_step_up(text, int),

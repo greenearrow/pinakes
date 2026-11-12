@@ -86,6 +86,12 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 
 - Each host's agent has its own SSH key, forced on the catalog server to `pinakes-ingest --host NAME`. The host
   name comes from the key, never from the batch.
+- The same key reaches one more thing, the check-in: when the agent asks for `hello` (sshd's
+  `SSH_ORIGINAL_COMMAND`), the ingester reads the agent's release and protocol (numbers only, at most 4 KiB),
+  records them for the key's host, and answers this server's release and protocol and whether its schema is
+  applied. No root, file or person is named either way; anything else asked for is still read as a batch.
+- A batch from an agent whose protocol this server doesn't work with (`pinakes/compat.py`) is refused before
+  anything is applied; the reason goes to the agent and to the server's system log.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
   host's sequence.
 - An agent can't read the catalog. It can fetch only approved operations for its own roots. It never sends a file

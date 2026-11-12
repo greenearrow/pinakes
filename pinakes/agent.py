@@ -6,6 +6,11 @@
   pinakes-agent [--config FILE] status
   pinakes-agent [--config FILE] check [--root LABEL]   count each root as a scan sees it, with this process's
                                                       rights, beside the last scan (compare: pinakes-ingest totals)
+
+run and send check in with the server first (ssh transport). If the two don't work together (pinakes/compat.py), the
+agent is locked: it still scans and keeps its batches, sends nothing, says so in one line naming both sides and which
+must update, and exits 4. The next run checks again and sends what it held once the server answers in range. A
+server it can't reach is held for and retried as before.
 """
 
 import argparse
@@ -14,7 +19,7 @@ import os
 import subprocess
 import sys
 
-from . import config, fsinfo, outbox, transport
+from . import compat, config, fsinfo, outbox, transport
 from .scan import Scanner, TooManyGone, check, check_verdict
 from .state import State
 
@@ -78,7 +83,37 @@ def cmd_scan(cfg, args):
     return rc
 
 
-def cmd_send(cfg, args):
+def check_in(cfg):
+    """Ask the server what it runs, before sending: ("ok", None), ("locked", why) or ("unreachable", why). The
+    directory transport is an agent on the server itself, from the same install: ("ok", None)."""
+    if cfg.transport["kind"] != "ssh":
+        return "ok", None
+    try:
+        srv = transport.hello(cfg.transport)
+    except (OSError, transport.SendError) as e:
+        return "unreachable", str(e)
+    s_proto = compat.as_int(srv.get("protocol"))
+    v = compat.verdict(compat.PROTOCOL, compat.MIN_SERVER_PROTOCOL, s_proto,
+                       compat.as_int(srv.get("min_agent_protocol")))
+    if v is None and srv.get("schema_applied") is False:
+        v = "server", "its catalog lacks %s" % ", ".join(map(str, srv.get("upgrades_missing") or ["an upgrade"]))
+    if v is None:
+        return "ok", None
+    s_rel = srv.get("release")
+    return "locked", "agent release %d protocol %d, server %s protocol %d: the %s must update (%s)" % (
+        compat.RELEASE, compat.PROTOCOL, "release %s" % s_rel if s_rel is not None else "from before check-in",
+        s_proto, v[0], v[1])
+
+
+def cmd_send(cfg, args, checked=None):
+    status, why = checked or check_in(cfg)
+    if status == "locked":
+        print("pinakes-agent: locked: %s; scanning goes on, %d batch(es) held, nothing sent until then"
+              % (why, len(outbox.pending(cfg.outbox))), file=sys.stderr, flush=True)
+        return compat.LOCKED_EXIT
+    if status == "unreachable":
+        print("pinakes-agent: %s; batches are kept, and sent once the server answers" % why, file=sys.stderr,
+              flush=True)
     sent, err = transport.send_pending(cfg)
     print("sent %d batch(es)" % sent)
     if err:
@@ -143,8 +178,9 @@ def cmd_run(cfg, args):
         print("busy: not scanning")
         return 0
     args.check_busy = True
+    checked = check_in(cfg)                     # before anything is sent; a locked agent still scans
     rc = cmd_scan(cfg, args)
-    return max(rc, cmd_send(cfg, args))
+    return max(rc, cmd_send(cfg, args, checked))
 
 
 def main(argv=None):

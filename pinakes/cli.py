@@ -17,6 +17,8 @@
   pinakes --backups [FOLDER]           from inside a scanned folder (or FOLDER): where its files are backed up,
                                      the least-backed-up first. The folder's root is found from this machine's
                                      name (--host, or [agent] host in agent.toml, else its hostname).
+  pinakes --versions                   this server's release and protocol, whether its schema is applied, and each
+                                     agent's last check-in: release, protocol, locked or not, newest batch, refusals
   --as defaults to $PINAKES_PERSON, then your login name.
   Add --json for JSON. The CLI never steps up: it shows only what NAME may see.
 """
@@ -31,7 +33,7 @@ import sys
 
 import psycopg
 
-from . import queries
+from . import compat, queries
 from .server_config import load as load_server_config
 
 
@@ -134,6 +136,32 @@ def backups_here(conn, host, folder, as_json):
             print("... and %d more (fewest backups first)" % (total - len(rows)))
 
 
+def versions(conn, as_json):
+    from .ingest import schema_missing
+    missing = schema_missing(conn)
+    server = {"release": compat.RELEASE, "protocol": compat.PROTOCOL, "min_agent_protocol": compat.MIN_AGENT_PROTOCOL,
+              "schema_applied": not missing, "upgrades_missing": missing}
+    agents = queries.agent_versions(conn) if "checkins.sql" not in missing and "schema.sql" not in missing else []
+    if as_json:
+        print(json.dumps({"server": server, "agents": agents}, default=_default, indent=1))
+        return
+    print("server: release %d, protocol %d, accepts agents of protocol %d or later; schema %s" % (
+        compat.RELEASE, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL,
+        "applied" if not missing else "lacks " + ", ".join(missing)))
+    for a in agents:
+        if a["checked_in"] is None:
+            a["state"] = "no check-in" if a["newest_batch"] else "never heard from"
+        else:
+            a["state"] = "LOCKED" if a["locked"] else "sending"
+    _print(agents, False, ["host", "checked_in", "release", "protocol", "min_server", "state", "newest_batch",
+                           "batch_protocol"])
+    for a in agents:
+        if a["locked"]:
+            print("%s: locked at its last check-in: %s" % (a["host"], a["locked"]))
+        if a["refused"]:
+            print("%s: last refused %s: %s" % (a["host"], _cell(a["refused_at"]), a["refused"]))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
@@ -141,6 +169,7 @@ def main(argv=None):
     ap.add_argument("--as", dest="person", default=os.environ.get("PINAKES_PERSON") or getpass.getuser(),
                     help="the person whose view to use (default: $PINAKES_PERSON, then your login name)")
     ap.add_argument("--backups", action="store_true", help="where the files of this folder are backed up")
+    ap.add_argument("--versions", action="store_true", help="releases and protocols of this server and each agent")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("cmd", nargs="?")
     ap.add_argument("arg", nargs="?")
@@ -151,8 +180,11 @@ def main(argv=None):
     if a.backups:
         if a.arg or (a.cmd and not os.path.isdir(a.cmd)):
             ap.error("--backups takes one folder, or none for the current one")
+    elif a.versions:
+        if a.cmd:
+            ap.error("--versions takes no command")
     elif not a.cmd:
-        ap.error("a command is needed (or --backups)")
+        ap.error("a command is needed (or --backups, or --versions)")
     cfg = load_server_config(a.config)
     with _connect(cfg) as conn:
         pid = conn.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (a.person,)).fetchone()
@@ -175,6 +207,9 @@ def main(argv=None):
         try:
             if a.backups:
                 backups_here(conn, _this_host(a.host), a.cmd or ".", a.json)
+                return 0
+            if a.versions:
+                versions(conn, a.json)
                 return 0
             if a.cmd == "find":
                 rows = queries.find(conn, need("a name or glob"))

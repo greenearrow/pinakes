@@ -10,6 +10,10 @@
                                                       lineage by the current rules (after an upgrade)
   pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
                                                       with pinakes-agent check
+  pinakes-ingest --config server.toml --host NAME hello   an agent's check-in: its release and protocol as JSON on
+                                                      stdin; answers this server's, and whether the schema is
+                                                      applied, as JSON. Through the forced key, `ssh ... hello`
+                                                      reaches it (sshd's SSH_ORIGINAL_COMMAND); nothing else does.
 
 Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
 applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
@@ -17,6 +21,9 @@ applied is acknowledged and ignored. Moves, changes, copies and lineage are work
 A batch is stopped and rolled back, and the ingester exits 3, when the agent that sent it hangs up (its stdout
 closes) or when it runs past [ingest] max_batch_time: an agent that gave up must not leave a transaction holding
 locks that the next batch and setup wait behind.
+
+A batch from an agent whose protocol this server doesn't work with (pinakes/compat.py) is refused, with the reason,
+to the agent and to the system log; a batch that declares no protocol (an agent before check-in) counts as 0.
 """
 
 import argparse
@@ -32,7 +39,7 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMATS, extract, hidden, names, queries, registry
+from . import BATCH_FORMATS, compat, extract, hidden, names, queries, registry
 from .config import ConfigError
 from .server_config import load as load_server_config
 
@@ -41,6 +48,10 @@ SCHEMA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "schema.s
 
 class Refused(Exception):
     """The batch is not acceptable (unknown host or root, bad format). Nothing is applied."""
+
+
+class Incompatible(Refused):
+    """The batch comes from an agent whose protocol this server doesn't work with."""
 
 
 def _ts(ns):
@@ -458,6 +469,13 @@ class Ingester:
         if host not in self.cfg.hosts:
             raise Refused("unknown host %r" % host)
         seq = int(header["seq"])
+        protocol = compat.as_int(header.get("protocol"))
+        v = compat.verdict(protocol, compat.as_int(header.get("min_server_protocol")), compat.PROTOCOL,
+                           compat.MIN_AGENT_PROTOCOL)
+        if v:
+            why = "batch %d: %s; the %s must update" % (seq, v[1], v[0])
+            self._note_refused(host, why)
+            raise Incompatible(why)
         with self.conn.transaction():
             h = self.one("SELECT host_id, last_seq FROM pinakes.hosts WHERE name = %s FOR UPDATE", (host,))
             if h is None:
@@ -497,10 +515,49 @@ class Ingester:
             self.q("INSERT INTO pinakes.ingested (host_id, seq, records) VALUES (%s, %s, %s)",
                    (host_id, seq, len(records)))
             self.q("UPDATE pinakes.hosts SET last_seq = %s WHERE host_id = %s", (seq, host_id))
+            self.q("INSERT INTO pinakes.checkins (host_id, batch_at, batch_release, batch_protocol) "
+                   "VALUES (%s, now(), %s, %s) ON CONFLICT (host_id) DO UPDATE SET batch_at = EXCLUDED.batch_at, "
+                   "batch_release = EXCLUDED.batch_release, batch_protocol = EXCLUDED.batch_protocol",
+                   (host_id, compat.as_int(header.get("release"), None), protocol))
         if self.dropped:
             sys.stderr.write("pinakes-ingest: host %s batch %d: metadata left out for %d file(s), first: %s %s: %s\n"
                              % ((host, seq, len(self.dropped)) + self.dropped[0]))
         return "applied"
+
+    # check-in ------------------------------------------------------------------------------------------------
+    def hello(self, host, req):
+        """An agent's check-in: record what it runs, answer what this server runs. req is what the agent sent (a
+        dict; anything missing or malformed counts as 0)."""
+        if host not in self.cfg.hosts:
+            raise Refused("unknown host %r" % host)
+        release = compat.as_int(req.get("release"), None)
+        protocol = compat.as_int(req.get("protocol"))
+        min_server = compat.as_int(req.get("min_server_protocol"))
+        missing = schema_missing(self.conn)
+        v = compat.verdict(protocol, min_server, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL)
+        if not missing:
+            with self.conn.transaction():
+                self.q("INSERT INTO pinakes.hosts (name, expected_every) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                       (host, self.cfg.hosts[host]["expected_every"]))
+                self.q("INSERT INTO pinakes.checkins (host_id, at, release, protocol, min_server_protocol, locked) "
+                       "SELECT host_id, now(), %s, %s, %s, %s FROM pinakes.hosts WHERE name = %s "
+                       "ON CONFLICT (host_id) DO UPDATE SET at = EXCLUDED.at, release = EXCLUDED.release, "
+                       "protocol = EXCLUDED.protocol, min_server_protocol = EXCLUDED.min_server_protocol, "
+                       "locked = EXCLUDED.locked",
+                       (release, protocol, min_server, "%s must update: %s" % v if v else None, host))
+        return {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
+                "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": not missing,
+                "upgrades_missing": missing}
+
+    def _note_refused(self, host, why):
+        """Keep the last refusal for its protocol where pinakes --versions shows it (if the catalog has the table)."""
+        try:
+            with self.conn.transaction():
+                self.q("INSERT INTO pinakes.checkins (host_id, refused_at, refused) "
+                       "SELECT host_id, now(), %s FROM pinakes.hosts WHERE name = %s ON CONFLICT (host_id) "
+                       "DO UPDATE SET refused_at = EXCLUDED.refused_at, refused = EXCLUDED.refused", (why, host))
+        except psycopg.errors.UndefinedTable:
+            pass
 
     def _file(self, ctx, rec):
         root = ctx["root"]
@@ -975,6 +1032,26 @@ def schema_exists(conn):
     return conn.execute("SELECT to_regclass('pinakes.files') IS NOT NULL").fetchone()[0]
 
 
+def schema_missing(conn):
+    """What this release needs of the catalog that isn't there: ["schema.sql"] for no schema at all, else the
+    upgrades/*.sql not yet run (compat.UPGRADE_PROBES), in order. Empty: the schema is applied."""
+    if not schema_exists(conn):
+        return ["schema.sql"]
+    names_ = list(compat.UPGRADE_PROBES)
+    row = conn.execute("SELECT %s" % ", ".join("(%s)" % compat.UPGRADE_PROBES[n] for n in names_)).fetchone()
+    return [n for n, ok in zip(names_, row) if not ok]
+
+
+def _syslog(message):
+    """To the server's own log as well: what the forced command writes on stderr goes only to the agent."""
+    try:
+        import syslog
+        syslog.openlog("pinakes-ingest", 0, syslog.LOG_DAEMON)
+        syslog.syslog(syslog.LOG_WARNING, message)
+    except (ImportError, OSError):
+        pass
+
+
 def apply_schema(conn):
     with open(SCHEMA_FILE) as f:
         sql = f.read()
@@ -1059,10 +1136,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
-    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals"))
+    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals", "hello"))
     ap.add_argument("dir", nargs="?")
     ap.add_argument("--dry-run", action="store_true", help="tidy: count what would change, change nothing")
     args = ap.parse_args(argv)
+    if args.cmd is None and args.host and os.environ.get("SSH_ORIGINAL_COMMAND", "").strip() == "hello":
+        args.cmd = "hello"                          # an agent's `ssh ... hello` through its forced key
     cfg = load_server_config(args.config)
     if args.cmd == "setup":
         try:
@@ -1088,6 +1167,19 @@ def main(argv=None):
                 len(r["dropped"])))
             return 0
         ing = Ingester(conn, cfg)
+        if args.cmd == "hello":
+            if not args.host:
+                ap.error("--host is required for hello")
+            try:
+                req = json.loads(sys.stdin.buffer.read(4096) or b"{}")
+            except ValueError:
+                req = {}
+            try:
+                print(json.dumps(ing.hello(args.host, req if isinstance(req, dict) else {}), sort_keys=True))
+            except Refused as e:
+                print("refused: %s" % e, file=sys.stderr)
+                return 1
+            return 0
         if args.cmd in ("inbox", None):
             dog = Watchdog(conn, hangup_fd=None if args.cmd else sys.stdout.fileno(), limit=cfg.max_batch_time)
         if args.cmd == "passwd":
@@ -1140,6 +1232,8 @@ def main(argv=None):
                         result = ing.apply(header, records, header.get("host"))
                 except Refused as e:
                     print("%s: refused: %s" % (name, e), file=sys.stderr)
+                    if isinstance(e, Incompatible):
+                        _syslog("host %s: refused %s" % (header.get("host"), e))
                     rc = 1
                     continue
                 os.remove(path)
@@ -1153,6 +1247,8 @@ def main(argv=None):
                 ing.apply(header, records, args.host)
         except Refused as e:
             print("refused: %s" % e, file=sys.stderr)
+            if isinstance(e, Incompatible):
+                _syslog("host %s: refused %s" % (args.host, e))
             return 1
         print("ack %d" % int(header["seq"]))
         return 0

@@ -10,7 +10,7 @@ import json
 import os
 import re
 
-from . import BATCH_FORMAT
+from . import BATCH_FORMAT, compat
 
 _NAME = re.compile(r"(\d{9})\.jsonl\.gz\Z")
 
@@ -23,7 +23,8 @@ class BatchWriter:
     def __init__(self, outbox, header):
         os.makedirs(outbox, exist_ok=True)
         self.outbox = outbox
-        self.header = dict(header, t="batch", format=BATCH_FORMAT)
+        self.header = dict(header, t="batch", format=BATCH_FORMAT, release=compat.RELEASE, protocol=compat.PROTOCOL,
+                           min_server_protocol=compat.MIN_SERVER_PROTOCOL)
         self.records = []
 
     def add(self, rec):
