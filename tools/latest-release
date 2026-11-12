@@ -5,8 +5,9 @@
   tools/latest-release ROLE --json       its entry, with its tag and commit
   tools/latest-release --upgrades-after N   the upgrade_sql of every release after N, in the order to run them
 
-Only cut releases count: an entry whose tag release-N doesn't exist yet is being prepared, and is left out (said on
-stderr). Exits 1 if no cut release affects ROLE.
+Only cut releases count: a release is cut by its tag, deliberately, never by a commit. An entry whose tag release-N
+doesn't exist is being prepared and is left out (said on stderr); HEAD is never taken for a release. Exits 1 if no
+cut release affects ROLE.
 """
 
 import argparse

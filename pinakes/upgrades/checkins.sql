@@ -1,4 +1,4 @@
--- Upgrade a catalog built before check-in (release 11), after hidden-files.sql. Run once as the schema's owner:
+-- Upgrade a catalog built before check-in (release 3), after hidden-files.sql. Run once as the schema's owner:
 --   psql -d pinakes -v ON_ERROR_STOP=1 -1 -f checkins.sql
 -- A new catalog gets the same from schema.sql; tests/test_server.py checks the two agree.
 

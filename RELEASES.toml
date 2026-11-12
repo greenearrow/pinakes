@@ -1,5 +1,7 @@
-# Every release of pinakes, oldest first. A release is the commit tagged release-ID (git tag), cut with its entry
-# here; tools/latest-release ROLE prints the newest one that changes ROLE. tests/test_releases.py checks this file.
+# Every release of pinakes, oldest first. A release is cut deliberately, by tagging its commit release-ID (git tag);
+# a commit alone never makes one. An entry without its tag is being prepared: nothing counts it as a release, and
+# tools/latest-release ROLE, which prints the newest cut release that changes ROLE, leaves it out.
+# tests/test_releases.py checks this file.
 #
 #   id                   1, 2, 3, ...: one more than the entry before
 #   affects              what must be reinstalled for it: any of "server" (ingester, web UI, schema), "agent", "cli";
@@ -12,11 +14,11 @@
 #                        schema's owner before the server is updated; [] for none
 #   fingerprint          (from protocol 1) the batch fields, state and schema the protocol stands for: the tests
 #                        fail if the code changes them and keeps the protocol (they print the new values)
-#   note                 what it brought
+#   note                 what it is
 #
-# Releases 1 to 10 were cut before check-in existed, from the commits the first deployment ran; each also brings the
-# commits before it from 7aa2e7a on. Their protocol is 0: they declare nothing, and a server of release 11 accepts
-# their batches as protocol 0.
+# Releases 1 and 2 are the two already live when releases began, backfilled so the first check shows no drift: the
+# first deployment's server runs release 1, its agents release 2. Both are protocol 0: they declare nothing, and a
+# server with check-in accepts their batches as protocol 0.
 
 [[release]]
 id = 1
@@ -24,96 +26,25 @@ affects = ["server", "cli"]
 protocol = 0
 min_agent_protocol = 0
 min_server_protocol = 0
-upgrade_sql = []
-note = "7aa2e7a, 34766bc: empty files not duplicates and without lineage; a sort link per column. Ran on the first deployment's server."
+upgrade_sql = ["review-marks.sql", "protected-links.sql", "symlink-targets.sql", "metadata-indexes.sql",
+               "metadata-extracted.sql", "metadata-sensitive.sql", "hidden-files.sql"]
+note = "3522719: the server as live when releases began (hidden files, metadata). Its upgrade_sql is every upgrade up to then, in order, for a catalog older still."
 
 [[release]]
 id = 2
-affects = ["server", "agent", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = []
-note = "1ad59a9, 2303ccb: indexed move matching for scans with many gone files ([transport] timeout on the agent); the Changes page. Ran on the first deployment's server."
-
-[[release]]
-id = 3
-affects = ["server", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = []
-note = "3bb2121, 3d6bfa2: the ingester stops and rolls back a batch whose sender hung up or that runs past max_batch_time. Ran on the first deployment's server and agents."
-
-[[release]]
-id = 4
-affects = ["server", "agent", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = []
-note = "2a9968a, 229f465: pinakes-agent check and pinakes-ingest totals; /health. Needed GRANT SELECT ON pinakes.ingested TO pinakes_app, by hand (in schema.sql since). Ran on the first deployment's server and agents."
-
-[[release]]
-id = 5
-affects = ["server", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = []
-note = "21a899c: a copy counts only on another disk (only-here, safe-to-delete). Ran on the first deployment's server."
-
-[[release]]
-id = 6
-affects = ["server", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = ["review-marks.sql"]
-note = "1073edd to cfd34c1: reviewing changes (intended or restore). Ran on the first deployment's server."
-
-[[release]]
-id = 7
-affects = ["server", "agent", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = ["protected-links.sql", "symlink-targets.sql"]
-note = "25af512 to 6937aa9: protection by inode; symlinks tied to their targets; the test matrix. Ran on the first deployment's server and agents."
-
-[[release]]
-id = 8
-affects = ["server", "agent", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = ["metadata-indexes.sql", "metadata-extracted.sql", "metadata-sensitive.sql"]
-note = "b0feb45 to 601e2f9: the metadata schema registry; EXIF and XMP extracted on the agent (batch format 2); sensitive metadata for owners only. Ran on the first deployment's server."
-
-[[release]]
-id = 9
-affects = ["server", "agent", "cli"]
-protocol = 0
-min_agent_protocol = 0
-min_server_protocol = 0
-upgrade_sql = ["hidden-files.sql"]
-note = "2a9c77e, 3522719: metadata on a file's page and in find; hidden files. The first deployment's server runs it."
-
-[[release]]
-id = 10
 affects = ["agent"]
 protocol = 0
 min_agent_protocol = 0
 min_server_protocol = 0
 upgrade_sql = []
-note = "d753d9f: a state from before file types is read as files, so its unchanged photos are extracted. The first deployment's agents run it."
+note = "d753d9f: the agents as live when releases began (a state from before file types read as files)."
 
 [[release]]
-id = 11
+id = 3
 affects = ["server", "agent", "cli"]
 protocol = 1
 min_agent_protocol = 0
 min_server_protocol = 0
 upgrade_sql = ["checkins.sql"]
 fingerprint = { batch = "b3e8291b01af3afd", state = "dc73e12cb5f599ae", schema = "9b8943c8f714bc16" }
-note = "b8fd8bd to this: check-in (pinakes-ingest hello), agents locked by an incompatible server, batches refused by protocol, pinakes --versions; the roots page without hidden files; pinakes --backups."
+note = "Prepared, not cut: check-in (pinakes-ingest hello), agents locked by an incompatible server, batches refused by protocol, pinakes --versions."

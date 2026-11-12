@@ -1163,7 +1163,7 @@ print("ack %%d" %% header["seq"])
             p.start()
             self.addCleanup(p.stop)
 
-    def server(self, protocol, min_agent=0, release=11, schema_applied=True, missing=()):
+    def server(self, protocol, min_agent=0, release=2, schema_applied=True, missing=()):
         return json.dumps({"release": release, "protocol": protocol, "min_agent_protocol": min_agent,
                            "schema_applied": schema_applied, "upgrades_missing": list(missing)})
 
@@ -1193,7 +1193,7 @@ print("ack %%d" %% header["seq"])
         self.assertEqual(self.batches(got), [])                         # nothing sent
         self.assertEqual(got[0]["hello"], {"release": 13, "protocol": 3, "min_server_protocol": 2})
         self.assertEqual(len(err), 1)
-        self.assertEqual(err[0], "pinakes-agent: locked: agent release 13 protocol 3, server release 11 protocol 1: "
+        self.assertEqual(err[0], "pinakes-agent: locked: agent release 13 protocol 3, server release 2 protocol 1: "
                                  "the server must update (the agent (protocol 3) needs a server of protocol 2 or "
                                  "later; the server is at 1); scanning goes on, 1 batch(es) held, nothing sent until "
                                  "then")

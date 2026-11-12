@@ -339,7 +339,8 @@ were made while building, to keep going, and are open to change.
   added later (`protected_link`, `dangling`, `meta_v`, `hidden`) read NULL as false or "not extracted", which is
   right for an old row. Checked on a state written by the agent from before `27650a5`.
 - **Releases are numbered, and agents check in** (`RELEASES.toml`, `pinakes/compat.py`). A release is the commit
-  tagged `release-N`; its entry says which roles it changes (`server`, `agent`, `cli`), its protocol, the oldest
+  tagged `release-N`, cut deliberately when the owner says so, never implied by a commit: an entry without its tag
+  is being prepared, and `tools/latest-release` reads only tagged ones, never HEAD. Its entry says which roles it changes (`server`, `agent`, `cli`), its protocol, the oldest
   agent and server it works with, and the upgrade files it needs. A tag, not a `commit` field, because the entry and
   the numbers in `compat.py` land in the commit being cut, which can't name its own hash. One protocol number covers
   the batch fields, the agent's state and the schema together: each side needs only the other's oldest number, and
@@ -347,11 +348,13 @@ were made while building, to keep going, and are open to change.
   records a fingerprint of all three; the tests fail when the code no longer matches it and the protocol is the
   same, and when two releases of one protocol disagree, so a cut release's protocol can't be reused for a new
   format. The batch fields are declared in `compat.BATCH_FIELDS` and a scan of a generated tree may write no other,
-  so a new field changes the fingerprint. Releases 1 to 10 (from `7aa2e7a`, at the commits the first deployment
-  ran) are protocol 0: nothing was declared, and nothing can be checked against them. An agent checks in at the
+  so a new field changes the fingerprint. Releases 1 and 2 are the two live when releases began (the first
+  deployment's server at `3522719`, its agents at `d753d9f`), so the first check shows no drift; both are protocol 0:
+  nothing was declared. Release 1's `upgrade_sql` is every upgrade before it, for an older catalog. Release 3 (this
+  check-in) is prepared, not cut. An agent checks in at the
   start of `run` and `send` through its forced key (`ssh ... hello`, which sshd hands the ingester as
   `SSH_ORIGINAL_COMMAND`: no change to `authorized_keys`). An ingester from before check-in reads the request as a
-  batch and refuses it as "not gzip": that answer means a server of protocol 0, which release 11's agents accept.
+  batch and refuses it as "not gzip": that answer means a server of protocol 0, which release 3's agents accept.
   Locked (the server too old, the agent too old, or the catalog missing an upgrade this server needs), the agent
   scans and keeps its batches, sends nothing, writes one line naming both sides and which must update, and exits 4;
   the next run checks again. A server it can't reach is held for as before (exit 1). The ingester refuses a batch
