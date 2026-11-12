@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% from "_files.html" import hidden_toggle with context %}
 {% block body %}
 <h1>Roots</h1>
 <p class="muted">The folders each machine scans. Counts are the files you can see.</p>
+{{ hidden_toggle(None, hidden_left_out, url_for('home')) }}
 <div class="scroll"><table>
   <tr><th>Root</th><th>Host</th><th>Kind</th><th class="num">Files</th><th>Last complete scan</th></tr>
   {% for r in roots %}

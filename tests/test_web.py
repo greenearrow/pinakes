@@ -72,6 +72,12 @@ class TestWeb(ServerCase):
         self.assertIn("taxes.txt", page)
         self.assertIn("2 hidden file(s) not shown.", page)
         self.assertNotIn("thing.txt", c.get("/find?q=thing").get_data(as_text=True))
+        # the roots page counts the same way, and has the toggle
+        def store_files(html):
+            return int(re.search(r'>store</a>.*?<td class="num">(\d+)</td>', html, re.S).group(1))
+        home = c.get("/").get_data(as_text=True)
+        self.assertIn("2 hidden file(s) not shown.", home)
+        left_out = store_files(home)
         # reports count them all the same: deleting a folder deletes its hidden files too
         self.assertIn(".profile", c.get("/reports/only-here?loc=store:people/user-1/").get_data(as_text=True))
         # shown, for this session
@@ -87,6 +93,9 @@ class TestWeb(ServerCase):
         self.assertIn('people/user-1/.cache-dir/thing.txt</a> <span class="tag">hidden</span>', found)
         self.assertIn("Leave out hidden files", found)
         self.assertNotIn("hidden file(s) not shown", c.get("/browse/store/people/").get_data(as_text=True))
+        home = c.get("/").get_data(as_text=True)
+        self.assertEqual(store_files(home), left_out + 2)
+        self.assertIn("Leave out hidden files", home)
         # and left out again; a next that isn't this site's goes home
         for bad in ("//example.net/x", "/\\example.net/x", "https://example.net/"):
             r = c.post("/hidden-files", data={"csrf": tok, "show": "0", "next": bad})

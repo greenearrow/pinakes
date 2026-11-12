@@ -514,10 +514,15 @@ def health(conn):
                          FROM pinakes.hosts h ORDER BY h.name""")
 
 
-def roots(conn):
+def roots(conn, hidden=True):
+    """Every root with the files the person can see in it; without `hidden`, not counting the hidden ones, which
+    `hidden_files` still counts."""
     return rows(conn, """SELECT r.label, h.name AS host, r.kind, r.protected, r.last_complete_on,
-                                (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id) AS files
-                         FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""")
+                                (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
+                                   AND (%s OR NOT f.hidden)) AS files,
+                                (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
+                                   AND f.hidden) AS hidden_files
+                         FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""", (hidden,))
 
 
 def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):

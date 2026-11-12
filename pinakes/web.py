@@ -289,7 +289,9 @@ def create_app(cfg, connect=None):
     @app.route("/")
     @signed_in
     def home():
-        return render_template("home.html", roots=queries.roots(g.db), stale=queries.stale(g.db))
+        roots = queries.roots(g.db, hidden=show_hidden())
+        hidden_left_out = 0 if show_hidden() else sum(r["hidden_files"] for r in roots)
+        return render_template("home.html", roots=roots, stale=queries.stale(g.db), hidden_left_out=hidden_left_out)
 
     @app.route("/find")
     @signed_in
@@ -334,7 +336,7 @@ def create_app(cfg, connect=None):
     @app.route("/hidden-files", methods=["POST"])
     @signed_in
     def hidden_files():
-        """Show or leave out hidden files in browse and find, for this session. Reports always count them."""
+        """Show or leave out hidden files in roots, browse and find, for this session. Reports always count them."""
         session["show_hidden"] = request.form.get("show") == "1"
         nxt = request.form.get("next", "")
         # this site's own path only: "//host" and "/\\host" are other sites to a browser
