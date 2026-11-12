@@ -47,4 +47,4 @@ min_agent_protocol = 0
 min_server_protocol = 0
 upgrade_sql = ["checkins.sql"]
 fingerprint = { batch = "b3e8291b01af3afd", state = "dc73e12cb5f599ae", schema = "9b8943c8f714bc16" }
-note = "Prepared, not cut: check-in (pinakes-ingest hello), agents locked by an incompatible server, batches refused by protocol, pinakes --versions."
+note = "Check-in (pinakes-ingest hello), agents locked by an incompatible server, batches refused by protocol, pinakes --versions."

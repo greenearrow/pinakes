@@ -350,8 +350,8 @@ were made while building, to keep going, and are open to change.
   format. The batch fields are declared in `compat.BATCH_FIELDS` and a scan of a generated tree may write no other,
   so a new field changes the fingerprint. Releases 1 and 2 are the two live when releases began (the first
   deployment's server at `3522719`, its agents at `d753d9f`), so the first check shows no drift; both are protocol 0:
-  nothing was declared. Release 1's `upgrade_sql` is every upgrade before it, for an older catalog. Release 3 (this
-  check-in) is prepared, not cut. An agent checks in at the
+  nothing was declared. Release 1's `upgrade_sql` is every upgrade before it, for an older catalog. Release 3 is this
+  check-in, cut 2026-11-12. An agent checks in at the
   start of `run` and `send` through its forced key (`ssh ... hello`, which sshd hands the ingester as
   `SSH_ORIGINAL_COMMAND`: no change to `authorized_keys`). An ingester from before check-in reads the request as a
   batch and refuses it as "not gzip": that answer means a server of protocol 0, which release 3's agents accept.
