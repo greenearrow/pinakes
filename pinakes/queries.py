@@ -533,20 +533,30 @@ def agent_versions(conn):
 
 
 def roots(conn, hidden=True):
-    """Every root with the files the person can see in it; without `hidden`, not counting the hidden ones, which
-    `hidden_files` still counts."""
+    """Every root with the files the person can see in it (under a token, only the roots it may see); without
+    `hidden`, not counting the hidden ones, which `hidden_files` still counts."""
     return rows(conn, """SELECT r.label, h.name AS host, r.kind, r.protected, r.last_complete_on,
                                 (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
                                    AND (%s OR NOT f.hidden)) AS files,
                                 (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
                                    AND f.hidden) AS hidden_files
-                         FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""", (hidden,))
+                         FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id)
+                         WHERE pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots())
+                         ORDER BY h.name, r.label""", (hidden,))
+
+
+def root_choices(conn):
+    """Every root, for choosing the ones a token may see: id, label, host, whether protected."""
+    return rows(conn, """SELECT r.root_id, r.label, h.name AS host, r.protected
+                         FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) ORDER BY h.name, r.label""")
 
 
 def roots_of_host(conn, host):
-    """The roots a host reports (label, path on that host, kind), for finding which one a local folder is in."""
+    """The roots a host reports (label, path on that host, kind), for finding which one a local folder is in (under
+    a token, only the roots it may see)."""
     return rows(conn, """SELECT r.label, r.path, r.kind FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id)
-                         WHERE h.name = %s""", (host,))
+                         WHERE h.name = %s
+                           AND (pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots()))""", (host,))
 
 
 def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):
@@ -592,3 +602,14 @@ def owners_of(conn, file_ids):
         return []
     return [r[0] for r in conn.execute("SELECT DISTINCT owner_id FROM pinakes.files WHERE file_id = ANY (%s) "
                                        "AND owner_id IS NOT NULL", (list(file_ids),)).fetchall()]
+
+
+def json_default(o):
+    """For json.dumps of query rows: dates and times as ISO 8601, intervals as text, hashes as hex."""
+    if isinstance(o, (datetime.date, datetime.datetime)):
+        return o.isoformat()
+    if isinstance(o, datetime.timedelta):
+        return str(o)
+    if isinstance(o, (bytes, memoryview)):
+        return bytes(o).hex()
+    return str(o)

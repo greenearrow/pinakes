@@ -65,6 +65,6 @@ affects = ["server", "agent", "cli"]
 protocol = 2
 min_agent_protocol = 0
 min_server_protocol = 0
-upgrade_sql = ["takeovers.sql"]
-fingerprint = { batch = "0bc0a335cd9c0eee", state = "8e00d0bee11dbeda", schema = "dc4c1d3cd3544c5b" }
-note = "Sequence resets refused, not swallowed, and followed at check-in (pinakes-agent renumber by hand); a complete scan --full retires what it didn't send; pinakes-ingest retire-root; both shown by pinakes --versions and /health."
+upgrade_sql = ["takeovers.sql", "api-tokens.sql"]
+fingerprint = { batch = "0bc0a335cd9c0eee", state = "8e00d0bee11dbeda", schema = "ebde509a688687dd" }
+note = "Sequence resets refused, not swallowed, and followed at check-in (pinakes-agent renumber by hand); a complete scan --full retires what it didn't send; pinakes-ingest retire-root; both shown by pinakes --versions and /health. The JSON API (/api/v1/) and person tokens, made and revoked on the account page (ROADMAP 34)."

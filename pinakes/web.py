@@ -1,7 +1,21 @@
 """pinakes-web: the web UI (Flask, served by waitress). Read-only on the catalog for now, plus sign-in, a second
-factor, and the administrator's step-up.
+factor, the administrator's step-up, and API tokens; and the JSON API.
 
   pinakes-web --config /etc/pinakes/server.toml
+
+/api/v1/ is the JSON API (ROADMAP 34): every call carries a person's token (`Authorization: Bearer ...`), made and
+revoked on the account page, never the session cookie. It acts as that person under row-level security, sees only
+the roots the token may (every root but the protected ones unless it names them), never steps up, and is recorded
+for the person. GET only for now; a token needs the `read` scope for these calls:
+
+  whoami                          the token's person, scopes and roots
+  roots, stale, dupes             as the CLI's commands
+  find?q=NAME-OR-GLOB
+  where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
+  only-here|safe-to-delete|backed-up?loc=ROOT:PATH
+  changes?days=N&host=NAME        meta?field=SCHEMA.FIELD&value=VALUE
+  limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
+  {"error": "..."} with 400, 401, 403, 404 or 429.
 
 /health answers without sign-in, for monitoring: whether the database is reachable, and per host its newest batch,
 last complete scan, whether it is stale, whether its batches are being refused (protocol or sequence) and when its
@@ -13,6 +27,7 @@ UI's.
 import argparse
 import datetime
 import functools
+import hashlib
 import json
 from urllib.parse import urlencode
 import os
@@ -21,7 +36,8 @@ import sys
 import time
 
 import psycopg
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
+from werkzeug.exceptions import HTTPException, NotFound
 
 from . import auth, queries, registry
 from .server_config import load as load_server_config
@@ -29,6 +45,9 @@ from .server_config import load as load_server_config
 LOGIN_LIMIT = 5          # failed sign-ins per address
 PER_PAGE = (50, 100, 250, 500)   # the page sizes offered; the first after 50 is the default
 LOGIN_WINDOW = 15 * 60   # seconds
+API = "/api/v1/"
+SCOPES = ("read", "review", "tag")      # what a token may be given (the database checks the same list)
+TOKEN_PREFIX = "pinakes_"
 
 
 class Pager:
@@ -180,6 +199,7 @@ def create_app(cfg, connect=None):
                       PERMANENT_SESSION_LIFETIME=_seconds(web.get("idle_timeout", "30m")))
     step_minutes = _seconds(web.get("step_up_duration", "15m")) // 60
     failures = {}
+    api_failures = {}
 
     connect = connect or _connector(web)
     reg = registry.load(getattr(cfg, "schemas_dir", None))     # what metadata is shown by; a bad schema stops startup
@@ -195,6 +215,8 @@ def create_app(cfg, connect=None):
         if request.endpoint == "health":
             return                      # no session, no form; it opens its own connection, and reports a failed one
         g.db = connect()
+        if request.path.startswith(API):
+            return api_begin()          # by token only: no session cookie, so no form to forge
         g.person = session.get("person")
         g.stepped_up = False
         if g.person:
@@ -257,6 +279,137 @@ def create_app(cfg, connect=None):
         if others:
             g.db.execute("SELECT pinakes.audit_view(%s, %s::jsonb)",
                          (others, json.dumps({"page": page, "records": records})))
+
+    # the API ---------------------------------------------------------------------------------------------------
+    def api_answer(body, status=200):
+        return Response(json.dumps(body, default=queries.json_default), status=status, mimetype="application/json")
+
+    def api_begin():
+        """Authenticate an API call by its bearer token, before anything else: the database checks the token, sets
+        its person for this transaction and records the call. A refused token counts toward the address's limit."""
+        g.person, g.api, g.stepped_up, g.roles, g.scopes = None, True, False, [], ()
+        addr = request.remote_addr or "?"
+        recent = [t for t in api_failures.get(addr, []) if t > time.time() - LOGIN_WINDOW]
+        if len(recent) >= LOGIN_LIMIT:
+            return api_answer({"error": "too many refused tokens; wait a few minutes"}, 429)
+        kind, _, secret = request.headers.get("Authorization", "").partition(" ")
+        row = None
+        if kind.lower() == "bearer" and secret.strip():
+            call = request.path[len(API):]
+            if request.query_string:
+                call += "?" + request.query_string.decode("utf-8", "replace")
+            row = g.db.execute("SELECT * FROM pinakes.begin_token_call(%s, %s)",
+                               (hashlib.sha256(secret.strip().encode()).digest(), call)).fetchone()
+        if not row:
+            api_failures[addr] = recent + [time.time()]
+            return api_answer({"error": "a valid token is needed (Authorization: Bearer ...)"}, 401)
+        g.person, g.scopes = row[0], tuple(row[1])
+
+    @app.errorhandler(HTTPException)
+    def http_error(e):
+        if request.path.startswith(API):
+            no_call = isinstance(e, NotFound) and e.description == NotFound.description
+            return api_answer({"error": "no such call" if no_call else e.description}, e.code)
+        return e
+
+    def api(rule, scope="read"):
+        """An API call: GET only (none of them steps up or changes anything), the token's scope checked, the
+        answer as JSON, a bad argument a 400."""
+        def deco(view):
+            @functools.wraps(view)
+            def wrapper(*a, **kw):
+                if scope not in g.scopes:
+                    return api_answer({"error": "this token doesn't have the %s scope" % scope}, 403)
+                try:
+                    return api_answer(view(*a, **kw))
+                except ValueError as e:
+                    return api_answer({"error": str(e)}, 400)
+            app.add_url_rule(API + rule, "api_" + view.__name__, wrapper, methods=["GET"])
+            return wrapper
+        return deco
+
+    def arg(name, what=None):
+        v = request.args.get(name, "").strip()
+        if not v:
+            raise ValueError("%s is needed" % (what or name))
+        return v
+
+    def lim():
+        return _int_arg("limit", None, 1, 1000000), _int_arg("offset", 0, 0, 10 ** 12)
+
+    def target():
+        """The file a call names, by ?file=ID or ?loc=ROOT:PATH; 404 when the token's person can't see it."""
+        if request.args.get("file"):
+            fid = _int_arg("file", None, 1, 2 ** 62)
+            f = queries.file_by_id(g.db, fid) if fid else None
+        else:
+            f = queries.file_at(g.db, arg("loc", "loc=ROOT:PATH or file=ID"))
+        if not f:
+            abort(404, "no file you can see there")
+        return f["file_id"]
+
+    @api("whoami")
+    def whoami():
+        me = g.db.execute("SELECT name, display FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()
+        return {"person": me[0], "display": me[1], "scopes": list(g.scopes),
+                "roots": [r["label"] for r in queries.roots(g.db)]}
+
+    @api("roots")
+    def api_roots():
+        return {"rows": queries.roots(g.db)}
+
+    @api("stale")
+    def api_stale():
+        return {"rows": queries.stale(g.db)}
+
+    @api("find")
+    def api_find():
+        return {"rows": queries.find(g.db, arg("q", "q=NAME-OR-GLOB"), *lim())}
+
+    @api("where")
+    def api_where():
+        return {"rows": queries.where(g.db, target(), *lim())}
+
+    @api("history")
+    def api_history():
+        return {"rows": queries.history(g.db, target(), *lim())}
+
+    @api("versions")
+    def api_versions():
+        return {"rows": queries.versions(g.db, target(), *lim())}
+
+    @api("lineage")
+    def api_lineage():
+        return {"rows": queries.lineage(g.db, target(), "down" if request.args.get("down") else "up")}
+
+    @api("only-here")
+    def api_only_here():
+        return {"rows": queries.only_here(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+
+    @api("safe-to-delete")
+    def api_safe_to_delete():
+        loc = arg("loc", "loc=ROOT:PATH")
+        return {"not_safe": queries.not_safe_to_delete(g.db, loc, *lim()), "links_into": queries.links_into(g.db, loc)}
+
+    @api("backed-up")
+    def api_backed_up():
+        return {"rows": queries.backed_up(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+
+    @api("dupes")
+    def api_dupes():
+        return {"rows": queries.dupes(g.db, *lim())}
+
+    @api("changes")
+    def api_changes():
+        return {"rows": queries.changes(g.db, _int_arg("days", 7, 1, 3650), request.args.get("host") or None,
+                                        *lim())}
+
+    @api("meta")
+    def api_meta():
+        schema, dot, field = arg("field", "field=SCHEMA.FIELD").partition(".")
+        if not dot or not field:
+            raise ValueError("field is SCHEMA.FIELD")
+        return {"rows": queries.meta(g.db, schema, field, request.args.get("value", ""), *lim())}
 
     # sign-in -------------------------------------------------------------------------------------------------
     @app.route("/login", methods=["GET", "POST"])
@@ -454,11 +607,17 @@ def create_app(cfg, connect=None):
     @app.route("/account", methods=["GET", "POST"])
     @signed_in
     def account():
-        msg = None
+        msg, new_token = None, None
         pending = session.get("totp_pending")
         if request.method == "POST":
             action = request.form.get("action")
-            if action == "start-totp":
+            if action == "make-token":
+                msg, new_token = make_token(request.form)
+            elif action == "revoke-token":
+                ok = g.db.execute("SELECT pinakes.revoke_token(%s)",
+                                  (_int(request.form.get("token"), 0, 0, 2 ** 31 - 1),)).fetchone()[0]
+                msg = "Token revoked." if ok else "No such token of yours to revoke."
+            elif action == "start-totp":
                 pending = session["totp_pending"] = auth.new_totp_secret()
             elif action == "confirm-totp" and pending:
                 if auth.check_totp(pending, request.form.get("code", "")):
@@ -482,7 +641,41 @@ def create_app(cfg, connect=None):
                     msg = "Password changed."
         has_totp = g.db.execute("SELECT pinakes.my_totp_secret() IS NOT NULL").fetchone()[0]
         return render_template("account.html", msg=msg, has_totp=has_totp, pending=pending,
-                               uri=auth.otpauth_uri(pending, g.display or "me") if pending else None)
+                               uri=auth.otpauth_uri(pending, g.display or "me") if pending else None,
+                               new_token=new_token, tokens=queries.rows(g.db, "SELECT * FROM pinakes.my_tokens()"),
+                               root_choices=queries.root_choices(g.db), scopes=SCOPES)
+
+    def make_token(form):
+        """A new token for the signed-in person, from the account page's form: the current password again (a
+        borrowed session can't mint itself a lasting key), a client name, scopes, every root but the protected ones
+        or the roots ticked, and a lifetime in days or none. Returns (message, the secret: shown once, never kept)."""
+        name = g.db.execute("SELECT name FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()[0]
+        row = g.db.execute("SELECT * FROM pinakes.login_material(%s)", (name,)).fetchone()
+        if not auth.check_password(form.get("current", ""), row[1] or auth.DUMMY_HASH):
+            return "The current password is wrong.", None
+        client = form.get("client", "").strip()[:100]
+        scopes = [sc for sc in SCOPES if sc in form.getlist("scope")]
+        try:
+            roots = None if form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
+            days = int(form["days"]) if form.get("days", "").strip() else None
+        except ValueError:
+            return "Roots and days are numbers.", None
+        if not client:
+            return "Name the client the token is for (a machine, a script).", None
+        if not scopes:
+            return "Give the token at least one scope.", None
+        if roots == []:
+            return "Tick at least one root, or give it every root but the protected ones.", None
+        if days is not None and not 1 <= days <= 3650:
+            return "A token lasts 1 to 3650 days, or until revoked.", None
+        secret = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        try:
+            with g.db.transaction():
+                g.db.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s)",
+                             (client, hashlib.sha256(secret.encode()).digest(), scopes, roots, days))
+        except psycopg.errors.RaiseException as e:
+            return "Not made: %s." % e.diag.message_primary, None
+        return "Token made for %s. Copy it now: it isn't shown again." % client, secret
 
     @app.route("/step-up", methods=["GET", "POST"])
     @signed_in

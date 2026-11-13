@@ -53,6 +53,7 @@ Platforms so far: every test on each of Python 3.10 to 3.15 and PostgreSQL 15 to
 | CLI | Run by hand on a demo catalog |
 | Releases and check-in: `RELEASES.toml` (releases 1 and 2 backfilled: the server and agents live when releases began, protocol 0; 3, the first with a protocol, cut 2026-11-12, not deployed; a release is cut only by its tag, when the owner says), `pinakes/compat.py` (release, protocol, the oldest agent and server each side works with), `tools/latest-release ROLE`; a test fails if the batch fields, the agent's state or the schema change and the protocol doesn't; `pinakes-ingest hello` through the agent's forced key; the agent locks (scans on, sends nothing, one line, exit 4) and unlocks by itself; the ingester refuses a batch outside its range, and takes one with no protocol as 0; `pinakes --versions`; `upgrades/checkins.sql` | Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (the only one installed there; 15, 17 and 18 not run), and from the wheel (x86-64 desktop), the fingerprints the same on each: the agent against a stand-in ssh (too far ahead, ahead but compatible, behind, a server from before check-in, unreachable, unlock with the held batches), the ingester and its refusals, the upgrade against the schema, and one run through a stand-in forced key into the real ingester. Not deployed; not run against a real sshd |
 | CLI from inside a folder (33, first part): `pinakes --backups [FOLDER]` finds the root holding the current folder from this machine's name (`--host`, else `[agent] host`, else its hostname) and the roots the catalog says it reports, then lists the folder's files, least backed up first (50 shown, the rest counted; `--json`); `--as` defaults to `$PINAKES_PERSON`, then the login name | Tested on Python 3.12.3 and PostgreSQL 16.15 (x86-64 desktop; `TestHardLinks.test_cli_backups_from_inside_a_folder`, within the full run): from inside the folder and given it, the whole root, another person's files left out, outside any root, inside a backup root. Not run on a real catalog or a second Python or PostgreSQL |
+| The JSON API and person tokens (34): `/api/v1/` in `pinakes-web` over the CLI's queries (`whoami`, `roots`, `find`, `where`, `only-here`, `safe-to-delete`, `backed-up`, `dupes`, `history`, `versions`, `lineage`, `changes`, `meta`, `stale`), GET only, by bearer token, never the session cookie; tokens made on the account page (the current password again, a client name, scopes `read`, `review`, `tag`, every root but the protected ones or the roots ticked, a lifetime or none), shown once, kept as SHA-256, revoked there, last use shown; `begin_token_call()` sets the person and records every call for them (their access page); row-level security holds files to the token's roots; a token never steps up (`stepped_up()` false, `begin_step_up()`, `make_token()` and `revoke_token()` refused under one); refused tokens limited per address; `upgrades/api-tokens.sql` | Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed (x86-64 desktop; `tests/test_api.py` within the full run; the root test checked to fail without the policy); 15, 17 and 18 not run. Not tried in a browser or against a real catalog; not deployed |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12); run for real on 18: a hard-linked snapshot root of ~100k files sent about 100k records a night before, and after it only each new snapshot's files plus one gone per pruned file (two nights: 3,688 and 14,753), matching the snapshots made and pruned |
 | Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes with a folder tree of new, changed, moved in, moved out and gone, filtered by kind and folder), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
 
@@ -137,14 +138,8 @@ Today `pinakes` connects to the database with the web role's password and acts a
 only on the catalog server. The plan (DECISIONS.md "The CLI and the API"): every person-facing function goes through
 one API in `pinakes-web`, with one way to authenticate, and `pinakes` becomes a client of it that runs on any machine
 and works where you are. Agents' batches stay on their forced SSH keys, and server maintenance stays a local command
-(`pinakes-ingest`). In order:
+(`pinakes-ingest`). 34, the API and person tokens, is built (table above). In order:
 
-34. [Security; also feature] **The API and person tokens.** A JSON API in `pinakes-web` over the same queries as the
-    web UI, the person set per request as now. Tokens: one per person per client, made and revoked in the web UI,
-    stored hashed, scoped (`read`, `review`, `tag`), optionally limited to some roots, protected roots left out unless
-    added, last use shown; every call logged with its token. *Done when:* tests show a token acting as exactly its
-    person under row-level security, a revoked or expired token refused, a scope it lacks refused, a root outside its
-    limit hidden, and no route that steps up.
 35. [Feature; also security] **`pinakes` as a client of the API** (standard library, `urllib`), with no database
     access of its own: the direct connection and `--as`'s trust in a name go. The token comes from, first match only:
     `--as` (36); a token file in the current folder or one above it (a person's token kept with a folder); the
@@ -164,8 +159,10 @@ and works where you are. Agents' batches stay on their forced SSH keys, and serv
     secret refused and rate-limited like the web sign-in, and the entry on that person's page.
 37. [Feature; also security] **Reviewing and tagging from a folder.** `pinakes review intended|restore [PATH]`
     through `mark_changes()` and its rules; `pinakes tag` and notes once person-entered metadata exists (16). Each needs
-    its token scope. *Done when:* tests cover an owner and a co-owner marking from inside a folder, a reader refused,
-    a token without the scope refused, and the marks shown in the web UI.
+    its token scope; `mark_changes()` must hold to the token's roots too (it reads files as the schema's owner, so
+    the policy's root limit doesn't reach it). *Done when:* tests cover an owner and a co-owner marking from inside a
+    folder, a reader refused, a token without the scope refused, a root outside the token's limit refused, and the
+    marks shown in the web UI.
 38. [Security; also feature] **Group tokens.** A token that acts as a group, not as any member: it sees what the group
     owns or has shared with it and none of a member's own files, so it never adds up two identities. Made and revoked
     by the group's co-owners; what it marks or tags is attributed to the group, with the token in the audit.

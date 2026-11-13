@@ -8,9 +8,10 @@ one-off hashing script.
 The name is the *Pinakes*, the catalogue Callimachus compiled of the Library of Alexandria's holdings:
 who wrote what, how long it was, where it was shelved. It held none of the scrolls; this holds none of the files.
 
-**Status: early.** The agent, ingester, queries, CLI and a read-only web UI with sign-in are built and tested;
-so are the metadata schemas, EXIF and XMP from JPEGs (sensitive fields for owners only) and hidden files. Other
-extractors, person-entered metadata, file operations and more are not (ROADMAP.md).
+**Status: early.** The agent, ingester, queries, CLI, a read-only web UI with sign-in, and a JSON API with
+per-person tokens are built and tested; so are the metadata schemas, EXIF and XMP from JPEGs (sensitive fields for
+owners only) and hidden files. Other extractors, person-entered metadata, file operations and more are not
+(ROADMAP.md).
 
 - [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
   the web UI, managing files, queries.

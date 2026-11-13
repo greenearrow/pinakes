@@ -129,10 +129,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   site that doesn't want host names reachable this way blocks the path at its proxy, or serves it only on
   `[web] health_listen`, an address of its choosing that serves nothing else.
 
-## Tokens and the CLI (planned)
+## Tokens and the CLI (person tokens built; the rest planned)
 
-ROADMAP 34 to 40. Every person-facing function goes through the API in `pinakes-web`, and every client authenticates
-there; no client holds a database credential.
+ROADMAP 34 to 40; 34, the API and person tokens, is built. Every person-facing function goes through the API in
+`pinakes-web`, and every client authenticates there; once the CLI uses it (35), no client holds a database
+credential.
 
 | Token | Acts as | Can |
 |---|---|---|
@@ -150,6 +151,13 @@ there; no client holds a database credential.
 - `--as NAME` signs in as that person (their token, or their password and second factor, rate-limited like the web
   sign-in). The session is only theirs, is never written to disk, never steps up, and shows on their "Access to
   your records" page.
+- Under a token, row-level security also holds files to the token's roots, and what depends on files (contents,
+  history, lineage, metadata) follows. So does a copy: a token that can't see a root doesn't count the copies there,
+  and `only-here` or `safe-to-delete` through it can only err toward "not safe".
+- The database, not the application, ties a call to its token: `begin_token_call()` finds the token by its hash,
+  sets the person for the transaction and records the call; `stepped_up()` is false under a token, and
+  `begin_step_up()`, `make_token()` and `revoke_token()` refuse one. As with the web session, a compromised web
+  service could still claim to be anyone.
 - No token steps up by itself. An admin token sees another person's records only inside a step-up the
   administrator opens with password and second factor, audited as on the web.
 

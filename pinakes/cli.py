@@ -48,14 +48,7 @@ def _connect(cfg):
     return psycopg.connect(**kw)
 
 
-def _default(o):
-    if isinstance(o, (datetime.date, datetime.datetime)):
-        return o.isoformat()
-    if isinstance(o, datetime.timedelta):
-        return str(o)
-    if isinstance(o, (bytes, memoryview)):
-        return bytes(o).hex()
-    return str(o)
+_default = queries.json_default
 
 
 def _print(rows, as_json, cols=None):

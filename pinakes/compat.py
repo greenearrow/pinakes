@@ -40,6 +40,7 @@ UPGRADE_PROBES = {
     "checkins.sql": "to_regclass('pinakes.checkins') IS NOT NULL",
     "takeovers.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.checkins') "
                      "AND attname = 'seq_reset' AND NOT attisdropped)",
+    "api-tokens.sql": "to_regclass('pinakes.tokens') IS NOT NULL",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

@@ -381,3 +381,12 @@ were made while building, to keep going, and are open to change.
   agent, the system log and `checkins`, which `pinakes --versions` reads with each agent's last check-in and the
   protocol its last batch declared (0: an agent before check-in). The directory transport doesn't check in: it is
   an agent on the server, from the same install.
+- **The API and person tokens (ROADMAP 34).** A token's secret is 32 random bytes, kept as its SHA-256: a slow hash
+  like the passwords' guards a guessable secret, and this one isn't. Making one asks for the current password again,
+  so a borrowed web session can't mint itself a lasting key. The database ties a call to its token
+  (`begin_token_call()`) and records every call as an `api` audit entry, which the person sees on their access page;
+  a refused token isn't recorded (it names nobody) but counts toward the address's limit, like a failed sign-in.
+  The root limit is in the files policy, evaluated once per query, so every query and report follows it without
+  change; a token with no list sees every root but the protected ones, those added later included. The API is GET
+  only until review and tag commands need writing (37). Its schema went into release 5, which wasn't cut yet, rather
+  than a new protocol.

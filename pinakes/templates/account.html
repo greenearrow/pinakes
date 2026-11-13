@@ -20,4 +20,35 @@
   <label>Current <input name="current" type="password" autocomplete="current-password" required></label>
   <label>New (12 characters or more) <input name="new" type="password" autocomplete="new-password" minlength="12" required></label>
   <button>Change</button></form>
+<h2>Tokens</h2>
+<p class="muted">A token lets a program on one of your machines (the <span class="mono">pinakes</span> command, a script)
+ask the catalog as you: only what you may see, never stepped up. Make one per machine, so you can revoke one alone.
+Every call it makes is listed on <a href="{{ url_for('access') }}">Access to your records</a>.</p>
+{% if new_token %}<p>Your new token: <span class="mono">{{ new_token }}</span></p>{% endif %}
+{% if tokens %}<div class="scroll"><table>
+  <tr><th>Client</th><th>Scopes</th><th>Roots</th><th>Made</th><th>Expires</th><th>Last used</th><th></th></tr>
+  {% for t in tokens %}<tr><td>{{ t.client }}</td><td>{{ t.scopes | join(', ') }}</td>
+    <td>{{ t.roots | join(', ') if t.roots is not none else 'every root but the protected ones' }}</td>
+    <td>{{ t.created.strftime('%Y-%m-%d') }}</td><td>{{ t.expires.strftime('%Y-%m-%d') if t.expires else 'never' }}</td>
+    <td>{{ t.last_used.strftime('%Y-%m-%d %H:%M') if t.last_used else 'never' }}</td>
+    <td>{% if t.revoked %}revoked {{ t.revoked.strftime('%Y-%m-%d') }}{% else %}<form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="revoke-token">
+      <input type="hidden" name="token" value="{{ t.token_id }}"><button>Revoke</button></form>{% endif %}</td></tr>
+  {% endfor %}
+</table></div>{% else %}<p>No tokens yet.</p>{% endif %}
+<form method="post" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="make-token">
+  <label>For (a machine or script) <input name="client" maxlength="100" required></label>
+  <fieldset><legend>Scopes</legend>{% for sc in scopes %}
+    <label><input type="checkbox" name="scope" value="{{ sc }}"{% if sc == 'read' %} checked{% endif %}> {{ sc }}</label>{% endfor %}
+    <p class="muted">read: ask questions. review and tag: for later commands; nothing uses them yet.</p></fieldset>
+  <fieldset><legend>Roots</legend>
+    <label><input type="radio" name="roots" value="all" checked> Every root but the protected ones, now and later</label>
+    <label><input type="radio" name="roots" value="some"> Only these:</label>
+    {% for r in root_choices %}<label><input type="checkbox" name="root" value="{{ r.root_id }}"> {{ r.label }}
+      <span class="muted">({{ r.host }})</span>{% if r.protected %} <span class="tag">protected</span>{% endif %}</label>{% endfor %}
+    <p class="muted">A protected root ticked here gives the token its names, sizes, times and hashes. Wherever the token
+      goes, they go.</p></fieldset>
+  <label>Expires after (days; empty: until revoked) <input name="days" inputmode="numeric"></label>
+  <label>Your current password <input name="current" type="password" autocomplete="current-password" required></label>
+  <button>Make a token</button></form>
 {% endblock %}

@@ -1,0 +1,275 @@
+"""The JSON API and person tokens (ROADMAP 34), through Flask's test client, on a catalog built by real scans."""
+
+import hashlib
+import os
+import re
+import unittest
+
+from tests.test_server import PGHOST, UPGRADES, ServerCase, admin_conn, psycopg
+
+try:
+    from pinakes import auth, server_config, web
+except ImportError:  # Flask missing
+    web = None
+
+PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345"}
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestApi(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
+        self.scan("server-1", "store")
+        self.agent("laptop-1", "downloads", extra="protected = true")
+        self.write("laptop-1", "downloads", "taxes-copy.txt", b"his")
+        self.write("laptop-1", "downloads", "letter.txt", b"letter")
+        self.scan("laptop-1", "downloads")
+        self.secret = auth.new_totp_secret()
+        for name, secret in (("user-1", self.secret), ("user-2", None)):
+            self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash, totp_secret) "
+                              "VALUES (%s, %s, %s)", (self.pid(name), auth.hash_password(PASSWORDS[name]), secret))
+        cfg = server_config.loads('[web]\nsecure_cookies = false\nsession_key = "test-key"\n')
+        self.app = web.create_app(cfg, connect=self.app_conn)
+        self.app.testing = True
+
+    def app_conn(self):
+        return psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)
+
+    def pid(self, name):
+        return self.q("SELECT person_id FROM pinakes.people WHERE name = %s", (name,))[0][0]
+
+    def root_id(self, label):
+        return self.q("SELECT root_id FROM pinakes.roots WHERE label = %s", (label,))[0][0]
+
+    def token(self, name, scopes=("read",), roots=None, days=None, client="laptop-1"):
+        """A token made the way the account page makes one: as the person, through make_token()."""
+        secret = "pinakes_test_%s_%s" % (name, os.urandom(8).hex())
+        with self.app_conn() as c:
+            c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid(name)),))
+            c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s)",
+                      (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots, days))
+        return secret
+
+    def get(self, path, secret=None, client=None):
+        c = client or self.app.test_client()
+        headers = {"Authorization": "Bearer " + secret} if secret else {}
+        r = c.get("/api/v1/" + path, headers=headers)
+        return r.status_code, r.get_json()
+
+    def paths(self, path, secret):
+        status, body = self.get(path, secret)
+        self.assertEqual(status, 200, body)
+        return sorted("%s:%s" % (r["root"], r["relpath"]) for r in body["rows"])
+
+    def login(self, name):
+        c = self.app.test_client()
+        page = c.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        c.post("/login", data={"csrf": csrf, "name": name, "password": PASSWORDS[name]})
+        return c
+
+    def csrf(self, c, url):
+        return re.search(r'name="csrf" value="([^"]+)"', c.get(url).get_data(as_text=True)).group(1)
+
+    # acting as exactly one person ----------------------------------------------------------------------------
+    def test_a_token_acts_as_exactly_its_person(self):
+        his, hers = self.token("user-1"), self.token("user-2")
+        self.assertEqual(self.paths("find?q=*.txt", his),
+                         ["store:people/user-1/shared-with-2/plan.txt", "store:people/user-1/taxes.txt"])
+        self.assertEqual(self.paths("find?q=*.txt", hers),
+                         ["store:people/user-1/shared-with-2/plan.txt", "store:people/user-2/diary.txt"])
+        self.assertEqual(self.get("whoami", hers)[1],
+                         {"person": "user-2", "display": "User Two", "scopes": ["read"], "roots": ["store"]})
+        # someone else's file is not there at all, by path or by id
+        diary = self.file("store", "people/user-2/diary.txt")
+        for path in ("where?loc=store:people/user-2/diary.txt", "history?file=%d" % diary, "versions?file=%d" % diary):
+            self.assertEqual(self.get(path, his), (404, {"error": "no file you can see there"}))
+        self.assertEqual(self.paths("where?loc=store:people/user-2/diary.txt", hers), ["store:people/user-2/diary.txt"])
+        self.assertEqual(self.get("only-here?loc=store:people/user-2/", his), (200, {"rows": []}))
+        status, body = self.get("safe-to-delete?loc=store:people/user-1/", his)
+        self.assertEqual((status, sorted(body)), (200, ["links_into", "not_safe"]))
+        # bad arguments and unknown calls answer in JSON
+        self.assertEqual(self.get("find", his), (400, {"error": "q=NAME-OR-GLOB is needed"}))
+        self.assertEqual(self.get("meta?field=nodot&value=x", his), (400, {"error": "field is SCHEMA.FIELD"}))
+        self.assertEqual(self.get("nothing-here", his), (404, {"error": "no such call"}))
+
+    def test_no_token_a_wrong_one_or_a_session_cookie_is_refused(self):
+        refused = (401, {"error": "a valid token is needed (Authorization: Bearer ...)"})
+        self.assertEqual(self.get("find?q=*"), refused)
+        self.assertEqual(self.get("find?q=*", "pinakes_not-a-token"), refused)
+        # signed in on the web: the API still wants a token, never the cookie
+        c = self.login("user-1")
+        self.assertEqual(c.get("/").status_code, 200)
+        self.assertEqual(self.get("find?q=*", client=c), refused)
+        # an unknown call is refused the same, before it is looked up
+        self.assertEqual(self.get("nothing-here"), refused)
+
+    def test_refused_tokens_are_limited_per_address(self):
+        good = self.token("user-1")
+        for _ in range(web.LOGIN_LIMIT):
+            self.assertEqual(self.get("whoami", "pinakes_guess")[0], 401)
+        self.assertEqual(self.get("whoami", good)[0], 429)
+
+    # revoked, expired, scopes ------------------------------------------------------------------------------------
+    def test_a_revoked_or_expired_token_is_refused(self):
+        secret = self.token("user-1", client="laptop-1")
+        self.assertEqual(self.get("whoami", secret)[0], 200)
+        c = self.login("user-1")
+        tid = self.q("SELECT token_id FROM pinakes.tokens WHERE client = 'laptop-1'")[0][0]
+        # someone else can't revoke it
+        c2 = self.login("user-2")
+        page = c2.post("/account", data={"csrf": self.csrf(c2, "/account"), "action": "revoke-token", "token": tid})
+        self.assertIn("No such token of yours", page.get_data(as_text=True))
+        self.assertEqual(self.get("whoami", secret)[0], 200)
+        page = c.post("/account", data={"csrf": self.csrf(c, "/account"), "action": "revoke-token", "token": tid})
+        self.assertIn("Token revoked.", page.get_data(as_text=True))
+        self.assertEqual(self.get("whoami", secret)[0], 401)
+        # expired
+        later = self.token("user-1", days=30, client="workstation-1")
+        self.assertEqual(self.get("whoami", later)[0], 200)
+        self.conn.execute("UPDATE pinakes.tokens SET expires = now() - interval '1 second' "
+                          "WHERE client = 'workstation-1'")
+        self.assertEqual(self.get("whoami", later)[0], 401)
+
+    def test_a_scope_the_token_lacks_is_refused(self):
+        secret = self.token("user-1", scopes=("review",))
+        self.assertEqual(self.get("find?q=*", secret),
+                         (403, {"error": "this token doesn't have the read scope"}))
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            self.token("user-1", scopes=("everything",))
+
+    # roots ---------------------------------------------------------------------------------------------------
+    def test_protected_roots_are_left_out_unless_named_and_a_limit_hides_the_rest(self):
+        his = self.token("user-1")
+        # the default: every root but the protected ones (downloads)
+        self.assertEqual([r["label"] for r in self.get("roots", his)[1]["rows"]], ["store"])
+        self.assertNotIn("downloads:letter.txt", self.paths("find?q=*.txt", his))
+        self.assertEqual(self.paths("where?loc=store:people/user-1/taxes.txt", his), ["store:people/user-1/taxes.txt"])
+        self.assertEqual(self.get("find?q=letter.txt", his), (200, {"rows": []}))
+        # the web session sees both copies
+        with self.app_conn() as c:
+            c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-1")),))
+            n = c.execute("SELECT count(*) FROM pinakes.present WHERE content_id = (SELECT content_id FROM "
+                          "pinakes.present WHERE relpath = 'people/user-1/taxes.txt')").fetchone()[0]
+        self.assertEqual(n, 2)
+        # named: a token for the protected root alone sees it and nothing else
+        only = self.token("user-1", roots=[self.root_id("downloads")], client="workstation-1")
+        self.assertEqual(self.get("whoami", only)[1]["roots"], ["downloads"])
+        self.assertEqual(self.paths("find?q=*.txt", only), ["downloads:letter.txt", "downloads:taxes-copy.txt"])
+        self.assertEqual(self.get("where?loc=store:people/user-1/taxes.txt", only)[0], 404)
+        self.assertEqual(self.paths("where?loc=downloads:taxes-copy.txt", only), ["downloads:taxes-copy.txt"])
+        # a list of roots must name roots
+        with self.assertRaisesRegex(psycopg.errors.RaiseException, "not a root list"):
+            self.token("user-1", roots=[999999])
+
+    # never a step-up -----------------------------------------------------------------------------------------
+    def test_a_token_never_steps_up(self):
+        his = self.token("user-1")                      # user-1 is an administrator
+        c = self.login("user-1")
+        r = c.post("/step-up", data={"csrf": self.csrf(c, "/step-up"), "reason": "checking",
+                                     "code": auth.totp(self.secret)})
+        self.assertEqual(r.status_code, 302)
+        diary = self.file("store", "people/user-2/diary.txt")
+        self.assertEqual(c.get("/file/%d" % diary).status_code, 200)        # the web session is stepped up
+        self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
+        self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
+        # no API route changes anything: GET only
+        api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
+        self.assertTrue(api)
+        for rule in api:
+            self.assertEqual(rule.methods - {"HEAD", "OPTIONS"}, {"GET"}, rule.rule)
+        # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
+        with self.app_conn() as conn:
+            row = conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
+                               (hashlib.sha256(his.encode()).digest(),)).fetchone()
+            self.assertEqual(row[0], self.pid("user-1"))
+            self.assertFalse(conn.execute("SELECT pinakes.stepped_up()").fetchone()[0])
+            for sql in ("SELECT pinakes.begin_step_up('from a token', 15)",
+                        "SELECT pinakes.make_token('x', '\\x00'::bytea, '{read}', NULL, NULL)",
+                        "SELECT pinakes.revoke_token(1)"):
+                with self.assertRaisesRegex(psycopg.errors.RaiseException, "a token"):
+                    with conn.transaction():
+                        conn.execute(sql)
+
+    # recorded --------------------------------------------------------------------------------------------------
+    def test_every_call_is_recorded_for_the_person(self):
+        secret = self.token("user-2", client="laptop-1")
+        self.get("find?q=diary*", secret)
+        self.get("whoami", secret)
+        self.get("whoami", "pinakes_wrong")
+        self.assertEqual(self.q("SELECT actor, detail->>'token', detail->>'call' FROM pinakes.audit "
+                                "WHERE action = 'api' ORDER BY audit_id"),
+                         [(self.pid("user-2"), "laptop-1", "find?q=diary*"), (self.pid("user-2"), "laptop-1", "whoami")])
+        c2 = self.login("user-2")
+        access = c2.get("/access").get_data(as_text=True)
+        self.assertIn("find?q=diary*", access)
+        self.assertIn("token made", access)
+        account = c2.get("/account").get_data(as_text=True)
+        self.assertRegex(account, r"<td>laptop-1</td><td>read</td>\s*<td>every root but the protected ones</td>"
+                                  r"\s*<td>[\d-]+</td><td>never</td>\s*<td>[\d-]+ [\d:]+</td>")
+        # nobody else sees them
+        c1 = self.login("user-1")
+        self.assertNotIn("diary", c1.get("/access").get_data(as_text=True))
+
+    # the account page ----------------------------------------------------------------------------------------
+    def test_the_account_page_makes_a_token_shown_once(self):
+        c = self.login("user-1")
+        form = {"csrf": self.csrf(c, "/account"), "action": "make-token", "client": "laptop-1", "scope": ["read"],
+                "roots": "all", "days": "", "current": "wrong"}
+        self.assertIn("The current password is wrong.", c.post("/account", data=form).get_data(as_text=True))
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.tokens")[0][0], 0)
+        for bad, said in ((dict(scope=[]), "at least one scope"), (dict(client=" "), "Name the client"),
+                          (dict(roots="some"), "Tick at least one root"), (dict(days="0"), "1 to 3650 days")):
+            page = c.post("/account", data=dict(form, current=PASSWORDS["user-1"], **bad)).get_data(as_text=True)
+            self.assertIn(said, page)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.tokens")[0][0], 0)
+        page = c.post("/account", data=dict(form, current=PASSWORDS["user-1"], roots="some",
+                                            root=[str(self.root_id("store"))], days="90")).get_data(as_text=True)
+        secret = re.search(r'Your new token: <span class="mono">(pinakes_[\w-]+)</span>', page).group(1)
+        self.assertNotIn(secret, c.get("/account").get_data(as_text=True))           # shown once
+        stored = self.q("SELECT secret_sha256, scopes, roots, expires > now() + interval '89 days' FROM pinakes.tokens")
+        self.assertEqual(stored, [(hashlib.sha256(secret.encode()).digest(), ["read"], [self.root_id("store")], True)])
+        self.assertEqual(self.get("whoami", secret)[1]["roots"], ["store"])
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'tokens'), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) FROM pg_constraint "
+                " WHERE conrelid = to_regclass('pinakes.tokens')), "
+                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
+                " WHERE schemaname = 'pinakes' AND tablename = 'files'), "
+                "(SELECT array_agg(pg_get_functiondef(p.oid) ORDER BY p.proname) FROM pg_proc p "
+                " WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname = ANY (%(fns)s)), "
+                "(SELECT array_agg(grantee || ':' || routine_name || ':' || privilege_type "
+                "                 ORDER BY grantee, routine_name, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = ANY (%(fns)s)), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.table_privileges "
+                " WHERE table_schema = 'pinakes' AND table_name = 'tokens')")
+        new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token"]
+        args = {"fns": new + ["stepped_up", "begin_step_up"]}
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs, args).fetchone()
+            # back to the catalog before it: the old policy, step-up functions and no tokens
+            c.execute("DROP POLICY files_visible ON pinakes.files")
+            c.execute("CREATE POLICY files_visible ON pinakes.files FOR SELECT USING "
+                      "(acl_id = ANY (pinakes.visible_acls()))")
+            c.execute("CREATE OR REPLACE FUNCTION pinakes.stepped_up() RETURNS boolean LANGUAGE sql STABLE "
+                      "SECURITY DEFINER SET search_path = pinakes AS $$ SELECT false $$")
+            c.execute("CREATE OR REPLACE FUNCTION pinakes.begin_step_up(reason text, minutes int DEFAULT 15) "
+                      "RETURNS timestamptz LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes "
+                      "AS $$ SELECT now() $$")
+            c.execute("DROP FUNCTION pinakes.token_roots(), pinakes.begin_token_call(bytea, text), "
+                      "pinakes.make_token(text, bytea, text[], int[], int), pinakes.my_tokens(), "
+                      "pinakes.revoke_token(int), pinakes.current_token() CASCADE")
+            c.execute("DROP TABLE pinakes.tokens")
+            self.assertNotEqual(c.execute(defs, args).fetchone(), fresh)
+            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs, args).fetchone(), fresh)
