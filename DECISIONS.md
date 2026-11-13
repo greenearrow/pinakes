@@ -18,6 +18,16 @@ were made while building, to keep going, and are open to change.
   share). Working on a file through a portal makes stray copies, and a breached index exposes far less than a
   breached file portal. Access stays with each machine's own shares and logins. Previews stay as designed (optional
   per root, never on a protected root).
+- **The CLI and the API** (2026-11-13). One API, in `pinakes-web`, in front of every person-facing function, and
+  one way to authenticate; `pinakes` becomes its client and runs on any machine. Agents' batches stay on their forced
+  SSH keys and server maintenance stays a local command: the ingest role bypasses row-level security and doesn't
+  belong in the web process. "No secrets on the clients" meant database credentials: a client may hold a revocable
+  token, at home in `~/.config/pinakes/token` or in a folder for that folder. `--as` stays, but asks for the other
+  person's secret and never adds their access to the caller's. Group tokens act as a group: groups own much of a
+  shared store's content. Ops tokens are their own kind, scoped to the operator role; admin tokens get every function
+  but still step up for other people's records. Reviewing and tagging work from inside a folder, so the API writes from
+  the start. Every action is a subcommand, flags only modify: `pinakes releases` replaces `pinakes --versions`, and
+  a site's deploy checks change with it.
 
 ## Build
 

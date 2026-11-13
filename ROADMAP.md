@@ -131,17 +131,60 @@ copies, found when the first deployment's backup roots turned out to share their
 23. [Security] **Rate limits on search, audit retention, removing a person** (their records, shares and sessions go;
     audit entries about them kept for the retention period). *Done when:* tests cover each.
 
-## The command line
+## The command line, through an API
 
-33. [Feature] **The other commands from inside a folder.** `--backups` is built (table above); the rest take
-    `ROOT:PATH` and should default to the current folder the same way: `where` (every copy of a file), `only-here`,
-    `safe-to-delete`, `history`, `versions`, `lineage`, `changes`, and a short summary with no command. Needs a choice
-    of flag or subcommand form (`pinakes --backups` today). *Done when:* each has a test run from inside a folder and
-    given one, a folder outside every root refused, and another person's files left out.
+Today `pinakes` connects to the database with the web role's password and acts as whoever `--as` names, so it runs
+only on the catalog server. The plan (DECISIONS.md "The CLI and the API"): every person-facing function goes through
+one API in `pinakes-web`, with one way to authenticate, and `pinakes` becomes a client of it that runs on any machine
+and works where you are. Agents' batches stay on their forced SSH keys, and server maintenance stays a local command
+(`pinakes-ingest`). In order:
+
+34. [Security; also feature] **The API and person tokens.** A JSON API in `pinakes-web` over the same queries as the
+    web UI, the person set per request as now. Tokens: one per person per client, made and revoked in the web UI,
+    stored hashed, scoped (`read`, `review`, `tag`), optionally limited to some roots, protected roots left out unless
+    added, last use shown; every call logged with its token. *Done when:* tests show a token acting as exactly its
+    person under row-level security, a revoked or expired token refused, a scope it lacks refused, a root outside its
+    limit hidden, and no route that steps up.
+35. [Feature; also security] **`pinakes` as a client of the API** (standard library, `urllib`), with no database
+    access of its own: the direct connection and `--as`'s trust in a name go. The token comes from, first match only:
+    `--as` (36); a token file in the current folder or one above it (a person's token kept with a folder); the
+    home token, `~/.config/pinakes/token`. A token file anyone else can read is refused, as ssh refuses a key. Every
+    action is a subcommand and flags only modify one (`--json`, `--days`): `pinakes --backups` becomes `pinakes
+    backups`. *Done when:* every query in DESIGN.md "Queries" runs through the API in a test, each token source is
+    found in its order, an open token file is refused, and the server needs no database password on the client.
+33. [Feature] **Commands from inside a folder.** `backups` is built (as `--backups`, table above); `where`,
+    `only-here`, `safe-to-delete`, `history`, `versions`, `lineage` and `changes` take a local path or nothing (the
+    current folder) as well as `ROOT:PATH`: a path that exists here is local, anything else is `ROOT:PATH`. Bare
+    `pinakes` sums up the current folder inside a root and prints usage elsewhere. *Done when:* each has a test run
+    from inside a folder and given one, a folder outside every root refused, and another person's files left out.
+36. [Security] **`--as NAME` signs in as that person.** It asks for their token, or their password and second factor
+    as the web sign-in does, and gets a session that is only theirs: never added to the caller's own access, never
+    written to disk, never a step-up. The person sees it on their "Access to your records" page as a sign-in from the
+    CLI. *Done when:* tests show the session sees exactly the named person's files and not the caller's, a wrong
+    secret refused and rate-limited like the web sign-in, and the entry on that person's page.
+37. [Feature; also security] **Reviewing and tagging from a folder.** `pinakes review intended|restore [PATH]`
+    through `mark_changes()` and its rules; `pinakes tag` and notes once person-entered metadata exists (16). Each needs
+    its token scope. *Done when:* tests cover an owner and a co-owner marking from inside a folder, a reader refused,
+    a token without the scope refused, and the marks shown in the web UI.
+38. [Security; also feature] **Group tokens.** A token that acts as a group, not as any member: it sees what the group
+    owns or has shared with it and none of a member's own files, so it never adds up two identities. Made and revoked
+    by the group's co-owners; what it marks or tags is attributed to the group, with the token in the audit.
+    Row-level security gains a second kind of principal beside the person. *Done when:* tests show a group token
+    seeing the group's files and no member's own, a non-member and a former member refused, and its marks attributed.
+39. [Operability; also security] **Ops tokens and `pinakes releases`**, which replaces `pinakes --versions`. An ops
+    token is the operator role of SECURITY.md: hosts, check-ins, releases and staleness, never a person, root or file.
+    A site's deploy checks move from `pinakes --versions` to `pinakes releases` with an ops token, in the release that
+    makes the change. *Done when:* tests show an ops token answering `releases` and `stale` and refused everything
+    that names a file or person.
+40. [Security] **A protected admin API** (later): admin tokens with every function (`*`), each call audited; another
+    person's records still only in a step-up, logged where they can see it, as on the web. Until then administration
+    is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an
+    active step-up, and every call in the audit.
 
 ## Later, or a wish
 
-24. [Feature; also security] **MCP server** over the read-only queries (DESIGN.md "Wish"). *Done when:* tests show a
+24. [Feature; also security] **MCP server** over the read-only queries (DESIGN.md "Wish"), on the API and tokens of
+    34, `read` scope only. *Done when:* tests show a
     token acting as one person under row-level security, never stepping up, leaving protected roots out unless added,
     and every query logged.
 25. [Scalability] **A live watcher** (fanotify) on a busy server, beside the nightly scan.

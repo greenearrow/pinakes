@@ -63,10 +63,10 @@ application code. A policy allows a row when:
 - the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
   check also writes the audit row).
 
-The web service and CLI connect as one unprivileged role that is subject to these policies, and set the signed-in
-person for each transaction. This guards against bugs (a forgotten filter, a crafted query parameter). It does not
-guard against a compromised web service, which could claim to be anyone: that is the line where "root on the catalog
-server" begins.
+The web service (and today the CLI, until it uses the API) connect as one unprivileged role that is subject to these
+policies, and set the signed-in person for each transaction. This guards against bugs (a forgotten filter, a crafted
+query parameter). It does not guard against a compromised web service, which could claim to be anyone: that is the
+line where "root on the catalog server" begins.
 
 `contents` (hash, size, type) is shared by all copies. A person reaches a content row only through a file they can
 see; there is no query by hash outside one's own files.
@@ -128,6 +128,30 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   error text), through `pinakes_app` with no person set, so row-level security would hide any file it touched. A
   site that doesn't want host names reachable this way blocks the path at its proxy, or serves it only on
   `[web] health_listen`, an address of its choosing that serves nothing else.
+
+## Tokens and the CLI (planned)
+
+ROADMAP 34 to 40. Every person-facing function goes through the API in `pinakes-web`, and every client authenticates
+there; no client holds a database credential.
+
+| Token | Acts as | Can |
+|---|---|---|
+| **person** | one person | their own files, what is shared with them and their groups'; scoped `read`, `review`, `tag` |
+| **group** | one group, no member | what the group owns or has shared with it; made by the group's co-owners |
+| **ops** | the operator role | hosts, check-ins, releases, staleness; never a person, root or file |
+| **admin** | an administrator (later) | every function (`*`); another person's records still only in a step-up |
+
+- One token per person (or group) per client, stored hashed, revocable in the web UI, its last use shown, optionally
+  limited to some roots; protected roots are left out unless added. Every call is logged with its token.
+- A client uses one identity per command, never the sum of two. The CLI takes it from `--as`, else a token file in
+  the current folder or one above it, else `~/.config/pinakes/token`; it refuses a token file others can read. A
+  token in a folder is readable by whoever can read the folder, and travels with its backups: revoking it is the
+  remedy.
+- `--as NAME` signs in as that person (their token, or their password and second factor, rate-limited like the web
+  sign-in). The session is only theirs, is never written to disk, never steps up, and shows on their "Access to
+  your records" page.
+- No token steps up by itself. An admin token sees another person's records only inside a step-up the
+  administrator opens with password and second factor, audited as on the web.
 
 ## The MCP server (a wish)
 

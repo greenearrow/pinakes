@@ -42,8 +42,11 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
   out (`cross_mounts = true`). Bind mounts of the same filesystem look like ordinary folders and are walked.
 - **Every file has an owner, and people see only their own** unless they share it or an administrator deliberately
   steps up, which is logged where the owner can see it ([SECURITY.md](SECURITY.md)).
-- **No secrets on the clients.** Agents never hold database credentials. They write batches to a local spool and send
-  them through a transport (an SSH command restricted to "accept a batch", or a shared directory).
+- **No database credentials on the clients.** Agents write batches to a local spool and send them through a
+  transport (an SSH command restricted to "accept a batch", or a shared directory). The CLI reaches the catalog only
+  through the API, with a revocable token for one person (or one group), never two at once (SECURITY.md "Tokens").
+- **Work where you are.** From inside a folder, the CLI answers about that folder and can review and tag it, without
+  naming a root or opening the web UI.
 - **Incremental.** A file is rehashed only when its size, mtime or inode changes. After the first pass a nightly scan
   is metadata-only for nearly everything.
 - **Never guess silently.** A rename that can't be proven is reported with its evidence and a confidence, or as
@@ -74,7 +77,8 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
   and change matching.
 - **`pinakes-web`**: the web UI and its JSON API (below). Each request runs with the signed-in person's identity
   set for the database, so row-level security, not the application code, decides what they can see.
-- **`pinakes`**: the command-line client, using the same API as the web UI.
+- **`pinakes`**: the command-line client, on any machine, using the same API as the web UI (planned: today it
+  connects to the database and runs on the catalog server; ROADMAP "The command line, through an API").
 
 Python 3.11+ throughout. The standard library first; where a dependency earns its place, the preferred ones are
 **Flask** (web) and **waitress** (its WSGI server). The agent's core is standard library only (`hashlib`, `sqlite3`,
