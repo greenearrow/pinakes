@@ -42,9 +42,18 @@ were made while building, to keep going, and are open to change.
 - **Batches** are gzip-compressed JSON lines with a header line (host, sequence number, root, scan id, whether the scan
   completed). The agent deletes a batch only after the ingester acknowledges its sequence number.
 - **Batch sequence numbers** are reserved and committed before a batch is written, so a crash leaves a gap, never a
-  reused number. The ingester applies a host's batches in increasing order and ignores numbers it has seen.
+  reused number. The ingester applies a host's batches in increasing order. A number it has seen is acknowledged
+  only if it is the same batch sent again (the same header, kept with each number applied); another batch of that
+  number is refused, never swallowed: the agent's state is new or restored (a new machine taking over a host).
+  Check-in answers the last number applied and the agent renumbers what it holds to follow it, saying so; the
+  server keeps when it happened (`pinakes --versions`, `/health`). `pinakes-agent renumber --after N` does the same
+  by hand, for an agent that doesn't check in.
 - **Only changes are sent.** A completed scan tells the ingester that everything it didn't report gone is still
-  there. `pinakes-agent scan --full` resends every record, for after the database is restored from a backup.
+  there. `pinakes-agent scan --full` resends every record, for after the database is restored from a backup or a
+  new machine takes over a host. A scan full from start to end says so, and the ingester retires every file of the
+  root it has that the scan didn't send (last seen before the scan's first batch), except under a path the scan
+  reported an error for; most of a root only with `--accept-gone`, as the agent's own guard. A root the host no
+  longer reports at all is retired by `pinakes-ingest retire-root LABEL`.
 - **Chunks belong to content**, so a second link to an inode, or a copy elsewhere, doesn't resend them.
 - **Mass-gone guard:** if a completed walk finds more than half of a root's files missing (and at least 100), it
   reports nothing gone and stops: a mount that didn't come up looks exactly like that. `--accept-gone` confirms a real

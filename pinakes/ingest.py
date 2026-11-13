@@ -10,13 +10,19 @@
                                                       lineage by the current rules (after an upgrade)
   pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
                                                       with pinakes-agent check
+  pinakes-ingest --config server.toml retire-root LABEL [--dry-run]   every present file of a root its host no longer
+                                                      reports goes (a machine taken over, a root dropped)
   pinakes-ingest --config server.toml --host NAME hello   an agent's check-in: its release and protocol as JSON on
                                                       stdin; answers this server's, and whether the schema is
                                                       applied, as JSON. Through the forced key, `ssh ... hello`
                                                       reaches it (sshd's SSH_ORIGINAL_COMMAND); nothing else does.
 
-Each batch is applied in one transaction. A host's batches apply in increasing sequence order; a number already
-applied is acknowledged and ignored. Moves, changes, copies and lineage are worked out here, when a scan completes.
+Each batch is applied in one transaction. A host's batches apply in increasing sequence order; the same batch sent
+again (the same header) is acknowledged and ignored, while another batch of a number already applied is refused: the
+agent's numbering went back (a new or restored state). Check-in answers the last number applied, and the agent
+continues after it. A complete scan sent with --full retires the root's files it didn't send (a machine taken over:
+the old one's files), most of a root only with --accept-gone. Moves, changes, copies and lineage are worked out
+here, when a scan completes.
 
 A batch is stopped and rolled back, and the ingester exits 3, when the agent that sent it hangs up (its stdout
 closes) or when it runs past [ingest] max_batch_time: an agent that gave up must not leave a transaction holding
@@ -39,7 +45,7 @@ import time
 
 import psycopg
 
-from . import BATCH_FORMATS, compat, extract, hidden, names, queries, registry
+from . import BATCH_FORMATS, compat, extract, hidden, names, outbox, queries, registry
 from .config import ConfigError
 from .server_config import load as load_server_config
 
@@ -52,6 +58,11 @@ class Refused(Exception):
 
 class Incompatible(Refused):
     """The batch comes from an agent whose protocol this server doesn't work with."""
+
+
+class SequenceWentBack(Refused):
+    """The batch's number is one this host has already used for another batch: its agent's state is new or was
+    restored. Applying nothing and acknowledging it would lose it (and every batch after it) without a word."""
 
 
 def _ts(ns):
@@ -476,6 +487,14 @@ class Ingester:
             why = "batch %d: %s; the %s must update" % (seq, v[1], v[0])
             self._note_refused(host, why)
             raise Incompatible(why)
+        digest = outbox.header_digest(header)
+        try:
+            return self._apply(header, records, host, seq, protocol, digest)
+        except SequenceWentBack as e:
+            self._note_refused(host, str(e), seq_reset=True)
+            raise
+
+    def _apply(self, header, records, host, seq, protocol, digest):
         with self.conn.transaction():
             h = self.one("SELECT host_id, last_seq FROM pinakes.hosts WHERE name = %s FOR UPDATE", (host,))
             if h is None:
@@ -485,7 +504,13 @@ class Ingester:
             else:
                 host_id, last_seq = h
             if seq <= last_seq:
-                return "duplicate"
+                if self._sent_again(host_id, seq, last_seq, digest):
+                    return "duplicate"
+                raise SequenceWentBack(
+                    "batch %d: this host's batches are applied up to %d, and %d was another batch: the agent's "
+                    "numbering went back (a new or restored state?). Nothing applied. An agent that checks in "
+                    "continues after %d by itself; otherwise run pinakes-agent renumber --after %d on the host"
+                    % (seq, last_seq, seq, last_seq, last_seq))
             root_id = self._root(host_id, host, header)
             root = self.one("SELECT root_id, kind, protected, mirrors_root_id, mirrors_layout, last_complete_on, "
                             "mirrors_prefix FROM pinakes.roots WHERE root_id = %s", (root_id,))
@@ -493,8 +518,7 @@ class Ingester:
                              "last_complete_on", "mirrors_prefix"), root))
             scan = int(header["scan"])
             started_on = datetime.date.fromisoformat(header["started"][:10])
-            self.q("INSERT INTO pinakes.scans (root_id, scan, started_on) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                   (root_id, scan, started_on))
+            self._scan_row(root_id, scan, started_on, header["started"])
             ctx = {"root": root, "scan": scan, "on": started_on, "after": root["last_complete_on"],
                    "uid_map": self.cfg.hosts[host]["uid_map"], "host_id": host_id}
             gone = []
@@ -509,11 +533,13 @@ class Ingester:
                            "ON CONFLICT (root_id, relpath) DO UPDATE SET error = EXCLUDED.error, "
                            "seen_on = EXCLUDED.seen_on", (root_id, rec["path"], rec["error"], started_on))
             if header.get("complete"):
+                if header.get("full"):
+                    gone += self._unsent(ctx, host, header["root"], bool(header.get("accept_gone")))
                 self._complete(ctx, gone, host_id)
             elif gone:
                 raise Refused("gone records in an incomplete scan")
-            self.q("INSERT INTO pinakes.ingested (host_id, seq, records) VALUES (%s, %s, %s)",
-                   (host_id, seq, len(records)))
+            self.q("INSERT INTO pinakes.ingested (host_id, seq, records, header_sha256) VALUES (%s, %s, %s, %s)",
+                   (host_id, seq, len(records), digest))
             self.q("UPDATE pinakes.hosts SET last_seq = %s WHERE host_id = %s", (seq, host_id))
             self.q("INSERT INTO pinakes.checkins (host_id, batch_at, batch_release, batch_protocol) "
                    "VALUES (%s, now(), %s, %s) ON CONFLICT (host_id) DO UPDATE SET batch_at = EXCLUDED.batch_at, "
@@ -524,6 +550,85 @@ class Ingester:
                              % ((host, seq, len(self.dropped)) + self.dropped[0]))
         return "applied"
 
+    def _sent_again(self, host_id, seq, last_seq, digest):
+        """Whether batch seq (at most last_seq) is one already applied, sent again (its acknowledgement lost): the
+        same header. A batch applied before headers were kept can only be the last one."""
+        r = self.one("SELECT header_sha256 FROM pinakes.ingested WHERE host_id = %s AND seq = %s", (host_id, seq))
+        if r is not None and r[0] is not None:
+            return bytes(r[0]) == digest
+        return seq == last_seq
+
+    def _scan_row(self, root_id, scan, started_on, started):
+        """The scan's row, made at its first batch. A new agent state numbers its scans from 1 again: a row of that
+        number from another start is another scan, so it starts over (unfinished files of the old one are left to
+        this one, as new). A row from before starts were kept is that scan still if unfinished, else another."""
+        r = self.one("SELECT started_at, completed FROM pinakes.scans WHERE root_id = %s AND scan = %s FOR UPDATE",
+                     (root_id, scan))
+        if r is None:
+            self.q("INSERT INTO pinakes.scans (root_id, scan, started_on, started_at) VALUES (%s, %s, %s, %s)",
+                   (root_id, scan, started_on, started))
+        elif r[0] is None and not r[1]:
+            self.q("UPDATE pinakes.scans SET started_at = %s WHERE root_id = %s AND scan = %s",
+                   (started, root_id, scan))
+        elif r[0] is None or r[0] != datetime.datetime.fromisoformat(started.replace("Z", "+00:00")):
+            self.q("UPDATE pinakes.scans SET started_on = %s, started_at = %s, completed = false, began_at = now() "
+                   "WHERE root_id = %s AND scan = %s", (started_on, started, root_id, scan))
+
+    GONE_GUARD_FRACTION = 0.5   # as the agent's: more than this share of a root, and at least GONE_GUARD_MIN files
+    GONE_GUARD_MIN = 100
+
+    def _unsent(self, ctx, host, label, accept_gone):
+        """A complete full scan sent every file of its root: the paths present here that it didn't send (last seen
+        before its first batch) are gone, except under a path it reported an error for. Most of a root unsent is
+        retired only with accept_gone (a takeover: the old machine's files), as the agent's own guard has it."""
+        root_id, scan = ctx["root"]["root_id"], ctx["scan"]
+        began = self.one("SELECT began_at FROM pinakes.scans WHERE root_id = %s AND scan = %s", (root_id, scan))[0]
+        if began is None:
+            sys.stderr.write("pinakes-ingest: host %s root %s: full scan %d began before this server kept when; "
+                             "nothing it didn't send is retired: run scan --full again\n" % (host, label, scan))
+            return []
+        errors = ["" if p == "." else p for (p,) in self.q(
+            "SELECT relpath FROM pinakes.scan_errors WHERE root_id = %s AND seen_on >= %s", (root_id, ctx["on"]))]
+        paths = [p for (p,) in self.q("SELECT relpath FROM pinakes.files WHERE root_id = %s AND gone_on IS NULL "
+                                      "AND last_seen < %s ORDER BY relpath", (root_id, began))
+                 if not any(_under(p, e) for e in errors)]
+        if not paths:
+            return []
+        present = self.one("SELECT count(*) FROM pinakes.files WHERE root_id = %s AND gone_on IS NULL",
+                           (root_id,))[0]
+        if (not accept_gone and len(paths) >= self.GONE_GUARD_MIN
+                and len(paths) > self.GONE_GUARD_FRACTION * present):
+            sys.stderr.write("pinakes-ingest: host %s root %s: full scan %d didn't send %d of the %d files present "
+                             "here; that is most of the root, so none is retired. If they are really gone (another "
+                             "machine's, before this one took over), run scan --full --accept-gone\n"
+                             % (host, label, scan, len(paths), present))
+            return []
+        sys.stderr.write("pinakes-ingest: host %s root %s: full scan %d: %d file(s) present here that it didn't send "
+                         "are gone\n" % (host, label, scan, len(paths)))
+        return paths
+
+    def retire_root(self, label, on):
+        """Every present file of a root its host no longer reports goes, as a completed scan would have it gone
+        (a backup root's rows are deleted); its errors go too. Returns how many files."""
+        r = self.one("SELECT root_id, kind, last_complete_on FROM pinakes.roots WHERE label = %s", (label,))
+        if r is None:
+            raise Refused("no root %r" % label)
+        root_id, kind, after = r
+        if kind == "backup":
+            n = self.q("DELETE FROM pinakes.files WHERE root_id = %s", (root_id,)).rowcount
+        else:
+            ids = [i for (i,) in self.q("SELECT file_id FROM pinakes.files WHERE root_id = %s AND gone_on IS NULL "
+                                        "ORDER BY relpath", (root_id,))]
+            self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, old_content_id, old_mtime, old_ctime, "
+                   "old_btime, seen_after, seen_on) SELECT f.file_id, 'gone', f.relpath, f.content_id, f.mtime, "
+                   "f.ctime, f.btime, %s, %s FROM unnest(%s::bigint[]) WITH ORDINALITY AS t(file_id, ord) "
+                   "JOIN pinakes.files f USING (file_id) ORDER BY t.ord", (after, on, ids))
+            self.q("UPDATE pinakes.files SET gone_on = %s, pending_scan = NULL, changed_scan = NULL "
+                   "WHERE file_id = ANY(%s)", (on, ids))
+            n = len(ids)
+        self.q("DELETE FROM pinakes.scan_errors WHERE root_id = %s", (root_id,))
+        return n
+
     # check-in ------------------------------------------------------------------------------------------------
     def hello(self, host, req):
         """An agent's check-in: record what it runs, answer what this server runs. req is what the agent sent (a
@@ -533,7 +638,12 @@ class Ingester:
         release = compat.as_int(req.get("release"), None)
         protocol = compat.as_int(req.get("protocol"))
         min_server = compat.as_int(req.get("min_server_protocol"))
+        next_seq = compat.as_int(req.get("next_seq"), None)     # the agent's next batch (its first waiting)
+        next_sha = req.get("next_header_sha256")                # and that batch's header digest, if it is waiting
         missing = schema_missing(self.conn)
+        answer = {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
+                  "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": not missing,
+                  "upgrades_missing": missing}
         v = compat.verdict(protocol, min_server, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL)
         if not missing:
             with self.conn.transaction():
@@ -545,17 +655,30 @@ class Ingester:
                        "protocol = EXCLUDED.protocol, min_server_protocol = EXCLUDED.min_server_protocol, "
                        "locked = EXCLUDED.locked",
                        (release, protocol, min_server, "%s must update: %s" % v if v else None, host))
-        return {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
-                "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": not missing,
-                "upgrades_missing": missing}
+                host_id, last_seq = self.one("SELECT host_id, last_seq FROM pinakes.hosts WHERE name = %s", (host,))
+                last = self.one("SELECT header_sha256 FROM pinakes.ingested WHERE host_id = %s AND seq = %s",
+                                (host_id, last_seq))
+                # the agent follows this number: its first waiting batch, if that is the last applied sent again
+                # (same header), else the one after
+                answer.update(last_seq=last_seq, last_header_sha256=bytes(last[0]).hex() if last and last[0] else None)
+                if next_seq is not None and (next_seq < last_seq or next_seq == last_seq and not (
+                        last and last[0] and next_sha == bytes(last[0]).hex())):
+                    self.q("UPDATE pinakes.checkins SET seq_reset_at = now(), seq_reset = %s WHERE host_id = %s",
+                           ("the agent's next batch was %d, this host's batches are applied up to %d: it was told "
+                            "to continue after %d" % (next_seq, last_seq, last_seq), host_id))
+        return answer
 
-    def _note_refused(self, host, why):
-        """Keep the last refusal for its protocol where pinakes --versions shows it (if the catalog has the table)."""
+    def _note_refused(self, host, why, seq_reset=False):
+        """Keep the last refusal (for its protocol or its sequence) where pinakes --versions and /health show it (if
+        the catalog has the table)."""
         try:
             with self.conn.transaction():
                 self.q("INSERT INTO pinakes.checkins (host_id, refused_at, refused) "
                        "SELECT host_id, now(), %s FROM pinakes.hosts WHERE name = %s ON CONFLICT (host_id) "
                        "DO UPDATE SET refused_at = EXCLUDED.refused_at, refused = EXCLUDED.refused", (why, host))
+                if seq_reset:
+                    self.q("UPDATE pinakes.checkins SET seq_reset_at = now(), seq_reset = %s "
+                           "WHERE host_id = (SELECT host_id FROM pinakes.hosts WHERE name = %s)", (why, host))
         except psycopg.errors.UndefinedTable:
             pass
 
@@ -1136,9 +1259,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes-ingest", description=__doc__.split("\n")[0])
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
-    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals", "hello"))
+    ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals", "hello",
+                                              "retire-root"))
     ap.add_argument("dir", nargs="?")
-    ap.add_argument("--dry-run", action="store_true", help="tidy: count what would change, change nothing")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="tidy, retire-root: count what would change, change nothing")
     args = ap.parse_args(argv)
     if args.cmd is None and args.host and os.environ.get("SSH_ORIGINAL_COMMAND", "").strip() == "hello":
         args.cmd = "hello"                          # an agent's `ssh ... hello` through its forced key
@@ -1211,6 +1336,19 @@ def main(argv=None):
                 print("%s %s: %d files %d bytes%s" % (host, label, n, size,
                                                       "; %d pending (a scan is unfinished)" % pending if pending else ""))
             return 0
+        if args.cmd == "retire-root":
+            if not args.dir:
+                ap.error("retire-root needs a root's label")
+            try:
+                with conn.transaction():
+                    n = ing.retire_root(args.dir, queries.today())
+                    print("root %s: %d file(s) %s" % (args.dir, n, "would go" if args.dry_run else "gone"))
+                    if args.dry_run:
+                        raise psycopg.Rollback()
+            except Refused as e:
+                print("%s" % e, file=sys.stderr)
+                return 1
+            return 0
         if args.cmd == "tidy":
             with conn.transaction():
                 for k, v in ing.tidy(queries.today()).items():
@@ -1232,7 +1370,7 @@ def main(argv=None):
                         result = ing.apply(header, records, header.get("host"))
                 except Refused as e:
                     print("%s: refused: %s" % (name, e), file=sys.stderr)
-                    if isinstance(e, Incompatible):
+                    if isinstance(e, (Incompatible, SequenceWentBack)):
                         _syslog("host %s: refused %s" % (header.get("host"), e))
                     rc = 1
                     continue
@@ -1247,7 +1385,7 @@ def main(argv=None):
                 ing.apply(header, records, args.host)
         except Refused as e:
             print("refused: %s" % e, file=sys.stderr)
-            if isinstance(e, Incompatible):
+            if isinstance(e, (Incompatible, SequenceWentBack)):
                 _syslog("host %s: refused %s" % (args.host, e))
             return 1
         print("ack %d" % int(header["seq"]))

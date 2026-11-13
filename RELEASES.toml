@@ -58,3 +58,13 @@ min_server_protocol = 0
 upgrade_sql = []
 fingerprint = { batch = "b3e8291b01af3afd", state = "dc73e12cb5f599ae", schema = "9b8943c8f714bc16" }
 note = "pinakes --versions needs no person, so a service account (the deploy's report) can run it."
+
+[[release]]
+id = 5
+affects = ["server", "agent", "cli"]
+protocol = 2
+min_agent_protocol = 0
+min_server_protocol = 0
+upgrade_sql = ["takeovers.sql"]
+fingerprint = { batch = "0bc0a335cd9c0eee", state = "8e00d0bee11dbeda", schema = "dc4c1d3cd3544c5b" }
+note = "Sequence resets refused, not swallowed, and followed at check-in (pinakes-agent renumber by hand); a complete scan --full retires what it didn't send; pinakes-ingest retire-root; both shown by pinakes --versions and /health."

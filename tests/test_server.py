@@ -991,7 +991,7 @@ class TestCheckIn(ServerCase):
         answer = self.ing.hello("server-1", {"release": 11, "protocol": 1, "min_server_protocol": 0})
         self.assertEqual(answer, {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
                                   "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": True,
-                                  "upgrades_missing": []})
+                                  "upgrades_missing": [], "last_seq": 0, "last_header_sha256": None})
         c = self.checkin()
         self.assertEqual((c["release"], c["protocol"], c["min_server_protocol"], c["locked"]), (11, 1, 0, None))
         self.assertIsNotNone(c["at"])
@@ -1014,13 +1014,14 @@ class TestCheckIn(ServerCase):
     def test_an_agent_behind_is_refused_and_says_why(self):
         self.write("server-1", "store", "a.txt", b"a")
         st, cfg, _ = self.agent("server-1", "store")
-        Scanner(cfg, st).scan(cfg.roots[0])                              # an agent of protocol 1
+        Scanner(cfg, st).scan(cfg.roots[0])                              # an agent of this protocol
         (header, recs), = self.pending()
-        with unittest.mock.patch.multiple(compat, PROTOCOL=3, MIN_AGENT_PROTOCOL=2):
+        p = compat.PROTOCOL
+        with unittest.mock.patch.multiple(compat, PROTOCOL=p + 2, MIN_AGENT_PROTOCOL=p + 1):
             with self.assertRaises(Incompatible) as e:
                 self.ing.apply(header, recs, "server-1")
-            self.assertEqual(str(e.exception), "batch 1: the server (protocol 3) accepts agents of protocol 2 or "
-                                               "later; the agent is at 1; the agent must update")
+            self.assertEqual(str(e.exception), "batch 1: the server (protocol %d) accepts agents of protocol %d or "
+                                               "later; the agent is at %d; the agent must update" % (p + 2, p + 1, p))
             # through the forced command: refused on stderr, to the agent, and to the system log
             path = os.path.join(self.tmp, "server.toml")
             with open(path, "w") as f:
@@ -1091,10 +1092,11 @@ class TestCheckIn(ServerCase):
         with admin_conn(self.db) as c:
             fresh = c.execute(defs).fetchone()
             c.execute("DROP TABLE pinakes.checkins")
-            self.assertEqual(schema_missing(self.conn), ["checkins.sql"])
+            self.assertEqual(schema_missing(self.conn), ["checkins.sql", "takeovers.sql"])
             self.assertFalse(self.ing.hello("server-1", {"protocol": 1})["schema_applied"])
-            with open(os.path.join(UPGRADES, "checkins.sql")) as f:
-                c.execute(f.read())
+            for u in ("checkins.sql", "takeovers.sql"):         # its columns of other tables are there: no change
+                with open(os.path.join(UPGRADES, u)) as f:
+                    c.execute(f.read())
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
             self.assertEqual(schema_missing(self.conn), [])
@@ -1138,13 +1140,15 @@ class TestCheckIn(ServerCase):
         rc, err = run()
         self.assertEqual(rc, 4)
         self.assertIn("pinakes-agent: locked: agent release %d protocol %d, server release %d protocol %d: the "
-                      "server must update (its catalog lacks checkins.sql)" % ((compat.RELEASE, compat.PROTOCOL) * 2),
+                      "server must update (its catalog lacks checkins.sql, takeovers.sql)"
+                      % ((compat.RELEASE, compat.PROTOCOL) * 2),
                       err)
         self.assertEqual(len(outbox.pending(cfg.outbox)), 1)
         self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)
         with admin_conn(self.db) as c:
-            with open(os.path.join(UPGRADES, "checkins.sql")) as f:
-                c.execute(f.read())
+            for u in ("checkins.sql", "takeovers.sql"):
+                with open(os.path.join(UPGRADES, u)) as f:
+                    c.execute(f.read())
         self.write("server-1", "store", "b.txt", b"b")
         rc, err = run()
         self.assertEqual((rc, err), (0, ""))
@@ -1179,6 +1183,217 @@ class TestCheckIn(ServerCase):
         with self.assertRaises(SystemExit) as e:
             cli.main(["--config", conf, "--as", "svc-1", "roots"])
         self.assertEqual(str(e.exception.code), "pinakes: no person 'svc-1'")
+
+
+class TestTakeover(ServerCase):
+    """A new machine takes over a host: its agent starts from a new state (batches and scans numbered from 1), and
+    its roots hold only some of what the old machine's did. The server refuses numbers that went back rather than
+    swallow them, check-in has the agent follow, a complete full scan retires what it didn't send, and retire-root
+    clears a root the host no longer reports."""
+
+    def other_agent(self, host, label, tree):
+        """A second agent of host on root label (a new machine: its own state and outbox) over the folder tree."""
+        base = os.path.join(self.tmp, "new-" + host)
+        cfg = config.loads('[agent]\nhost = "%s"\nstate = "%s/state.sqlite"\noutbox = "%s/outbox"\n'
+                           '[[root]]\nlabel = "%s"\npath = "%s"\n' % (host, base, base, label, tree))
+        os.makedirs(base, exist_ok=True)
+        st = State(cfg.state)
+        self.addCleanup(st.close)
+        return st, cfg
+
+    def send(self, cfg, host="server-1"):
+        out = []
+        for seq, p in outbox.pending(cfg.outbox):
+            header, recs = outbox.read(p)
+            out.append(self.ing.apply(header, recs, host))
+            outbox.ack(cfg.outbox, seq)
+        return out
+
+    def checkin(self):
+        return self.q("SELECT c.refused, c.seq_reset, c.seq_reset_at IS NOT NULL FROM pinakes.checkins c "
+                      "JOIN pinakes.hosts h USING (host_id) WHERE h.name = 'server-1'")[0]
+
+    def old_machine(self, n=5):
+        for i in range(n):
+            self.write("server-1", "store", "home/f%03d.txt" % i, b"file %d" % i)
+        for _ in range(3):
+            self.write("server-1", "store", "home/later.txt", b"%f" % time.time())
+            self.scan("server-1", "store")
+        return self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0]
+
+    def present(self):
+        return [r[0] for r in self.q("SELECT relpath FROM pinakes.present ORDER BY 1")]
+
+    def test_a_number_that_went_back_is_refused_not_swallowed(self):
+        last = self.old_machine()
+        self.assertEqual(last, 3)
+        tree = os.path.join(self.tmp, "new-tree")
+        os.makedirs(tree)
+        with open(os.path.join(tree, "new.txt"), "wb") as f:
+            f.write(b"new")
+        st, cfg = self.other_agent("server-1", "store", tree)
+        Scanner(cfg, st).scan(cfg.roots[0])
+        (seq, p), = outbox.pending(cfg.outbox)
+        header, recs = outbox.read(p)
+        self.assertEqual(seq, 1)
+        with self.assertRaises(Refused) as e:
+            self.ing.apply(header, recs, "server-1")
+        self.assertIn("batch 1: this host's batches are applied up to 3, and 1 was another batch: the agent's "
+                      "numbering went back", str(e.exception))
+        self.assertNotIn("new.txt", self.present())                     # nothing applied
+        refused, reset, at = self.checkin()
+        self.assertEqual((refused, reset, at), (str(e.exception), str(e.exception), True))
+        # the same batch sent again (its ack lost) is still a duplicate, whatever its number
+        st0, cfg0, _ = self.agent("server-1", "store")
+        self.write("server-1", "store", "home/again.txt", b"again")
+        Scanner(cfg0, st0).scan(cfg0.roots[0])
+        (s0, p0), = outbox.pending(cfg0.outbox)
+        h0, r0 = outbox.read(p0)
+        self.assertEqual(self.ing.apply(h0, r0, "server-1"), "applied")
+        self.assertEqual(self.ing.apply(h0, r0, "server-1"), "duplicate")
+        outbox.ack(cfg0.outbox, s0)
+        # hello tells the new agent where the host is; it follows, and its batch is applied
+        answer = self.ing.hello("server-1", {"protocol": compat.PROTOCOL, "next_seq": 1})
+        self.assertEqual(answer["last_seq"], 4)
+        self.assertEqual(answer["last_header_sha256"], outbox.header_digest(h0).hex())
+        self.assertIn("the agent's next batch was 1, this host's batches are applied up to 4", self.checkin()[1])
+        self.conn.execute("UPDATE pinakes.checkins SET seq_reset = NULL")
+        self.ing.hello("server-1", {"next_seq": 4, "next_header_sha256": answer["last_header_sha256"]})
+        self.assertIsNone(self.checkin()[1])                            # its last batch sent again: no reset
+        self.ing.hello("server-1", {"next_seq": 4, "next_header_sha256": "00"})
+        self.assertIn("next batch was 4", self.checkin()[1])           # another batch of that number: a reset
+        from pinakes import agent
+        self.assertIn("1 waiting batch(es) renumbered 1-1 to 5-5", agent.follow(cfg, 4, answer["last_header_sha256"]))
+        self.assertEqual(self.send(cfg), ["applied"])
+        self.assertIn("new.txt", self.present())
+        from pinakes import cli
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s[web]\ndsn = "host=%s '
+                    'user=pinakes_app dbname=%s"\n' % (PGHOST, self.db, SERVER, PGHOST, self.db))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
+        self.assertIn("server-1: numbering went back ", out.getvalue())
+        self.assertIn(": the agent's next batch was 4, this host's batches are applied up to 4: it was told to "
+                      "continue after 4", out.getvalue())                    # the last check-in above
+        row = [l for l in out.getvalue().splitlines() if l.startswith("server-1 ")][0]
+        self.assertIn("sending", row)                                   # applied since its refusal
+
+    def test_a_batch_from_before_headers_were_kept(self):
+        """ingested rows from before the upgrade have no header digest: only the last number is a duplicate."""
+        self.old_machine()
+        self.conn.execute("UPDATE pinakes.ingested SET header_sha256 = NULL")
+        st, cfg, _ = self.agent("server-1", "store")
+        hdr = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": 99, "complete": False,
+               "started": "2026-01-01T00:00:00Z", "root_def": {"path": "/mnt/store"}, "protocol": compat.PROTOCOL}
+        self.assertEqual(self.ing.apply(dict(hdr, seq=3), [], "server-1"), "duplicate")
+        with self.assertRaises(Refused):
+            self.ing.apply(dict(hdr, seq=2), [], "server-1")
+
+    def takeover(self, keep, **scan):
+        """The old machine's root, then a new machine with only `keep` of its files (and one of its own), scanning
+        it with scan_kw; returns what the ingester said."""
+        self.old_machine(n=keep[1])
+        tree = os.path.join(self.tmp, "new-tree")
+        for i in range(keep[0]):
+            p = os.path.join(tree, "home/f%03d.txt" % i)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(b"file %d" % i)
+        with open(os.path.join(tree, "home/mine.txt"), "wb") as f:
+            f.write(b"the new machine's")
+        st, cfg = self.other_agent("server-1", "store", tree)
+        from pinakes import agent
+        agent.follow(cfg, self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0])
+        Scanner(cfg, st).scan(cfg.roots[0], **scan)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(set(self.send(cfg)), {"applied"})
+        return err.getvalue(), tree
+
+    def test_a_full_scan_retires_what_it_didnt_send(self):
+        said, _ = self.takeover((3, 5), full=True)
+        self.assertEqual(self.present(), ["home/f000.txt", "home/f001.txt", "home/f002.txt", "home/mine.txt"])
+        self.assertIn("full scan 1: 3 file(s) present here that it didn't send are gone", said)
+        gone = self.q("SELECT f.relpath FROM pinakes.files f JOIN pinakes.history h USING (file_id) "
+                      "WHERE h.kind = 'gone' ORDER BY 1")
+        self.assertEqual(gone, [("home/f003.txt",), ("home/f004.txt",), ("home/later.txt",)])
+        self.assertEqual(self.q("SELECT completed, started_at IS NOT NULL FROM pinakes.scans s JOIN pinakes.roots r "
+                                "USING (root_id) WHERE r.label = 'store' AND s.scan = 1"), [(True, True)])
+
+    def test_a_scan_not_full_retires_nothing(self):
+        said, _ = self.takeover((3, 5))
+        self.assertEqual(len(self.present()), 7)
+        self.assertNotIn("gone", said)
+
+    def test_most_of_a_root_needs_accept_gone(self):
+        said, tree = self.takeover((10, 150), full=True)
+        self.assertEqual(len(self.present()), 152)
+        self.assertIn("full scan 1 didn't send 141 of the 152 files present here; that is most of the root, so none "
+                      "is retired. If they are really gone (another machine's, before this one took over), run "
+                      "scan --full --accept-gone", said)
+        st, cfg = self.other_agent("server-1", "store", tree)
+        Scanner(cfg, st).scan(cfg.roots[0], full=True, accept_gone=True)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.send(cfg)
+        self.assertEqual(len(self.present()), 11)
+        self.assertIn("full scan 2: 141 file(s)", err.getvalue())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads every folder")
+    def test_nothing_under_a_folder_it_couldnt_read(self):
+        self.old_machine()
+        for rel in ("home/f000.txt", "locked/kept.txt"):
+            self.write("server-1", "store", rel, b"x" + rel.encode())
+        self.scan("server-1", "store")
+        tree = os.path.join(self.tmp, "new-tree")
+        os.makedirs(os.path.join(tree, "locked"))
+        os.chmod(os.path.join(tree, "locked"), 0)
+        st, cfg = self.other_agent("server-1", "store", tree)
+        from pinakes import agent
+        agent.follow(cfg, self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0])
+        try:
+            Scanner(cfg, st).scan(cfg.roots[0], full=True, accept_gone=True)
+        finally:
+            os.chmod(os.path.join(tree, "locked"), 0o755)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.send(cfg)
+        self.assertEqual(self.present(), ["locked/kept.txt"])
+
+    def test_retire_root(self):
+        self.old_machine()
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s' % (PGHOST, self.db, SERVER))
+        for args, line in ((["--dry-run"], "root store: 6 file(s) would go"), ([], "root store: 6 file(s) gone")):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(ingest_main(["--config", conf, "retire-root", "store"] + args), 0)
+            self.assertEqual(out.getvalue().strip(), line)
+        self.assertEqual(self.present(), [])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.history WHERE kind = 'gone'")[0][0], 6)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(ingest_main(["--config", conf, "retire-root", "nowhere"]), 1)
+        self.assertEqual(err.getvalue(), "no root 'nowhere'\n")
+
+    def test_upgrade_file_matches_the_schema(self):
+        cols = ("SELECT array_agg(table_name || '.' || column_name || ':' || data_type || ':' || is_nullable || ':' "
+                "|| coalesce(column_default, '') ORDER BY table_name, ordinal_position) "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'pinakes' AND table_name IN ('scans', 'ingested', 'checkins')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(cols).fetchone()
+            for t, col in (("scans", "began_at"), ("scans", "started_at"), ("ingested", "header_sha256"),
+                           ("checkins", "seq_reset_at"), ("checkins", "seq_reset")):
+                c.execute("ALTER TABLE pinakes.%s DROP COLUMN %s" % (t, col))
+            self.assertEqual(schema_missing(self.conn), ["takeovers.sql"])
+            with open(os.path.join(UPGRADES, "takeovers.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(cols).fetchone(), fresh)
+            self.assertEqual(schema_missing(self.conn), [])
 
 
 class TestHiddenFiles(ServerCase):

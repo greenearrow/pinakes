@@ -890,6 +890,25 @@ class TestHealth(ServerCase):
         self.assertEqual(code, 503)
         self.assertEqual([(h["host"], h["newest_batch"]) for h in body["hosts"] if h["stale"]], [("server-2", None)])
 
+    def test_refused_and_numbering_went_back(self):
+        """A host whose batch was refused since its newest one applied holds its batches: 503 "refused". When its
+        agent's numbering last went back is shown, a reason never (it can name a root)."""
+        code, body, _ = self.get()
+        self.assertEqual({h["host"]: (h["refused"], h["seq_reset"]) for h in body["hosts"]},
+                         {"laptop-1": (False, None), "server-1": (False, None), "server-2": (False, None)})
+        self.ing._note_refused("server-1", "batch 1: the numbering went back", seq_reset=True)
+        code, body, text = self.get()
+        self.assertEqual((code, body["status"]), (503, "refused"))
+        h = {h["host"]: h for h in body["hosts"]}["server-1"]
+        self.assertTrue(h["refused"])
+        self.assertIsNotNone(h["seq_reset"])
+        self.assertNotIn("numbering", text)
+        self.write("server-1", "store", "people/user-1/more.txt", b"more")
+        self.scan("server-1", "store")                                  # a batch applied since: no longer held
+        code, body, _ = self.get()
+        self.assertEqual((code, body["status"]), (200, "ok"))
+        self.assertIsNotNone({h["host"]: h for h in body["hosts"]}["server-1"]["seq_reset"])
+
     def test_database_down(self):
         def down():
             raise psycopg.OperationalError("connection refused")

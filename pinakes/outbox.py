@@ -6,6 +6,7 @@ a repeated record as no change.
 """
 
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -37,21 +38,35 @@ class BatchWriter:
         """Write the batch durably as sequence number seq; returns its path."""
         header = dict(self.header, seq=seq, complete=complete, records=len(self.records))
         final = os.path.join(self.outbox, batch_name(seq))
-        tmp = final + ".tmp"
-        with open(tmp, "wb") as raw:
-            with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
-                gz.write((json.dumps(header, sort_keys=True) + "\n").encode())
-                for rec in self.records:
-                    gz.write((json.dumps(rec, sort_keys=True) + "\n").encode())
-            raw.flush()
-            os.fsync(raw.fileno())
-        os.replace(tmp, final)
-        dfd = os.open(self.outbox, os.O_RDONLY)
-        try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+        _write(final, header, self.records)
         return final
+
+
+def header_digest(header):
+    """SHA-256 of a batch header as the ingester keeps it: the same batch sent again has the same one."""
+    return hashlib.sha256(json.dumps(header, sort_keys=True).encode()).digest()
+
+
+def _write(path, header, records):
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as raw:
+        with gzip.GzipFile(fileobj=raw, mode="wb", mtime=0) as gz:
+            gz.write((json.dumps(header, sort_keys=True) + "\n").encode())
+            for rec in records:
+                gz.write((json.dumps(rec, sort_keys=True) + "\n").encode())
+        raw.flush()
+        os.fsync(raw.fileno())
+    os.replace(tmp, path)
+    dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def write_as(outbox, seq, header, records):
+    """Write a batch durably under another number (its header says so too)."""
+    _write(os.path.join(outbox, batch_name(seq)), dict(header, seq=seq), records)
 
 
 def pending(outbox):

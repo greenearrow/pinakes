@@ -18,7 +18,8 @@
                                      the least-backed-up first. The folder's root is found from this machine's
                                      name (--host, or [agent] host in agent.toml, else its hostname).
   pinakes --versions                   this server's release and protocol, whether its schema is applied, and each
-                                     agent's last check-in: release, protocol, locked or not, newest batch, refusals
+                                     agent's last check-in: release, protocol, locked or not, newest batch, refusals,
+                                     the last time its batch numbering went back
   --as defaults to $PINAKES_PERSON, then your login name; --versions needs no person (it shows no file or person).
   Add --json for JSON. The CLI never steps up: it shows only what NAME may see.
 """
@@ -153,6 +154,8 @@ def versions(conn, as_json):
             a["state"] = "no check-in" if a["newest_batch"] else "never heard from"
         else:
             a["state"] = "LOCKED" if a["locked"] else "sending"
+        if a["refused_at"] and (a["newest_batch"] is None or a["refused_at"] > a["newest_batch"]):
+            a["state"] = "REFUSED"                  # its batches are held: the reason is below
     _print(agents, False, ["host", "checked_in", "release", "protocol", "min_server", "state", "newest_batch",
                            "batch_protocol"])
     for a in agents:
@@ -160,6 +163,8 @@ def versions(conn, as_json):
             print("%s: locked at its last check-in: %s" % (a["host"], a["locked"]))
         if a["refused"]:
             print("%s: last refused %s: %s" % (a["host"], _cell(a["refused_at"]), a["refused"]))
+        if a["seq_reset"]:
+            print("%s: numbering went back %s: %s" % (a["host"], _cell(a["seq_reset_at"]), a["seq_reset"]))
 
 
 def main(argv=None):

@@ -6,15 +6,16 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 4                 # the newest entry in RELEASES.toml (cut or being prepared)
-PROTOCOL = 1                # 1: check-in, and the protocol in each batch's header
+RELEASE = 5                 # the newest entry in RELEASES.toml (cut or being prepared)
+PROTOCOL = 2                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
+                            # server at check-in, a complete full scan retires what it didn't send
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
 # What a batch may carry, by the protocol above: a field outside these fails the tests, so adding one raises it.
 BATCH_FIELDS = {
     "header": ("t", "format", "host", "root", "scan", "started", "root_def", "seq", "complete", "records",
-               "release", "protocol", "min_server_protocol"),
+               "release", "protocol", "min_server_protocol", "full", "accept_gone"),
     "root_def": ("path", "kind", "protected", "mirrors"),
     "file": ("t", "path", "size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256",
              "chunk_params", "chunks", "members", "members_error", "unstable", "protected_link", "hidden", "meta",
@@ -37,6 +38,8 @@ UPGRADE_PROBES = {
     "hidden-files.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
                         "AND attname = 'hidden' AND NOT attisdropped)",
     "checkins.sql": "to_regclass('pinakes.checkins') IS NOT NULL",
+    "takeovers.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.checkins') "
+                     "AND attname = 'seq_reset' AND NOT attisdropped)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

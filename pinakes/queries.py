@@ -505,23 +505,30 @@ def stale(conn):
 
 
 def health(conn):
-    """Per host: its newest batch, its last complete scan, how often it should report, and whether it is stale.
-    Host names and times only: no root, person or file."""
-    return rows(conn, """SELECT h.name AS host, (SELECT max(i.at) FROM pinakes.ingested i WHERE i.host_id = h.host_id)
-                                AS newest_batch, h.last_scan, h.expected_every,
-                                (h.expected_every IS NOT NULL AND (h.last_scan IS NULL
-                                 OR h.last_scan < now() - h.expected_every)) AS stale
-                         FROM pinakes.hosts h ORDER BY h.name""")
+    """Per host: its newest batch, its last complete scan, how often it should report, whether it is stale, whether
+    its batches are being refused (a refusal since its newest batch applied: for its protocol or its sequence), and
+    when its agent's numbering last went back. Host names and times only: no root, person or file."""
+    return rows(conn, """SELECT x.*, (x.refused_at IS NOT NULL AND (x.newest_batch IS NULL
+                                      OR x.refused_at > x.newest_batch)) AS refused
+                         FROM (SELECT h.name AS host, (SELECT max(i.at) FROM pinakes.ingested i
+                                                      WHERE i.host_id = h.host_id) AS newest_batch,
+                                      h.last_scan, h.expected_every,
+                                      (h.expected_every IS NOT NULL AND (h.last_scan IS NULL
+                                       OR h.last_scan < now() - h.expected_every)) AS stale,
+                                      c.refused_at, c.seq_reset_at
+                               FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id)) x
+                         ORDER BY x.host""")
 
 
 def agent_versions(conn):
     """Per host: its last check-in (release, protocol, the oldest server it works with, whether it is locked), its
-    newest batch and the protocol that batch declared (0: none, an agent before check-in), and its last batch refused
-    for its protocol. Host names, numbers and times only: no root, person or file."""
+    newest batch and the protocol that batch declared (0: none, an agent before check-in), its last batch refused
+    (for its protocol or its sequence), and when its numbering last went back and what was done. Host names,
+    numbers and times only: no root, person or file."""
     return rows(conn, """SELECT h.name AS host, c.at AS checked_in, c.release, c.protocol,
                                 c.min_server_protocol AS min_server, c.locked,
                                 (SELECT max(i.at) FROM pinakes.ingested i WHERE i.host_id = h.host_id) AS newest_batch,
-                                c.batch_release, c.batch_protocol, c.refused_at, c.refused
+                                c.batch_release, c.batch_protocol, c.refused_at, c.refused, c.seq_reset_at, c.seq_reset
                          FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id) ORDER BY h.name""")
 
 

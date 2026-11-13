@@ -55,11 +55,17 @@ def _ssh(transport):
 BEFORE_CHECKIN = ("refused: not gzip", "refused: empty batch")
 
 
-def hello(transport):
+def hello(transport, next_seq=None, next_sha256=None):
     """Check in with the server: its answer as a dict (release, protocol, min_agent_protocol, schema_applied,
-    upgrades_missing). Raises SendError if the server can't be reached or doesn't answer."""
-    req = json.dumps({"release": compat.RELEASE, "protocol": compat.PROTOCOL,
-                      "min_server_protocol": compat.MIN_SERVER_PROTOCOL}).encode()
+    upgrades_missing; from protocol 2, last_seq and last_header_sha256: this host's last batch applied). next_seq is
+    this agent's next batch number, next_sha256 its header's digest if it is waiting. Raises SendError if the server
+    can't be reached or doesn't answer."""
+    req = {"release": compat.RELEASE, "protocol": compat.PROTOCOL, "min_server_protocol": compat.MIN_SERVER_PROTOCOL}
+    if next_seq is not None:
+        req["next_seq"] = next_seq
+    if next_sha256 is not None:
+        req["next_header_sha256"] = next_sha256
+    req = json.dumps(req).encode()
     timeout = min(transport.get("timeout", 600), 120)
     try:
         p = subprocess.run(_ssh(transport) + ["hello"], input=req, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

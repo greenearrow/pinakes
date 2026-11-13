@@ -5,6 +5,7 @@ written inside the root, symlinks are recorded but never followed into: a symlin
 reading) only inside this agent's own roots, to say which root and path it leads to and whether it is there.
 """
 
+import datetime
 import hashlib
 import json
 import os
@@ -243,7 +244,10 @@ class Scanner:
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
-                "started": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+                # to the microsecond: with the scan number, it tells this scan from another of that number (a new
+                # state numbers scans from 1 again)
+                "started": datetime.datetime.fromtimestamp(started, datetime.timezone.utc)
+                .strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                 "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
                              "mirrors": root.mirrors}}
 
@@ -503,7 +507,8 @@ class Scanner:
     GONE_GUARD_MIN = 100
 
     def scan(self, root, full=False, accept_gone=False):
-        """Scan one root. Returns a summary dict. full=True also resends every unchanged file's record."""
+        """Scan one root. Returns a summary dict. full=True also resends every unchanged file's record; a scan full
+        from its start to its end says so when it completes, and the server retires what it didn't send."""
         top = root.path
         unknown = sorted(set(root.metadata or ()) - self.extractors.known)
         if unknown:
@@ -512,7 +517,7 @@ class Scanner:
                               % (root.label, ", ".join(unknown), ", ".join(sorted(self.extractors.known))))
         if not os.path.isdir(top):
             raise FileNotFoundError("root %s: %s is not a directory" % (root.label, top))
-        scan_id, started, resumed = self.state.open_scan(root.label)
+        scan_id, started, resumed = self.state.open_scan(root.label, full)
         summary = {"root": root.label, "scan": scan_id, "resumed": resumed, "sent": 0, "gone": 0,
                    "errors": 0, "batches": 0}
         self._protected = None  # walked when first needed: see _protecting_root
@@ -622,6 +627,10 @@ class Scanner:
                 w.add({"t": "gone", "path": relpath})
                 self.state.delete(root.label, relpath)
                 summary["gone"] += 1
+            if self.state.scan_full(scan_id):
+                # every file was sent: the server retires what it has of this root that wasn't (another machine's,
+                # before this one took over), most of the root only with accept_gone, as here
+                w.header.update(full=True, accept_gone=bool(accept_gone))
             self.state.finish_scan(scan_id)
             flush(True)
         except BaseException:

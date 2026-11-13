@@ -1163,9 +1163,9 @@ print("ack %%d" %% header["seq"])
             p.start()
             self.addCleanup(p.stop)
 
-    def server(self, protocol, min_agent=0, release=2, schema_applied=True, missing=()):
-        return json.dumps({"release": release, "protocol": protocol, "min_agent_protocol": min_agent,
-                           "schema_applied": schema_applied, "upgrades_missing": list(missing)})
+    def server(self, protocol, min_agent=0, release=2, schema_applied=True, missing=(), **more):
+        return json.dumps(dict({"release": release, "protocol": protocol, "min_agent_protocol": min_agent,
+                                "schema_applied": schema_applied, "upgrades_missing": list(missing)}, **more))
 
     def run_agent(self, server, **compat_now):
         """One `pinakes-agent run` against that server, with pinakes/compat.py's values as given: (exit, stderr
@@ -1191,7 +1191,7 @@ print("ack %%d" %% header["seq"])
         rc, err, got = self.run_agent(self.server(1), PROTOCOL=3, MIN_SERVER_PROTOCOL=2, RELEASE=13)
         self.assertEqual(rc, 4)
         self.assertEqual(self.batches(got), [])                         # nothing sent
-        self.assertEqual(got[0]["hello"], {"release": 13, "protocol": 3, "min_server_protocol": 2})
+        self.assertEqual(got[0]["hello"], {"release": 13, "protocol": 3, "min_server_protocol": 2, "next_seq": 1})
         self.assertEqual(len(err), 1)
         self.assertEqual(err[0], "pinakes-agent: locked: agent release 13 protocol 3, server release 2 protocol 1: "
                                  "the server must update (the agent (protocol 3) needs a server of protocol 2 or "
@@ -1255,9 +1255,105 @@ print("ack %%d" %% header["seq"])
             self.assertEqual(agent.cmd_send(self.cfg, argparse.Namespace()), 4)
         self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
 
+    def test_a_new_state_follows_the_servers_numbering(self):
+        """A new machine taking over a host starts its batches at 1; the server has applied up to 87. Check-in
+        answers that, and the agent renumbers what it holds and goes on after it, saying so once."""
+        self.write("a.txt", b"a")
+        self.scan()
+        self.write("b.txt", b"b")
+        self.scan()                                                     # 1 and 2 waiting
+        rc, err, got = self.run_agent(self.server(2, last_seq=87, last_header_sha256=None))
+        self.assertEqual(got[0]["hello"]["next_seq"], 1)
+        self.assertEqual(rc, 0)
+        self.assertEqual([b["seq"] for b in self.batches(got)], [88, 89, 90])  # the two held, then this run's
+        self.assertEqual(err, ["pinakes-agent: the server has applied this host's batches up to 87 and this agent's "
+                               "numbering was behind it (a new or restored state): 2 waiting batch(es) renumbered "
+                               "1-2 to 88-89; it continues after 87"])
+        rc, err, got = self.run_agent(self.server(2, last_seq=90))     # in step: nothing to say
+        self.assertEqual((rc, err, got[0]["hello"]["next_seq"]), (0, [], 91))
+
+    def test_the_last_batch_sent_again_keeps_its_number(self):
+        """The first waiting batch is the server's last, its acknowledgement lost: the same header. It is sent as it
+        is (the server acknowledges it as a duplicate); only what follows it would move, and it already does."""
+        self.write("a.txt", b"a")
+        self.scan()
+        (seq, path), = outbox.pending(self.cfg.outbox)
+        digest = outbox.header_digest(outbox.read(path)[0]).hex()
+        rc, err, got = self.run_agent(self.server(2, last_seq=seq, last_header_sha256=digest))
+        self.assertEqual(got[0]["hello"]["next_header_sha256"], digest)
+        self.assertEqual((rc, err), (0, []))
+        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2])
+        # another batch of that number is not the same: it moves
+        self.write("b.txt", b"b")
+        self.scan()
+        (seq, path), = outbox.pending(self.cfg.outbox)
+        rc, err, got = self.run_agent(self.server(2, last_seq=seq, last_header_sha256=digest))
+        self.assertEqual([b["seq"] for b in self.batches(got)], [seq + 1, seq + 2])
+        self.assertIn("1 waiting batch(es) renumbered 3-3 to 4-4", err[0])
+
+    def test_a_server_before_protocol_2_answers_no_number(self):
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(1))
+        self.assertEqual((rc, err, [b["seq"] for b in self.batches(got)]), (0, [], [1]))
+
+    def test_renumber_by_hand(self):
+        self.write("a.txt", b"a")
+        self.scan()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(agent.cmd_renumber(self.cfg, argparse.Namespace(after=40)), 0)
+            self.assertEqual(agent.cmd_renumber(self.cfg, argparse.Namespace(after=40)), 0)
+        self.assertEqual(out.getvalue().splitlines()[1], "nothing to do: the next batch is already after 40")
+        (seq, path), = outbox.pending(self.cfg.outbox)
+        header, recs = outbox.read(path)
+        self.assertEqual((seq, header["seq"], [r["path"] for r in recs]), (41, 41, ["a.txt"]))
+        self.write("b.txt", b"b")
+        self.scan()
+        self.assertEqual([s for s, _ in outbox.pending(self.cfg.outbox)], [41, 42])
+
     def test_the_directory_transport_needs_no_check_in(self):
         self.cfg.transport = {"kind": "directory", "path": os.path.join(self.tmp, "inbox")}
         self.assertEqual(agent.check_in(self.cfg), ("ok", None))
+
+
+class TestFullScanHeader(Tree):
+    """A scan full from start to end says so in its complete batch (and whether gone is accepted): the server then
+    retires what it didn't send. One resumed without --full, or never full, says nothing."""
+
+    def complete_header(self):
+        headers = [outbox.read(p)[0] for _, p in outbox.pending(self.cfg.outbox)]
+        for _, p in outbox.pending(self.cfg.outbox):
+            os.remove(p)
+        (h,) = [h for h in headers if h["complete"]]
+        return {k: h.get(k) for k in ("full", "accept_gone")}
+
+    def test_full_and_not(self):
+        for i in range(5):
+            self.write("f%d.txt" % i, b"%d" % i)
+        self.scan()
+        self.assertEqual(self.complete_header(), {"full": None, "accept_gone": None})
+        self.scan(full=True)
+        self.assertEqual(self.complete_header(), {"full": True, "accept_gone": False})
+        self.scan(full=True, accept_gone=True)
+        self.assertEqual(self.complete_header(), {"full": True, "accept_gone": True})
+
+    def test_resumed_without_full_is_not_full(self):
+        self.cfg.batch_records = 1
+        for i in range(5):
+            self.write("f%d.txt" % i, b"%d" % i)
+        self.scan()
+        self.complete_header()
+
+        def stop(rel):
+            if rel == "f3.txt":
+                raise Interrupted()
+        for resumed_full, want in ((False, None), (True, True)):
+            self.scanner.hook = stop
+            with self.assertRaises(Interrupted):
+                self.scan(full=True)
+            self.scanner.hook = None
+            self.scan(full=resumed_full)
+            self.assertEqual(self.complete_header()["full"], want)
 
 
 if __name__ == "__main__":

@@ -4,8 +4,10 @@ factor, and the administrator's step-up.
   pinakes-web --config /etc/pinakes/server.toml
 
 /health answers without sign-in, for monitoring: whether the database is reachable, and per host its newest batch,
-last complete scan and whether it is stale (200 when all is well, 503 otherwise). It names hosts, never a root,
-person or file. [web] health_listen serves it alone on a second address, for a monitor that can't reach the UI's.
+last complete scan, whether it is stale, whether its batches are being refused (protocol or sequence) and when its
+agent's numbering last went back (200 when all is well, 503 when a host is stale or refused). It names hosts, never
+a root, person or file. [web] health_listen serves it alone on a second address, for a monitor that can't reach the
+UI's.
 """
 
 import argparse
@@ -118,10 +120,13 @@ def health_report(connect):
         return 503, {"status": "down", "database": "error", "hosts": []}
     finally:
         db.close()
-    body = {"status": "stale" if any(h["stale"] for h in hosts) else "ok", "database": "ok",
+    status = ("refused" if any(h["refused"] for h in hosts) else "stale" if any(h["stale"] for h in hosts)
+              else "ok")
+    body = {"status": status, "database": "ok",
             "hosts": [{"host": h["host"], "newest_batch": _iso(h["newest_batch"]), "last_scan": _iso(h["last_scan"]),
                        "expected_every_s": int(h["expected_every"].total_seconds()) if h["expected_every"] else None,
-                       "stale": h["stale"]} for h in hosts]}
+                       "stale": h["stale"], "refused": h["refused"], "seq_reset": _iso(h["seq_reset_at"])}
+                      for h in hosts]}
     return (200 if body["status"] == "ok" else 503), body
 
 

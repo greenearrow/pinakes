@@ -88,12 +88,14 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   name comes from the key, never from the batch.
 - The same key reaches one more thing, the check-in: when the agent asks for `hello` (sshd's
   `SSH_ORIGINAL_COMMAND`), the ingester reads the agent's release and protocol (numbers only, at most 4 KiB),
-  records them for the key's host, and answers this server's release and protocol and whether its schema is
-  applied. No root, file or person is named either way; anything else asked for is still read as a batch.
+  records them for the key's host, and answers this server's release and protocol, whether its schema is
+  applied, and the last batch number applied for that host (with its header's digest). No root, file or person is
+  named either way; anything else asked for is still read as a batch.
 - A batch from an agent whose protocol this server doesn't work with (`pinakes/compat.py`) is refused before
   anything is applied; the reason goes to the agent and to the server's system log.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
-  host's sequence.
+  host's sequence (other than the same batch sent again). A complete full scan retires files only of its own root,
+  as its gone records could already.
 - An agent can't read the catalog. It can fetch only approved operations for its own roots. It never sends a file
   to the server, only records (and previews, where a root enables them).
 - Operations are limited by the agent's **local** config (`managed` per root). The server can't widen them: a

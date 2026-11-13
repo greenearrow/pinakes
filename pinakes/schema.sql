@@ -91,6 +91,10 @@ CREATE TABLE scans (
     scan        bigint NOT NULL,
     started_on  date NOT NULL,
     completed   boolean NOT NULL DEFAULT false,
+    began_at    timestamptz DEFAULT now(),                  -- its first batch applied: a full scan retires what it
+                                                            -- didn't send, files last seen before then
+    started_at  timestamptz,                                -- when the agent started it: a new agent state numbers
+                                                            -- its scans from 1 again, and this tells them apart
     PRIMARY KEY (root_id, scan)
 );
 CREATE TABLE ingested (
@@ -98,6 +102,8 @@ CREATE TABLE ingested (
     seq         bigint NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     records     int NOT NULL,
+    header_sha256 bytea,                                    -- of the batch's header (outbox.header_digest): a batch
+                                                            -- sent again is a duplicate, another of that number is not
     PRIMARY KEY (host_id, seq)
 );
 -- each agent's last check-in (pinakes-ingest hello) and the protocol of its last batch: which release and protocol
@@ -112,8 +118,10 @@ CREATE TABLE checkins (
     batch_at    timestamptz,                                -- the last batch applied, and what its header declared
     batch_release int,
     batch_protocol int,                                     -- 0: none declared (an agent before check-in)
-    refused_at  timestamptz,                                -- the last batch refused for its protocol, and why
-    refused     text
+    refused_at  timestamptz,                                -- the last batch refused (protocol or sequence), and why
+    refused     text,
+    seq_reset_at timestamptz,                               -- the last time the agent's numbering went back (a new
+    seq_reset   text                                        -- or restored state), and what was done
 );
 CREATE TABLE scan_errors (
     root_id     int REFERENCES roots,

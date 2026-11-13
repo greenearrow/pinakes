@@ -32,6 +32,10 @@ class State:
                          ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT"), ("hidden", "INTEGER")):
             if col not in have:
                 self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
+        # full: the scan resent every file from its start (scan --full each time it ran), so the server may retire
+        # what it didn't send; a scan from before this was kept counts as not full
+        if "full" not in [r["name"] for r in self.db.execute("PRAGMA table_info(scans)")]:
+            self.db.execute("ALTER TABLE scans ADD COLUMN full INTEGER")
         # meta_v: the schemas and versions extracted for the file ({"exif": 1} as JSON), NULL for none; a state from
         # before extraction has none, so the next scan extracts. By content: another copy here already sent it
         self.db.execute("CREATE INDEX IF NOT EXISTS files_content ON files (sha256)")
@@ -71,15 +75,28 @@ class State:
         self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('next_seq', ?)", (str(seq + 1),))
         return seq
 
-    def open_scan(self, root):
-        """The unfinished scan of this root to resume, or a new one."""
+    def next_seq(self):
+        """The number the next batch will have."""
+        row = self.db.execute("SELECT value FROM meta WHERE key = 'next_seq'").fetchone()
+        return int(row["value"]) if row else 1
+
+    def set_next_seq(self, seq):
+        self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('next_seq', ?)", (str(seq),))
+
+    def open_scan(self, root, full=False):
+        """The unfinished scan of this root to resume, or a new one. A scan is full only if every run of it was."""
         row = self.db.execute("SELECT scan_id, started FROM scans WHERE root = ? AND finished IS NULL "
                               "ORDER BY scan_id DESC LIMIT 1", (root,)).fetchone()
         if row:
+            if not full:
+                self.db.execute("UPDATE scans SET full = 0 WHERE scan_id = ?", (row["scan_id"],))
             return row["scan_id"], row["started"], True
         now = time.time()
-        cur = self.db.execute("INSERT INTO scans (root, started) VALUES (?, ?)", (root, now))
+        cur = self.db.execute("INSERT INTO scans (root, started, full) VALUES (?, ?, ?)", (root, now, int(full)))
         return cur.lastrowid, now, False
+
+    def scan_full(self, scan_id):
+        return bool(self.db.execute("SELECT full FROM scans WHERE scan_id = ?", (scan_id,)).fetchone()["full"])
 
     def finish_scan(self, scan_id):
         self.db.execute("UPDATE scans SET finished = ? WHERE scan_id = ?", (time.time(), scan_id))
