@@ -48,3 +48,13 @@ min_server_protocol = 0
 upgrade_sql = ["checkins.sql"]
 fingerprint = { batch = "b3e8291b01af3afd", state = "dc73e12cb5f599ae", schema = "9b8943c8f714bc16" }
 note = "Check-in (pinakes-ingest hello), agents locked by an incompatible server, batches refused by protocol, pinakes --versions."
+
+[[release]]
+id = 4
+affects = ["cli"]
+protocol = 1
+min_agent_protocol = 0
+min_server_protocol = 0
+upgrade_sql = []
+fingerprint = { batch = "b3e8291b01af3afd", state = "dc73e12cb5f599ae", schema = "9b8943c8f714bc16" }
+note = "pinakes --versions needs no person, so a service account (the deploy's report) can run it."

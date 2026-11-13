@@ -6,7 +6,7 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 3                 # the newest entry in RELEASES.toml (cut or being prepared)
+RELEASE = 4                 # the newest entry in RELEASES.toml (cut or being prepared)
 PROTOCOL = 1                # 1: check-in, and the protocol in each batch's header
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
