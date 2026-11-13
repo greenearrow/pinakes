@@ -1171,6 +1171,14 @@ class TestCheckIn(ServerCase):
         got = json.loads(out.getvalue())
         self.assertTrue(got["server"]["schema_applied"])
         self.assertEqual([a["host"] for a in got["agents"] if a["locked"] is None and a["checked_in"]], ["server-1"])
+        # a service account that is no person (the deploy runs it as one): --versions needs no person; others do
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["--config", conf, "--as", "svc-1", "--versions"]), 0)
+        self.assertEqual(out.getvalue().splitlines()[0], lines[0])
+        with self.assertRaises(SystemExit) as e:
+            cli.main(["--config", conf, "--as", "svc-1", "roots"])
+        self.assertEqual(str(e.exception.code), "pinakes: no person 'svc-1'")
 
 
 class TestHiddenFiles(ServerCase):

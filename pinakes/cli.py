@@ -19,7 +19,7 @@
                                      name (--host, or [agent] host in agent.toml, else its hostname).
   pinakes --versions                   this server's release and protocol, whether its schema is applied, and each
                                      agent's last check-in: release, protocol, locked or not, newest batch, refusals
-  --as defaults to $PINAKES_PERSON, then your login name.
+  --as defaults to $PINAKES_PERSON, then your login name; --versions needs no person (it shows no file or person).
   Add --json for JSON. The CLI never steps up: it shows only what NAME may see.
 """
 
@@ -187,6 +187,11 @@ def main(argv=None):
         ap.error("a command is needed (or --backups, or --versions)")
     cfg = load_server_config(a.config)
     with _connect(cfg) as conn:
+        if a.versions:
+            # hosts, check-ins and batch times only (no row-level security, nothing about a person or file): it needs
+            # no person, so it runs as a service account too (the deploy's report)
+            versions(conn, a.json)
+            return 0
         pid = conn.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (a.person,)).fetchone()
         if not pid:
             sys.exit("pinakes: no person %r" % a.person)
@@ -207,9 +212,6 @@ def main(argv=None):
         try:
             if a.backups:
                 backups_here(conn, _this_host(a.host), a.cmd or ".", a.json)
-                return 0
-            if a.versions:
-                versions(conn, a.json)
                 return 0
             if a.cmd == "find":
                 rows = queries.find(conn, need("a name or glob"))
