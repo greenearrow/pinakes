@@ -374,7 +374,7 @@ class TestHardLinks(ServerCase):
 
     def test_cli_backups_from_inside_a_folder(self):
         import json
-        from pinakes import cli
+        from tests.test_api import CliRun
         data = os.urandom(10000)
         self.write("server-1", "store", "people/user-1/docs/photo.jpg", data)
         self.write("server-1", "store", "people/user-1/docs/lonely.txt", b"only one copy")
@@ -384,47 +384,28 @@ class TestHardLinks(ServerCase):
                    extra='mirrors = { root = "store", layout = "*/{relpath}" }')
         self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/docs/photo.jpg", data)
         self.scan("server-2", "snapshots")
-        conf = os.path.join(self.tmp, "server.toml")
-        with open(conf, "w") as f:
-            f.write(SERVER + '[web]\ndsn = "host=%s user=pinakes_app dbname=%s"\n' % (PGHOST, self.db))
+        cli = CliRun(self, "user-1")
+        self.addCleanup(cli.close)
 
         def run(*args, cwd=None, code=0):
-            out = io.StringIO()
-            old = os.getcwd()
-            try:
-                if cwd:
-                    os.chdir(cwd)
-                with contextlib.redirect_stdout(out):
-                    rc = None
-                    try:
-                        rc = cli.main(["--config", conf, "--as", "user-1", "--host", "server-1", *args])
-                    except SystemExit as e:
-                        rc = e.code
-                self.assertEqual(rc, code)
-            finally:
-                os.chdir(old)
-            return out.getvalue()
+            return cli("backups", "--host", "server-1", *args, cwd=cwd, code=code)
 
         docs = self.path("server-1", "store", "people/user-1/docs")
-        text = run("--backups", cwd=docs)                          # from inside the folder, no argument
+        text = run(cwd=docs)                                        # from inside the folder, no argument
         self.assertIn("store:people/user-1/docs: 2 file(s) you can see, 1 with no backup", text)
         self.assertLess(text.index("lonely.txt"), text.index("photo.jpg"))      # the least backed up first
-        got = json.loads(run("--backups", "--json", docs))          # or given the folder
+        got = json.loads(run("--json", docs))                       # or given the folder
         self.assertEqual(got["folder"], "store:people/user-1/docs")
         self.assertEqual({r["relpath"]: r["backup_copies"] for r in got["shown"]},
                          {"people/user-1/docs/lonely.txt": 0, "people/user-1/docs/photo.jpg": 1})
         # the whole root; and user-2's file is not user-1's to see
-        whole = run("--backups", cwd=self.path("server-1", "store", ""))
+        whole = run(cwd=self.path("server-1", "store", ""))
         self.assertIn("store: 2 file(s) you can see", whole)
         self.assertNotIn("theirs.txt", whole)
         # refusals: outside any root, and inside a backup root
-        with self.assertRaises(SystemExit) as e:
-            cli.main(["--config", conf, "--as", "user-1", "--host", "server-1", "--backups", self.tmp])
-        self.assertIn("is not inside a root", str(e.exception))
-        with self.assertRaises(SystemExit) as e:
-            cli.main(["--config", conf, "--as", "user-1", "--host", "server-2", "--backups",
-                      self.path("server-2", "snapshots", "")])
-        self.assertIn("itself a backup root", str(e.exception))
+        self.assertIn("is not inside a root", run(self.tmp, code=1))
+        snapshots = self.path("server-2", "snapshots", "")
+        self.assertIn("itself a backup root", cli("backups", "--host", "server-2", snapshots, code=1))
 
     def test_dupes_count_copies_not_links(self):
         from pinakes import queries
@@ -913,17 +894,13 @@ path = "%(b)s/media"
 
     def test_cli_safe_to_delete(self):
         import json
-        from pinakes import cli
-        conf = os.path.join(self.tmp, "server.toml")
-        with open(conf, "w") as f:
-            f.write(SERVER + '[web]\ndsn = "host=%s user=pinakes_app dbname=%s"\n' % (PGHOST, self.db))
+        from tests.test_api import CliRun
+        cli = CliRun(self, "user-1")
+        self.addCleanup(cli.close)
         loc = "store:" + self.OLD
 
         def run(*extra):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(cli.main(["--config", conf, "--as", "user-1", *extra, "safe-to-delete", loc]), 0)
-            return out.getvalue()
+            return cli(*extra, "safe-to-delete", loc)
 
         text = run()
         self.assertIn(self.OLD + "a.txt", text)
@@ -1159,7 +1136,7 @@ class TestCheckIn(ServerCase):
                          (compat.RELEASE, compat.PROTOCOL, None, compat.PROTOCOL))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(cli.main(["--config", conf, "--as", "user-2", "--versions"]), 0)
+            self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
         lines = out.getvalue().splitlines()
         self.assertEqual(lines[0], "server: release %d, protocol %d, accepts agents of protocol %d or later; schema "
                                    "applied" % (compat.RELEASE, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL))
@@ -1171,18 +1148,28 @@ class TestCheckIn(ServerCase):
         self.assertIn("never heard from", rows["server-2"])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            cli.main(["--config", conf, "--as", "user-2", "--versions", "--json"])
+            cli.main(["--config", conf, "--versions", "--json"])
         got = json.loads(out.getvalue())
         self.assertTrue(got["server"]["schema_applied"])
         self.assertEqual([a["host"] for a in got["agents"] if a["locked"] is None and a["checked_in"]], ["server-1"])
-        # a service account that is no person (the deploy runs it as one): --versions needs no person; others do
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(cli.main(["--config", conf, "--as", "svc-1", "--versions"]), 0)
-        self.assertEqual(out.getvalue().splitlines()[0], lines[0])
-        with self.assertRaises(SystemExit) as e:
-            cli.main(["--config", conf, "--as", "svc-1", "roots"])
-        self.assertEqual(str(e.exception.code), "pinakes: no person 'svc-1'")
+        # the deploy's service account, which is no person and has no token: --versions needs neither; the
+        # questions about files need a token
+        home = os.path.join(self.tmp, "svc-home")
+        os.makedirs(home)
+        env = {"HOME": home, "PINAKES_CLIENT_CONFIG": os.path.join(home, "none.toml")}
+        with unittest.mock.patch.dict(os.environ, env):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
+            self.assertEqual(out.getvalue().splitlines()[0], lines[0])
+            old = os.getcwd()
+            os.chdir(home)
+            try:
+                with self.assertRaises(SystemExit) as e:
+                    cli.main(["roots"])
+            finally:
+                os.chdir(old)
+        self.assertIn("pinakes: no token", str(e.exception.code))
 
 
 class TestTakeover(ServerCase):

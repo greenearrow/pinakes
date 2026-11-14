@@ -559,6 +559,15 @@ def roots_of_host(conn, host):
                            AND (pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots()))""", (host,))
 
 
+def unbacked(conn, loc):
+    """How many present files under ROOT:PATH that the person can see have no backup copy holding their content."""
+    root, path = split_location(loc)
+    return conn.execute("""SELECT count(*) FROM (SELECT 1 FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                           LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
+                           WHERE r.label = %s AND f.relpath LIKE %s GROUP BY f.file_id
+                           HAVING count(b.file_id) = 0) x""", (root, _prefix(path))).fetchone()[0]
+
+
 def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):
     """The folders and files directly in a folder that the person can see; without `hidden`, none of the hidden
     files (a folder whose files are all hidden doesn't show). An entry is hidden when all its files are."""

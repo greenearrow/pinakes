@@ -1,11 +1,21 @@
 """The JSON API and person tokens (ROADMAP 34), through Flask's test client, on a catalog built by real scans."""
 
+import contextlib
+import datetime
 import hashlib
+import io
+import json
 import os
 import re
+import subprocess
+import sys
+import tempfile
 import unittest
+from unittest import mock
 
 from tests.test_server import PGHOST, UPGRADES, ServerCase, admin_conn, psycopg
+
+TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     from pinakes import auth, server_config, web
@@ -202,7 +212,8 @@ class TestApi(ServerCase):
         self.get("whoami", "pinakes_wrong")
         self.assertEqual(self.q("SELECT actor, detail->>'token', detail->>'call' FROM pinakes.audit "
                                 "WHERE action = 'api' ORDER BY audit_id"),
-                         [(self.pid("user-2"), "laptop-1", "find?q=diary*"), (self.pid("user-2"), "laptop-1", "whoami")])
+                         [(self.pid("user-2"), "laptop-1", "find?q=diary*"),
+                          (self.pid("user-2"), "laptop-1", "whoami")])
         c2 = self.login("user-2")
         access = c2.get("/access").get_data(as_text=True)
         self.assertIn("find?q=diary*", access)
@@ -273,3 +284,199 @@ class TestApi(ServerCase):
                 c.execute(f.read())
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs, args).fetchone(), fresh)
+
+
+# the CLI, as a client of the API (ROADMAP 35) ------------------------------------------------------------------------
+class CliRun:
+    """pinakes (the CLI) against a real HTTP server on 127.0.0.1, in this process, over the given test database;
+    HOME and the client config point into the test's own folder, so no real token or config is ever read."""
+
+    def __init__(self, case, person=None, scopes=("read",), roots=None):
+        import threading
+        from werkzeug.serving import make_server
+        self.case = case
+        cfg = server_config.loads('[web]\nsecure_cookies = false\nsession_key = "test-key"\n')
+        app = web.create_app(cfg, connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=case.db))
+        self.server = make_server("127.0.0.1", 0, app, threaded=True)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = "http://127.0.0.1:%d" % self.server.server_port
+        self.home = tempfile.mkdtemp(prefix="home-", dir=case.tmp)
+        self.client_toml = os.path.join(self.home, "client.toml")
+        with open(self.client_toml, "w") as f:
+            f.write('[client]\nurl = "%s"\n' % self.url)
+        self.env = mock.patch.dict(os.environ, {"HOME": self.home, "PINAKES_CLIENT_CONFIG": self.client_toml,
+                                                "PINAKES_AGENT_CONFIG": os.path.join(self.home, "none.toml")})
+        self.env.start()
+        if person:
+            self.save(self.home_token(), make_token(case, person, scopes, roots))
+
+    def home_token(self):
+        return os.path.join(self.home, ".config", "pinakes", "token")
+
+    @staticmethod
+    def save(path, secret, mode=0o600):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(secret + "\n")
+        os.chmod(path, mode)
+
+    def close(self):
+        self.env.stop()
+        self.server.shutdown()
+        self.server.server_close()
+
+    def __call__(self, *args, cwd=None, code=0):
+        """Run it; its output, or with code != 0 the message it exited with."""
+        from pinakes import cli
+        out = io.StringIO()
+        old = os.getcwd()
+        try:
+            if cwd:
+                os.chdir(cwd)
+            with contextlib.redirect_stdout(out):
+                try:
+                    rc = cli.main(list(args))
+                except SystemExit as e:
+                    rc = e.code if isinstance(e.code, int) else 1
+                    if code:
+                        return str(e.code)
+            self.case.assertEqual(rc, code, out.getvalue())
+        finally:
+            os.chdir(old)
+        return out.getvalue()
+
+
+def make_token(case, person, scopes=("read",), roots=None, client="laptop-1"):
+    """A token for a person, made as the account page makes one; its secret."""
+    secret = "pinakes_test_%s_%s" % (person, os.urandom(8).hex())
+    with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=case.db) as c:
+        pid = c.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (person,)).fetchone()[0]
+        c.execute("SELECT set_config('pinakes.person', %s, true)", (str(pid),))
+        c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, NULL)",
+                  (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots))
+    return secret
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCli(ServerCase):
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
+        self.scan("server-1", "store")
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+
+    def test_every_query_through_the_api(self):
+        """Each query of DESIGN.md "Queries", and roots, as the token's person."""
+        cli = self.cli
+        self.assertIn("people/user-1/taxes.txt", cli("find", "*.txt"))
+        self.assertNotIn("diary", cli("find", "*.txt"))
+        for cmd in ("where", "history", "versions", "lineage"):
+            self.assertEqual(cli(cmd, "store:people/user-2/diary.txt", code=1),
+                             "pinakes: no file you can see there")
+        self.assertIn("people/user-1/taxes.txt", cli("where", "store:people/user-1/taxes.txt"))
+        self.assertIn("new", cli("history", "store:people/user-1/taxes.txt"))
+        self.assertEqual(len(json.loads(cli("versions", "store:people/user-1/taxes.txt", "--json"))), 1)
+        self.assertEqual(json.loads(cli("lineage", "store:people/user-1/taxes.txt", "--down", "--json")), [])
+        self.assertIn("people/user-1/taxes.txt", cli("only-here", "store:people/user-1/"))
+        self.assertIn("people/user-1/taxes.txt", cli("safe-to-delete", "store:people/user-1/"))
+        self.assertEqual(sorted(json.loads(cli("safe-to-delete", "store:people/user-1/", "--json"))),
+                         ["links_into", "not_safe"])
+        self.assertIn("people/user-1/taxes.txt", cli("backed-up", "store:people/user-1/"))
+        self.assertEqual(cli("dupes"), "(none)\n")
+        changes = cli("changes", "--days", "3", "--host", "server-1")
+        self.assertIn("people/user-1/taxes.txt", changes)
+        self.assertNotIn("diary", changes)
+        self.assertIn("(none)", cli("meta", "dc.title=nothing"))
+        self.assertEqual(cli("meta", "dc.title", code=1), "pinakes: pinakes meta needs SCHEMA.FIELD=VALUE")
+        self.assertEqual(cli("stale").split()[:4], ["name", "last_scan", "expected_every", "server-2"])  # never seen
+        roots = cli("roots").splitlines()
+        self.assertEqual(roots[0].split(), ["label", "host", "kind", "protected", "last_complete_on", "files",
+                                            "hidden_files"])
+        self.assertEqual(roots[1].split()[:3], ["store", "server-1", "primary"])
+        # times come back as ISO 8601 and are shown in this machine's time zone, as before
+        row = json.loads(cli("where", "store:people/user-1/taxes.txt", "--json"))[0]
+        mtime = datetime.datetime.fromisoformat(row["mtime"]).astimezone().strftime("%Y-%m-%d %H:%M")
+        self.assertIn(mtime, cli("where", "store:people/user-1/taxes.txt"))
+
+    def test_another_person_sees_their_own(self):
+        self.cli.save(self.cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        found = self.cli("find", "*.txt")
+        self.assertIn("diary.txt", found)
+        self.assertIn("plan.txt", found)                                # shared with user-2
+        self.assertNotIn("taxes.txt", found)
+
+    def test_the_token_is_found_in_its_order(self):
+        """A .pinakes-token in the current folder or one above it comes before the home token; the first found is
+        used, alone."""
+        cli = self.cli
+        top = os.path.join(self.tmp, "work")
+        deep = os.path.join(top, "a", "b")
+        os.makedirs(deep)
+        self.assertIn("taxes.txt", cli("find", "*.txt", cwd=deep))      # the home token: user-1
+        cli.save(os.path.join(top, ".pinakes-token"), make_token(self, "user-2", client="workstation-1"))
+        found = cli("find", "*.txt", cwd=deep)                          # the folder above: user-2
+        self.assertIn("diary.txt", found)
+        self.assertNotIn("taxes.txt", found)
+        cli.save(os.path.join(deep, ".pinakes-token"), make_token(self, "user-1", client="laptop-2"))
+        self.assertIn("taxes.txt", cli("find", "*.txt", cwd=deep))      # the nearest wins
+        self.assertIn("diary.txt", cli("find", "*.txt", cwd=os.path.join(top, "a")))
+        # none anywhere
+        os.remove(cli.home_token())
+        self.assertIn("pinakes: no token: make one on the account page", cli("find", "*", cwd=self.tmp, code=1))
+
+    def test_a_token_file_others_can_read_is_refused(self):
+        cli = self.cli
+        for mode in (0o640, 0o604, 0o660):
+            os.chmod(cli.home_token(), mode)
+            msg = cli("roots", cwd=self.tmp, code=1)
+            self.assertEqual(msg, "pinakes: %s can be read by others: chmod 600 it, and revoke the token if anyone "
+                                  "could have copied it" % cli.home_token())
+        os.chmod(cli.home_token(), 0o400)
+        self.assertIn("store", cli("roots", cwd=self.tmp))
+        # refused, not skipped: an open folder token doesn't fall through to the home token
+        folder = os.path.join(self.tmp, "open")
+        os.makedirs(folder)
+        cli.save(os.path.join(folder, ".pinakes-token"), "pinakes_whatever", mode=0o644)
+        self.assertIn("can be read by others", cli("roots", cwd=folder, code=1))
+        os.remove(os.path.join(folder, ".pinakes-token"))
+        os.makedirs(os.path.join(folder, ".pinakes-token"))
+        self.assertIn("is not a file", cli("roots", cwd=folder, code=1))
+
+    def test_a_revoked_or_wrong_token_and_the_address(self):
+        cli = self.cli
+        cli.save(cli.home_token(), "pinakes_not-a-token")
+        self.assertIn("a valid token is needed", cli("roots", cwd=self.tmp, code=1))
+        self.assertIn("may be revoked or expired", cli("roots", cwd=self.tmp, code=1))
+        # plain http only to this machine; no address at all
+        cli.save(cli.home_token(), make_token(self, "user-1", client="workstation-1"))
+        self.assertEqual(cli("--url", "http://192.0.2.10:8080", "roots", cwd=self.tmp, code=1),
+                         "pinakes: http://192.0.2.10:8080: the token would cross the network unencrypted; use https")
+        with open(cli.client_toml, "w") as f:
+            f.write("[client]\n")
+        self.assertIn("no catalog address", cli("roots", cwd=self.tmp, code=1))
+        self.assertIn("store", cli("--url", cli.url, "roots", cwd=self.tmp))
+        self.assertIn("can't reach the catalog", cli("--url", "http://127.0.0.1:9", "roots", cwd=self.tmp, code=1))
+
+    def test_no_database_access_on_the_client(self):
+        """The CLI's person commands need no database driver and no server config: psycopg can't be imported and
+        no server.toml exists, and the questions are still answered."""
+        script = ("import sys; sys.modules['psycopg'] = None; sys.path.insert(0, %r)\n"
+                  "from pinakes import cli\nsys.exit(cli.main(['find', '*.txt']))" % TOP)
+        env = dict(os.environ, PINAKES_CONFIG=os.path.join(self.tmp, "no-server.toml"))
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, cwd=self.tmp,
+                           timeout=60)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertIn("people/user-1/taxes.txt", r.stdout)
+        import pinakes.cli
+        with open(pinakes.cli.__file__) as f:
+            src = f.read()
+        self.assertNotIn("set_config", src)                             # no person set by the CLI itself
+
+    def test_the_example_client_config(self):
+        from pinakes import cli
+        cfg = cli.client_config(os.path.join(TOP, "client.example.toml"))
+        self.assertEqual(cfg, {"url": "https://pinakes.example.net"})
+        cli.Api(cfg["url"], "pinakes_x")                                # an address the client accepts

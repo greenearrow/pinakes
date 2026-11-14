@@ -170,7 +170,7 @@ def wheel(args):
         src = os.path.join(tmp, "src")
         shutil.copytree(os.path.join(HERE, "tests"), os.path.join(src, "tests"),
                         ignore=shutil.ignore_patterns("__pycache__"))
-        for f in ("QUERIES.md", "config.example.toml", "RELEASES.toml"):
+        for f in ("QUERIES.md", "config.example.toml", "client.example.toml", "RELEASES.toml"):
             shutil.copy(os.path.join(HERE, f), src)
         where = subprocess.run([py, "-c", "import pinakes; print(pinakes.__file__)"], cwd=src, check=True,
                                stdout=subprocess.PIPE, text=True).stdout.strip()

@@ -63,7 +63,7 @@ application code. A policy allows a row when:
 - the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
   check also writes the audit row).
 
-The web service (and today the CLI, until it uses the API) connect as one unprivileged role that is subject to these
+The web service (and `pinakes --versions`, on the catalog server) connect as one unprivileged role that is subject to these
 policies, and set the signed-in person for each transaction. This guards against bugs (a forgotten filter, a crafted
 query parameter). It does not guard against a compromised web service, which could claim to be anyone: that is the
 line where "root on the catalog server" begins.
@@ -132,8 +132,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 ## Tokens and the CLI (person tokens built; the rest planned)
 
 ROADMAP 34 to 40; 34, the API and person tokens, is built. Every person-facing function goes through the API in
-`pinakes-web`, and every client authenticates there; once the CLI uses it (35), no client holds a database
-credential.
+`pinakes-web`, and every client authenticates there; no client holds a database credential (`pinakes --versions`
+reads the database on the catalog server itself, until ops tokens, 39).
 
 | Token | Acts as | Can |
 |---|---|---|

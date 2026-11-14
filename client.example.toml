@@ -1,0 +1,7 @@
+# pinakes (the command) on a machine: ~/.config/pinakes/client.toml, or /etc/pinakes/client.toml for every user.
+# The token is not here: save it, alone, in ~/.config/pinakes/token (chmod 600), or as .pinakes-token in a folder.
+
+[client]
+url = "https://pinakes.example.net"     # the catalog's web UI; http only to this machine (localhost)
+# ca_file = "/etc/ssl/certs/example-net-ca.pem"   # a site's own CA, if the system's don't sign it
+# host = "laptop-1"                     # this machine's name in the catalog (default: [agent] host, else hostname)

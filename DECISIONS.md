@@ -100,7 +100,8 @@ were made while building, to keep going, and are open to change.
   no file holds any more: the contents policy only allowed content a visible file holds now. Contents referenced by a
   visible file's history are now visible too (still nobody else's).
 - **Two database roles, two DSNs:** `[database]` is the ingester's (`pinakes_ingest`, bypasses row-level security);
-  `[web]` is the web UI's and CLI's (`pinakes_app`, under it). The CLI takes `--as NAME` and never steps up.
+  `[web]` is the web UI's (`pinakes_app`, under it); the CLI used it too, with `--as NAME`, until it became the
+  API's client (ROADMAP 35).
 - **Passwords are scrypt** (`hashlib.scrypt`, standard library; N=2^15, r=8, about 32 MB), not argon2id, which would
   be a dependency. A sign-in for an unknown name checks a dummy hash, so both take the same time.
 - **TOTP is implemented in the standard library** (RFC 6238, checked against its test vector), with one step of
@@ -390,3 +391,11 @@ were made while building, to keep going, and are open to change.
   change; a token with no list sees every root but the protected ones, those added later included. The API is GET
   only until review and tag commands need writing (37). Its schema went into release 5, which wasn't cut yet, rather
   than a new protocol.
+- **`pinakes` as the API's client (ROADMAP 35).** Standard library only, so the bare package is the CLI on any
+  machine, Python 3.10 included. A token file is refused, not skipped, when it isn't a plain file of the user's own
+  readable by them alone: falling through to another token would answer as someone else without saying so, and a
+  token file planted by someone else in a folder would make the CLI answer as them. The address must be https, or
+  http to this machine only, so the token never crosses the network in the clear. `--as` goes until 36 makes it
+  ask for a secret. `pinakes --versions` stays a server-local command (no person, no token, the database through
+  `server.toml`) until ops tokens (39), so a site's deploy checks change once, when `pinakes releases` replaces it.
+  `backups` asks the API for the host's roots with their paths there and works out the folder's place locally.

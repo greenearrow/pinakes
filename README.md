@@ -47,8 +47,10 @@ Licence: GPL-3.0 ([LICENSE](LICENSE)).
 
 ## Installing
 
-A machine running pinakes needs only the package: `pip install pinakes` for an agent (`pinakes[agent310]` on Python
-3.10), `pinakes[server]` for the catalog server and web UI. No tests, test tools or extra PostgreSQL versions; the
+A machine running pinakes needs only the package: `pip install pinakes` for an agent or the `pinakes` command
+(`pinakes[agent310]` on Python 3.10), `pinakes[server]` for the catalog server and web UI. The command needs the
+catalog's address (`client.example.toml`) and a token from the web UI's account page in `~/.config/pinakes/token`
+(mode 600). No tests, test tools or extra PostgreSQL versions; the
 wheel holds the package alone, and `tools/test --wheel` fails if anything else gets in.
 
 ## Contributing
