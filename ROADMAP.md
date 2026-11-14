@@ -160,6 +160,62 @@ built (table above). In order:
     is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an
     active step-up, and every call in the audit.
 
+## Proposed (from a review of the whole project; not yet agreed)
+
+Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started.
+Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
+
+41. [Correctness; also stability] **A scrub: re-hash a rolling share of unchanged files.** A file is hashed again only
+    when its size, mtime or inode changes (DESIGN.md "Incremental"), so a disk that silently returns different bytes
+    is never noticed: the catalog goes on vouching for a hash the file no longer has, and "safe to delete" trusts it.
+    A scan option re-reads the least recently verified files up to a budget (bytes or minutes per night), and a
+    mismatch with unchanged size and mtime is reported as its own kind of change, never as an edit. Sits next to:
+    resumable scans, the mass-gone guard, the changes page. Value: high (it is what makes a hash a guarantee and not a
+    memory). Cost: M. Risk: I/O on a small server; a budget and the unit's own limits bound it. Needs: a `verified`
+    date per file in the agent's state. *Done when:* a test flips one byte of a file without touching its mtime and
+    the next scrub reports it; an edited file (mtime changed) is not reported as corruption; a protected root is
+    scrubbed like any other (hashes only); the budget is respected.
+42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
+    folder by folder before a disk fails. One report per device: how much has no copy on another disk, by owner and
+    by top folder, with the largest folders first, and the same per host ("if this machine burned"). On the operator
+    page as totals without names (10), and for a person, their own files with names. Sits next to: only-here and
+    safe-to-delete counting a copy only on another disk (5); the operator page (10). Value: high. Cost: S (the
+    queries exist; this is aggregation). Risk: none. *Done when:* a test with two devices and one backup root gives
+    the sizes at risk per device, an operator sees totals and no path, and a person sees only their own.
+43. [Feature] **Folders that are copies of each other.** `dupes` works file by file; when tidying, the question is
+    "is this folder the same as that one, or contained in it". From content hashes already stored: pairs of folders
+    whose file sets are equal, or where one holds everything the other does, with what differs. Sits next to:
+    `dupes`, lineage by identical content, linking same-disk duplicates (18). Value: high for a store that grew by
+    copying. Cost: M (a set comparison that must not be quadratic: compare folder digests built bottom-up). Risk: a
+    slow query on a large root; compute it at scan completion, as lineage rounds are. *Done when:* tests cover equal
+    folders, a subset, a folder with one edited file (reported with the difference), and empty folders ignored.
+44. [Operability; also correctness] **Extraction outcomes kept.** The first real run left several hundred images
+    with no EXIF and no way to tell "has none" from "the reader refused it" (13). Record per file and extractor:
+    ran, found nothing, refused with a reason code, or skipped for a missing dependency; counts on the operator
+    page. Sits next to: extractors (13), the schema registry (12). Value: medium. Cost: S. Risk: none; reason codes,
+    never file content. *Done when:* a test with a truncated image records a refusal, one without metadata records
+    "nothing", and the counts match.
+45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
+    files (paths, hashes, history, metadata, reviews), as CSV or JSON, through the API with the token's `read`
+    scope. A catalog that describes people's files should hand them their description. Sits next to: the JSON API
+    and person tokens (34), removing a person (23). Value: medium. Cost: S. Risk: row-level security must apply
+    exactly as for a query: the export is a query, not a dump. *Done when:* a test exports one person's records and
+    finds none of a second person's, sensitive fields only where `sensitive_visible()` allows, and the export in the
+    audit.
+46. [Operability] **A machine replaced under the same name.** When new hardware takes over a host's name with fewer
+    roots, the old machine's files in roots the new one doesn't have stay "present" until someone retires each root
+    by hand, and until then they count as copies. `retire-root` exists (DECISIONS.md); missing is noticing: a host
+    whose agent reports a different machine id or root set gets a line on the operator page and in `/health`, with
+    the command to run. Sits next to: check-in and releases, `/health`'s staleness, `retire-root`. Value: medium
+    (a wrong "there is another copy" is the catalog's worst answer). Cost: S. Risk: none (it reports; retiring stays
+    a command). *Done when:* a test with a host whose second scan lacks a root it had shows the warning, and
+    retiring the root clears it.
+47. [Feature] **Growth by folder over time.** History is kept to the day; "what grew this month, and where" is one
+    query away and listed in DESIGN.md's reports ("a root's growth") without an item here. Per root and top folder,
+    bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
+    medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
+    person under row-level security.
+
 ## Later, or a wish
 
 24. [Feature; also security] **MCP server** over the read-only queries (DESIGN.md "Wish"), on the API and tokens of
