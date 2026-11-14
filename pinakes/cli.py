@@ -20,7 +20,8 @@
                                        schema is applied, and each agent's last check-in (release, protocol, locked
                                        or not, newest batch, refusals, the last time its batch numbering went back).
                                        It reads server.toml and the database and needs no person or token.
-  Add --json for JSON.
+  Add --json for JSON, --as NAME to ask as another person (their password and second factor, or a token of theirs,
+  at a hidden prompt; the command then sees only what they may see).
 
 FILE, FOLDER and PATH are a path here (none: the current folder) or ROOT:PATH; a path that exists here is taken
 as one.
@@ -36,6 +37,7 @@ shows only what that person may see, and never steps up.
 
 import argparse
 import datetime
+import getpass
 import json
 import os
 import socket
@@ -52,6 +54,7 @@ from .config import tomllib
 CLIENT_CONFIGS = ("~/.config/pinakes/client.toml", "/etc/pinakes/client.toml")
 HOME_TOKEN = "~/.config/pinakes/token"
 FOLDER_TOKEN = ".pinakes-token"
+TOKEN_PREFIX = "pinakes_"               # what the web UI's tokens begin with (web.TOKEN_PREFIX)
 LOCAL = ("localhost", "127.0.0.1", "::1")
 SHOW = 50
 TIMEOUT = 60
@@ -133,8 +136,19 @@ class Api:
 
     def get(self, call, **args):
         q = urllib.parse.urlencode({k: v for k, v in args.items() if v is not None and v is not False})
-        req = urllib.request.Request(self.base + call + ("?" + q if q else ""),
-                                     headers={"Authorization": "Bearer " + self.token, "Accept": "application/json"})
+        return self._ask(urllib.request.Request(self.base + call + ("?" + q if q else ""), headers=self._headers()))
+
+    def post(self, call, body=None):
+        return self._ask(urllib.request.Request(self.base + call, data=json.dumps(body or {}).encode(), method="POST",
+                                                headers=dict(self._headers(), **{"Content-Type": "application/json"})))
+
+    def _headers(self):
+        h = {"Accept": "application/json"}
+        if self.token:
+            h["Authorization"] = "Bearer " + self.token
+        return h
+
+    def _ask(self, req):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT, context=self.context) as r:
                 return json.load(r)
@@ -143,7 +157,7 @@ class Api:
                 msg = json.load(e).get("error") or e.reason
             except ValueError:
                 msg = e.reason
-            if e.code == 401:
+            if e.code == 401 and self.token:
                 msg += "; the token may be revoked or expired: make a new one on the account page"
             raise Failed(msg)
         except urllib.error.URLError as e:
@@ -379,6 +393,26 @@ def run(api, a, cfg):
     _print(got["rows"], a.json)
 
 
+def open_api(a, cfg):
+    """(the API, whether it is a --as session to end). Without --as, the token found here. With --as NAME, only
+    what NAME's secret opens, asked for at a hidden prompt and never written down: a token of theirs, checked to be
+    theirs, or their password (and second factor) for a session of minutes. The caller's own token isn't read: the
+    command sees exactly NAME's view, never the two added up."""
+    url, ca = a.url or cfg.get("url"), cfg.get("ca_file")
+    if not a.person:
+        return Api(url, find_token()[0], ca), False
+    Api(url, None, ca)                          # the address checked before a secret is asked for
+    secret = getpass.getpass("%s's password, or a token of theirs: " % a.person).strip()
+    if secret.startswith(TOKEN_PREFIX):
+        api = Api(url, secret, ca)
+        if api.get("whoami")["person"] != a.person:
+            raise Failed("that token is not %s's" % a.person)
+        return api, False
+    code = getpass.getpass("%s's second-factor code (empty if they have none): " % a.person).strip()
+    got = Api(url, None, ca).post("session", {"name": a.person, "password": secret, "code": code})
+    return Api(url, got["token"], ca), True
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pinakes", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
@@ -389,6 +423,8 @@ def main(argv=None):
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--host", help="changes: only this host's; backups: this machine's name in the catalog")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
+    ap.add_argument("--as", dest="person", metavar="NAME",
+                    help="as this person: asks for their password (and second factor) or a token of theirs")
     ap.add_argument("--versions", action="store_true", help="on the catalog server: releases and protocols of the "
                                                            "server and each agent")
     ap.add_argument("--config", default=os.environ.get("PINAKES_CONFIG", "/etc/pinakes/server.toml"),
@@ -396,20 +432,33 @@ def main(argv=None):
     a = ap.parse_intermixed_args(argv)          # options before or after the command and its argument
     try:
         if a.versions:
-            if a.cmd:
-                ap.error("--versions takes no command")
+            if a.cmd or a.person:
+                ap.error("--versions takes no command and no --as")
             versions(a.config, a.json)
             return 0
         cfg = client_config()
-        if not a.cmd:
-            try:
-                summary(Api(a.url or cfg.get("url"), find_token()[0], cfg.get("ca_file")), cfg, a.days, a.host)
-            except Failed as e:                 # outside a root, or not set up yet: how to use it, and why
-                ap.print_usage()
-                sys.exit("pinakes: %s" % e)
-            return 0
-        token, _ = find_token()
-        run(Api(a.url or cfg.get("url"), token, cfg.get("ca_file")), a, cfg)
+        try:
+            api, session = open_api(a, cfg)
+        except Failed:
+            if a.cmd:
+                raise
+            ap.print_usage()                    # bare pinakes, not set up yet: how to use it, and why
+            raise
+        try:
+            if a.cmd:
+                run(api, a, cfg)
+            else:
+                try:
+                    summary(api, cfg, a.days, a.host)
+                except NotInRoot:               # outside a root: how to use it, and why
+                    ap.print_usage()
+                    raise
+        finally:
+            if session:
+                try:
+                    api.post("session/end")
+                except Failed:
+                    pass                        # it ends by itself in minutes
     except Failed as e:
         sys.exit("pinakes: %s" % e)
     return 0

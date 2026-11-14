@@ -406,3 +406,10 @@ were made while building, to keep going, and are open to change.
   every root keeps its old meaning, everything, and says so in its first line; `--host` stays its filter there, so
   a folder is found by this machine's configured name. Bare `pinakes` outside a root, or before a token is set up,
   prints usage and the reason, and exits 1.
+- **`--as` (ROADMAP 36).** One prompt takes either a token of the person's (it begins `pinakes_`) or their
+  password; a password then asks for the second-factor code, which the server checks only if the person has one,
+  so the answer never tells a guesser that the password alone was right. The session is a token like any other
+  (`cli_session`), so row-level security, the token's roots, no step-up and the call log all hold without new code;
+  it is read only, for every root but the protected ones, because a person signing in for someone else's view at a
+  shell shouldn't carry their protected roots along. It lasts 10 minutes and the command revokes it at its end; if
+  the command dies first, the minutes run out. The sign-in is a POST; the queries stay GET.

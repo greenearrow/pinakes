@@ -16,6 +16,10 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   changes?days=N&host=NAME&loc=ROOT:PATH                  meta?field=SCHEMA.FIELD&value=VALUE
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
+  POST session {"name", "password", "code"}   pinakes --as: the person's password, and their second factor if
+                                  they have one, for a read-only token of minutes ({"token", "until"}); limited
+                                  like the web sign-in, and recorded for the person
+  POST session/end                that token, revoked (its command is done)
   limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
   {"error": "..."} with 400, 401, 403, 404 or 429.
 
@@ -31,7 +35,7 @@ import datetime
 import functools
 import hashlib
 import json
-from urllib.parse import urlencode
+from urllib.parse import unquote, urlencode
 import os
 import secrets
 import sys
@@ -50,6 +54,7 @@ LOGIN_WINDOW = 15 * 60   # seconds
 API = "/api/v1/"
 SCOPES = ("read", "review", "tag")      # what a token may be given (the database checks the same list)
 TOKEN_PREFIX = "pinakes_"
+CLI_SESSION_MINUTES = 10  # pinakes --as: a session lasts this long at most; the command ends it sooner
 
 
 class Pager:
@@ -290,6 +295,8 @@ def create_app(cfg, connect=None):
         """Authenticate an API call by its bearer token, before anything else: the database checks the token, sets
         its person for this transaction and records the call. A refused token counts toward the address's limit."""
         g.person, g.api, g.stepped_up, g.roles, g.scopes = None, True, False, [], ()
+        if request.path == API + "session" and request.method == "POST":
+            return                      # signing in: by password, with no token yet
         addr = request.remote_addr or "?"
         recent = [t for t in api_failures.get(addr, []) if t > time.time() - LOGIN_WINDOW]
         if len(recent) >= LOGIN_LIMIT:
@@ -299,7 +306,7 @@ def create_app(cfg, connect=None):
         if kind.lower() == "bearer" and secret.strip():
             call = request.path[len(API):]
             if request.query_string:
-                call += "?" + request.query_string.decode("utf-8", "replace")
+                call += "?" + unquote(request.query_string.decode("utf-8", "replace"))     # readable
             row = g.db.execute("SELECT * FROM pinakes.begin_token_call(%s, %s)",
                                (hashlib.sha256(secret.strip().encode()).digest(), call)).fetchone()
         if not row:
@@ -349,6 +356,35 @@ def create_app(cfg, connect=None):
         if not f:
             abort(404, "no file you can see there")
         return f["file_id"]
+
+    @app.route(API + "session", methods=["POST"])
+    def api_sign_in():
+        """pinakes --as NAME: the same checks as the web sign-in, and the second factor too when the person has one;
+        a failure counts toward the address's sign-in limit. The answer is a token for one command."""
+        addr = request.remote_addr or "?"
+        recent = [t for t in failures.get(addr, []) if t > time.time() - LOGIN_WINDOW]
+        if len(recent) >= LOGIN_LIMIT:
+            return api_answer({"error": "too many attempts; wait a few minutes"}, 429)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        name, password, code = (str(body.get(k) or "") for k in ("name", "password", "code"))
+        row = g.db.execute("SELECT * FROM pinakes.login_material(%s)", (name,)).fetchone()
+        ok = auth.check_password(password, row[1] if row and row[1] else auth.DUMMY_HASH) and bool(row and row[1])
+        if ok:
+            g.db.execute("SELECT set_config('pinakes.person', %s, true)", (str(row[0]),))
+            if row[2]:
+                ok = auth.check_totp(g.db.execute("SELECT pinakes.my_totp_secret()").fetchone()[0], code)
+        if not ok:
+            failures[addr] = recent + [time.time()]
+            return api_answer({"error": "that name, password and code don't match"}, 401)
+        secret = TOKEN_PREFIX + secrets.token_urlsafe(32)
+        until = g.db.execute("SELECT pinakes.begin_cli_session(%s, %s, %s)",
+                             (hashlib.sha256(secret.encode()).digest(), CLI_SESSION_MINUTES, addr)).fetchone()[0]
+        return api_answer({"token": secret, "until": until})
+
+    @app.route(API + "session/end", methods=["POST"])
+    def api_sign_out():
+        return api_answer({"ended": bool(g.db.execute("SELECT pinakes.end_cli_session()").fetchone()[0])})
 
     @api("whoami")
     def whoami():

@@ -148,9 +148,12 @@ reads the database on the catalog server itself, until ops tokens, 39).
   the current folder or one above it, else `~/.config/pinakes/token`; it refuses a token file others can read. A
   token in a folder is readable by whoever can read the folder, and travels with its backups: revoking it is the
   remedy.
-- `--as NAME` signs in as that person (their token, or their password and second factor, rate-limited like the web
-  sign-in). The session is only theirs, is never written to disk, never steps up, and shows on their "Access to
-  your records" page.
+- `--as NAME` signs in as that person, at a hidden prompt: a token of theirs, or their password and, if they have
+  one, their second factor (more than the web sign-in asks: a password typed into a script is easier to take than
+  one typed into a browser). Failures count in the web sign-in's own per-address limit. The answer is a `read`
+  token of 10 minutes for every root but the protected ones, held in memory, revoked when the command ends and never
+  listed among the person's tokens; the caller's own token isn't read. It never steps up, and the person sees the
+  sign-in, its address and each call on their "Access to your records" page.
 - Under a token, row-level security also holds files to the token's roots, and what depends on files (contents,
   history, lineage, metadata) follows. So does a copy: a token that can't see a root doesn't count the copies there,
   and `only-here` or `safe-to-delete` through it can only err toward "not safe".

@@ -16,7 +16,8 @@ CREATE TABLE tokens (
     created     timestamptz NOT NULL DEFAULT now(),
     expires     timestamptz,                                -- NULL: until revoked
     revoked     timestamptz,
-    last_used   timestamptz
+    last_used   timestamptz,
+    cli_session boolean NOT NULL DEFAULT false              -- pinakes --as: minutes long, ended by its command
 );
 
 -- The token this transaction acts by (set only by begin_token_call), or NULL: a web session or the CLI.
@@ -120,7 +121,7 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
            CASE WHEN t.roots IS NULL THEN NULL
                 ELSE (SELECT array_agg(r.label ORDER BY r.label) FROM roots r WHERE r.root_id = ANY (t.roots)) END,
            t.created, t.expires, t.revoked, t.last_used
-    FROM tokens t WHERE t.person_id = current_person() ORDER BY t.revoked NULLS FIRST, t.created DESC
+    FROM tokens t WHERE t.person_id = current_person() AND NOT t.cli_session ORDER BY t.revoked NULLS FIRST, t.created DESC
 $$;
 
 -- Revoke one of the current person's own tokens, from a web session; audited. False if it isn't theirs or is
@@ -141,17 +142,45 @@ BEGIN
     RETURN true;
 END $$;
 
+-- pinakes --as NAME (ROADMAP 36): once the application has checked NAME's password (and second factor, if they have
+-- one) and set them as the current person, a token for that one command: `read` only, every root but the protected
+-- ones, minutes long, not listed among their tokens. Audited for the person as a sign-in from the CLI.
+CREATE FUNCTION begin_cli_session(secret bytea, minutes int, addr text) RETURNS timestamptz
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
+DECLARE
+    me int := current_person();
+    until timestamptz := now() + make_interval(mins => least(greatest(minutes, 1), 60));
+BEGIN
+    IF me IS NULL THEN RAISE EXCEPTION 'no person set'; END IF;
+    IF current_token() IS NOT NULL THEN RAISE EXCEPTION 'a token can''t sign in'; END IF;
+    INSERT INTO tokens (person_id, client, secret_sha256, scopes, expires, cli_session)
+    VALUES (me, 'pinakes --as', secret, '{read}', until, true);
+    INSERT INTO audit (actor, action, affects, detail)
+    VALUES (me, 'cli_sign_in', ARRAY[me], jsonb_build_object('from', left(addr, 100), 'until', until));
+    RETURN until;
+END $$;
+
+-- The end of a pinakes --as command: the session token this call acts by is revoked.
+CREATE FUNCTION end_cli_session() RETURNS boolean
+LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
+    UPDATE tokens SET revoked = now() WHERE token_id = current_token() AND cli_session AND revoked IS NULL
+    RETURNING true
+$$;
+
 DROP POLICY files_visible ON files;
 -- under a token, only the roots it may see (ROADMAP 34); token_roots() is evaluated once per query
 CREATE POLICY files_visible ON files FOR SELECT USING (acl_id = ANY (visible_acls())
     AND ((SELECT token_roots()) IS NULL OR root_id = ANY ((SELECT token_roots())::int[])));
 
 GRANT EXECUTE ON FUNCTION current_token(), token_roots(), begin_token_call(bytea, text),
-                          make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int) TO pinakes_app;
+                          make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int),
+                          begin_cli_session(bytea, int, text), end_cli_session() TO pinakes_app;
 REVOKE ALL ON tokens FROM PUBLIC;
 REVOKE ALL ON FUNCTION current_token(), token_roots(), begin_token_call(bytea, text),
-                       make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int) FROM PUBLIC;
+                       make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int),
+                       begin_cli_session(bytea, int, text), end_cli_session() FROM PUBLIC;
 GRANT SELECT, INSERT, UPDATE, DELETE ON tokens TO pinakes_ingest;
 GRANT USAGE ON SEQUENCE tokens_token_id_seq TO pinakes_ingest;
 GRANT EXECUTE ON FUNCTION current_token(), token_roots(), begin_token_call(bytea, text),
-                          make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int) TO pinakes_ingest;
+                          make_token(text, bytea, text[], int[], int), my_tokens(), revoke_token(int),
+                          begin_cli_session(bytea, int, text), end_cli_session() TO pinakes_ingest;

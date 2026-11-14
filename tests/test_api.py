@@ -186,11 +186,13 @@ class TestApi(ServerCase):
         self.assertEqual(c.get("/file/%d" % diary).status_code, 200)        # the web session is stepped up
         self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
-        # no API route changes anything: GET only
+        # no API route changes anything: GET only, but for signing in and out (pinakes --as)
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
+        posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
+        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end"})
         for rule in api:
-            self.assertEqual(rule.methods - {"HEAD", "OPTIONS"}, {"GET"}, rule.rule)
+            self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
         with self.app_conn() as conn:
             row = conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
@@ -262,7 +264,8 @@ class TestApi(ServerCase):
                 "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
                 " FROM information_schema.table_privileges "
                 " WHERE table_schema = 'pinakes' AND table_name = 'tokens')")
-        new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token"]
+        new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token",
+               "begin_cli_session", "end_cli_session"]
         args = {"fns": new + ["stepped_up", "begin_step_up"]}
         with admin_conn(self.db) as c:
             fresh = c.execute(defs, args).fetchone()
@@ -277,7 +280,8 @@ class TestApi(ServerCase):
                       "AS $$ SELECT now() $$")
             c.execute("DROP FUNCTION pinakes.token_roots(), pinakes.begin_token_call(bytea, text), "
                       "pinakes.make_token(text, bytea, text[], int[], int), pinakes.my_tokens(), "
-                      "pinakes.revoke_token(int), pinakes.current_token() CASCADE")
+                      "pinakes.revoke_token(int), pinakes.begin_cli_session(bytea, int, text), "
+                      "pinakes.end_cli_session(), pinakes.current_token() CASCADE")
             c.execute("DROP TABLE pinakes.tokens")
             self.assertNotEqual(c.execute(defs, args).fetchone(), fresh)
             with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
@@ -297,6 +301,7 @@ class CliRun:
         self.case = case
         cfg = server_config.loads('[web]\nsecure_cookies = false\nsession_key = "test-key"\n')
         app = web.create_app(cfg, connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=case.db))
+        self.app = app
         self.server = make_server("127.0.0.1", 0, app, threaded=True)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = "http://127.0.0.1:%d" % self.server.server_port
@@ -577,3 +582,107 @@ class TestCliHere(ServerCase):
         # outside every root: how to use it, and why not here
         self.assertIn("is not inside a root that server-1 reports", cli(cwd=self.outside, code=1))
         self.assertTrue(cli.out.startswith("usage: pinakes "), cli.out)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliAs(ServerCase):
+    """pinakes --as NAME (ROADMAP 36): signs in as NAME with their secret, for one command, seeing only their view."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
+        self.scan("server-1", "store")
+        self.secret = auth.new_totp_secret()
+        for name, totp in (("user-1", self.secret), ("user-2", None)):
+            pid = self.q("SELECT person_id FROM pinakes.people WHERE name = %s", (name,))[0][0]
+            self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash, totp_secret) "
+                              "VALUES (%s, %s, %s)", (pid, auth.hash_password(PASSWORDS[name]), totp))
+        self.cli = CliRun(self, "user-1")                               # the caller's own token: user-1's
+        self.addCleanup(self.cli.close)
+
+    def as_(self, *args, answers, code=0):
+        """Run pinakes with --as, the hidden prompts answered in turn; (output, the prompts asked)."""
+        with mock.patch("getpass.getpass", side_effect=list(answers)) as asked:
+            out = self.cli(*args, cwd=self.tmp, code=code)
+        return out, [c.args[0] for c in asked.call_args_list]
+
+    def test_the_session_sees_exactly_the_named_persons_files(self):
+        before = sorted(os.listdir(self.cli.home))
+        out, asked = self.as_("--as", "user-2", "find", "*.txt", answers=[PASSWORDS["user-2"], ""])
+        self.assertEqual(asked, ["user-2's password, or a token of theirs: ",
+                                 "user-2's second-factor code (empty if they have none): "])
+        self.assertIn("people/user-2/diary.txt", out)
+        self.assertIn("people/user-1/shared-with-2/plan.txt", out)     # shared with user-2
+        self.assertNotIn("taxes.txt", out)                              # the caller's own, not added
+        self.assertEqual(sorted(os.listdir(self.cli.home)), before)     # nothing written down
+        # the session: read only, minutes long, ended by its command, not among the person's tokens
+        self.assertEqual(self.q("SELECT p.name, t.scopes, t.expires <= now() + interval '10 minutes', "
+                                "t.revoked IS NOT NULL FROM pinakes.tokens t JOIN pinakes.people p USING (person_id) "
+                                "WHERE t.cli_session"), [("user-2", ["read"], True, True)])
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            c.execute("SELECT set_config('pinakes.person', %s, true)",
+                      (str(self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]),))
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.my_tokens()").fetchone()[0], 0)
+
+    def test_the_callers_own_token_is_not_read(self):
+        os.chmod(self.cli.home_token(), 0o644)                          # would be refused if it were read
+        self.assertIn("can be read by others", self.cli("roots", cwd=self.tmp, code=1))
+        out, _ = self.as_("--as", "user-2", "roots", answers=[PASSWORDS["user-2"], ""])
+        self.assertIn("store", out)
+
+    def test_the_second_factor_when_the_person_has_one(self):
+        no_code, _ = self.as_("--as", "user-1", "roots", answers=[PASSWORDS["user-1"], ""], code=1)
+        self.assertEqual(no_code, "pinakes: that name, password and code don't match")
+        out, _ = self.as_("--as", "user-1", "find", "*.txt", answers=[PASSWORDS["user-1"], auth.totp(self.secret)])
+        self.assertIn("taxes.txt", out)
+
+    def test_a_wrong_secret_is_refused_and_limited_like_the_web_sign_in(self):
+        for name, pw in (("user-2", "wrong"), ("nobody", "whatever"), ("user-1", PASSWORDS["user-2"])):
+            out, _ = self.as_("--as", name, "roots", answers=[pw, ""], code=1)
+            self.assertEqual(out, "pinakes: that name, password and code don't match")
+        for _ in range(web.LOGIN_LIMIT - 3):
+            self.as_("--as", "user-2", "roots", answers=["wrong", ""], code=1)
+        out, _ = self.as_("--as", "user-2", "roots", answers=[PASSWORDS["user-2"], ""], code=1)
+        self.assertEqual(out, "pinakes: too many attempts; wait a few minutes")
+        # the web sign-in from that address is held by the same count
+        c = self.cli.app.test_client()
+        page = c.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        r = c.post("/login", data={"csrf": csrf, "name": "user-2", "password": PASSWORDS["user-2"]},
+                   environ_base={"REMOTE_ADDR": "127.0.0.1"})
+        self.assertEqual(r.status_code, 429)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.tokens WHERE cli_session")[0][0], 0)
+
+    def test_a_token_of_theirs_and_one_that_isnt(self):
+        theirs = make_token(self, "user-2", client="laptop-2")
+        out, asked = self.as_("--as", "user-2", "find", "*.txt", answers=[theirs])
+        self.assertEqual(len(asked), 1)                                 # no second factor asked for a token
+        self.assertIn("diary.txt", out)
+        mine = make_token(self, "user-1", client="laptop-3")
+        out, _ = self.as_("--as", "user-2", "find", "*.txt", answers=[mine], code=1)
+        self.assertEqual(out, "pinakes: that token is not user-2's")
+
+    def test_the_person_sees_the_sign_in_and_it_never_steps_up(self):
+        # user-1, an administrator, in a web step-up: --as user-1 still sees only their own
+        c = self.cli.app.test_client()
+        page = c.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        c.post("/login", data={"csrf": csrf, "name": "user-1", "password": PASSWORDS["user-1"]})
+        csrf = re.search(r'name="csrf" value="([^"]+)"', c.get("/step-up").get_data(as_text=True)).group(1)
+        self.assertEqual(c.post("/step-up", data={"csrf": csrf, "reason": "checking",
+                                                  "code": auth.totp(self.secret)}).status_code, 302)
+        self.assertEqual(c.get("/file/%d" % self.file("store", "people/user-2/diary.txt")).status_code, 200)
+        out, _ = self.as_("--as", "user-1", "find", "*.txt", answers=[PASSWORDS["user-1"], auth.totp(self.secret)])
+        self.assertNotIn("diary.txt", out)
+        # user-2's page shows the sign-in from the CLI, and what the session asked
+        self.as_("--as", "user-2", "find", "diary*", answers=[PASSWORDS["user-2"], ""])
+        c2 = self.cli.app.test_client()
+        page = c2.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        c2.post("/login", data={"csrf": csrf, "name": "user-2", "password": PASSWORDS["user-2"]})
+        access = c2.get("/access").get_data(as_text=True)
+        self.assertIn("cli sign in", access)
+        self.assertIn("from: 127.0.0.1", access)
+        self.assertIn("call: find?q=diary*; token: pinakes --as", access)
