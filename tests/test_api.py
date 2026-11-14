@@ -13,7 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from tests.test_server import PGHOST, UPGRADES, ServerCase, admin_conn, psycopg
+from pinakes.ingest import Ingester
+from tests.test_server import PGHOST, SERVER, UPGRADES, ServerCase, admin_conn, psycopg
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -190,7 +191,7 @@ class TestApi(ServerCase):
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
         posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
-        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end"})
+        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review"})
         for rule in api:
             self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
@@ -266,7 +267,7 @@ class TestApi(ServerCase):
                 " WHERE table_schema = 'pinakes' AND table_name = 'tokens')")
         new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token",
                "begin_cli_session", "end_cli_session"]
-        args = {"fns": new + ["stepped_up", "begin_step_up"]}
+        args = {"fns": new + ["stepped_up", "begin_step_up", "mark_changes"]}
         with admin_conn(self.db) as c:
             fresh = c.execute(defs, args).fetchone()
             # back to the catalog before it: the old policy, step-up functions and no tokens
@@ -539,9 +540,7 @@ class TestCliHere(ServerCase):
         self.assertNotIn("plan.txt", cli("only-here", "taxes.txt", cwd=mine))
         for cmd in ("where", "history", "versions", "lineage"):
             self.assertEqual(cli(cmd, cwd=mine, code=1), "pinakes: pinakes %s needs a file; . is a folder" % cmd)
-        self.assertEqual(cli("changes", "taxes.txt", cwd=mine, code=1),
-                         "pinakes: pinakes changes needs a folder; taxes.txt is a file: `pinakes history` shows its "
-                         "changes")
+        self.assertIn("people/user-1/taxes.txt", cli("changes", "taxes.txt", cwd=mine))      # a file's own
         self.assertEqual(cli("where", "nothing.txt", cwd=mine, code=1),
                          "pinakes: nothing.txt is neither a path here nor ROOT:PATH")
 
@@ -686,3 +685,129 @@ class TestCliAs(ServerCase):
         self.assertIn("cli sign in", access)
         self.assertIn("from: 127.0.0.1", access)
         self.assertIn("call: find?q=diary*; token: pinakes --as", access)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliReview(ServerCase):
+    """pinakes review intended|restore [PATH] (ROADMAP 37): from inside a folder, through mark_changes() and its
+    rules, with the token's review scope and roots."""
+
+    U = "people/user-1/"
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER + """
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/team"
+person = "user-2"
+as = "co-owner"
+""")
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        for rel in ("cleanup/a.txt", "cleanup/b.txt", "cleanup/moved.txt", "team/t.txt", "shared-with-2/plan.txt"):
+            self.write("server-1", "store", self.U + rel, b"content " + rel.encode())
+        self.write("laptop-1", "downloads", "d.txt", b"downloads")
+        self.scan("server-1", "store")
+        self.scan("laptop-1", "downloads")
+        for rel in ("cleanup/a.txt", "cleanup/b.txt", "team/t.txt", "shared-with-2/plan.txt"):
+            os.remove(self.path("server-1", "store", self.U + rel))
+        os.makedirs(self.path("server-1", "store", self.U + "kept"))
+        os.rename(self.path("server-1", "store", self.U + "cleanup/moved.txt"),
+                  self.path("server-1", "store", self.U + "kept/moved.txt"))
+        os.remove(self.path("laptop-1", "downloads", "d.txt"))
+        self.scan("server-1", "store")
+        self.scan("laptop-1", "downloads")
+        self.folder = self.path("server-1", "store", self.U + "cleanup")
+        self.cli = None
+
+    def as_(self, person, scopes=("read", "review"), roots=None):
+        if self.cli:
+            self.cli.close()
+        self.cli = CliRun(self, person, scopes, roots)
+        self.addCleanup(lambda: self.cli and self.cli.close())
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')
+        return self.cli
+
+    def marks(self):
+        return dict(self.q("SELECT coalesce(hi.new_relpath, hi.old_relpath), m.mark FROM pinakes.review_marks m "
+                           "JOIN pinakes.history hi USING (history_id)"))
+
+    def test_the_owner_marks_from_inside_the_folder_once_asked(self):
+        cli = self.as_("user-1")
+        with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", return_value="n"):
+            out = cli("review", "intended", cwd=self.folder)
+        self.assertIn("3 unreviewed gone file(s) and move(s) under store:people/user-1/cleanup", out)
+        self.assertTrue(out.endswith("not marked\n"), out)
+        self.assertEqual(self.marks(), {})
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+                mock.patch("builtins.input", return_value="y") as asked:
+            out = cli("review", "intended", cwd=self.folder)
+        self.assertEqual(asked.call_args.args[0], "Mark these 3 as intended? [y/N] ")
+        self.assertIn("marked 3 of 3 as intended", out)
+        self.assertEqual(self.marks(), {self.U + "cleanup/a.txt": "intended", self.U + "cleanup/b.txt": "intended",
+                                        self.U + "kept/moved.txt": "intended"})
+        self.assertEqual(cli("review", "intended", cwd=self.folder),
+                         "nothing to review under store:people/user-1/cleanup in the last 7 days\n")
+        # not asked without a terminal unless --yes; one file by its ROOT:PATH (gone: not a path here any more)
+        self.assertIn("add --yes", cli("review", "restore", "store:" + self.U + "team/t.txt", code=1))
+        out = cli("review", "restore", "store:" + self.U + "team/t.txt", "--yes", cwd=self.folder)
+        self.assertIn("marked 1 of 1 as restore", out)
+        self.assertEqual(self.marks()[self.U + "team/t.txt"], "restore")
+        # shown on the web, on the restore list
+        c = cli.app.test_client()
+        page = c.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) SELECT person_id, %s "
+                          "FROM pinakes.people WHERE name = 'user-1'", (auth.hash_password(PASSWORDS["user-1"]),))
+        c.post("/login", data={"csrf": csrf, "name": "user-1", "password": PASSWORDS["user-1"]})
+        self.assertIn(self.U + "team/t.txt", c.get("/reports/restore").get_data(as_text=True))
+        changes = c.get("/reports/changes?loc=store:" + self.U + "cleanup/").get_data(as_text=True)
+        self.assertIn("intended", changes)
+
+    def test_a_co_owner_marks_and_a_reader_cant(self):
+        cli = self.as_("user-2")
+        team = "store:" + self.U + "team/"
+        out = cli("review", "intended", team, "--yes", cwd=self.tmp)
+        self.assertIn("marked 1 of 1 as intended", out)                 # co-owner of team/
+        self.assertEqual(self.marks(), {self.U + "team/t.txt": "intended"})
+        shared = "store:" + self.U + "shared-with-2/"
+        out = cli("review", "intended", shared, "--yes", cwd=self.tmp)  # a reader sees the gone file, can't mark it
+        self.assertIn("marked 0 of 1 as intended", out)
+        self.assertIn("not yours or co-owned", out)
+        self.assertNotIn(self.U + "shared-with-2/plan.txt", self.marks())
+
+    def test_a_token_without_the_scope_or_outside_its_roots(self):
+        cli = self.as_("user-1", scopes=("read",))
+        self.assertEqual(cli("review", "intended", "--yes", cwd=self.folder, code=1),
+                         "pinakes: this token doesn't have the review scope")
+        self.assertEqual(self.marks(), {})
+        # limited to downloads: the store's changes are out of sight, and their ids out of reach
+        ids = [r[0] for r in self.q("SELECT history_id FROM pinakes.history WHERE kind = 'gone' "
+                                    "AND old_relpath LIKE %s", (self.U + "cleanup/%",))]
+        cli = self.as_("user-1", roots=[self.q("SELECT root_id FROM pinakes.roots WHERE label = 'downloads'")[0][0]])
+        self.assertIn("not inside a root that server-1 reports", cli("review", "intended", "--yes", cwd=self.folder,
+                                                                     code=1))
+        self.assertEqual(cli("review", "intended", "store:" + self.U + "cleanup/", "--yes", cwd=self.tmp),
+                         "nothing to review under store:people/user-1/cleanup/ in the last 7 days\n")
+        status, body = self.post(cli, "review", {"mark": "intended", "ids": ids})
+        self.assertEqual((status, body), (200, {"asked": 2, "marked": 0}))
+        self.assertEqual(self.marks(), {})
+        out = cli("review", "intended", "downloads:", "--yes", cwd=self.tmp)
+        self.assertIn("marked 1 of 1 as intended", out)                 # its own root, yes
+        # and the database itself refuses a token without the scope, whatever the application asks
+        secret = make_token(self, "user-1", scopes=("read",), client="workstation-1")
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            c.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')", (hashlib.sha256(secret.encode()).digest(),))
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "review scope"):
+                c.execute("SELECT pinakes.mark_changes(%s, 'intended')", (ids,))
+
+    def post(self, cli, call, body):
+        import urllib.request
+        with open(cli.home_token()) as f:
+            token = f.read().strip()
+        req = urllib.request.Request(cli.url + "/api/v1/" + call, data=json.dumps(body).encode(), method="POST",
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, json.load(r)

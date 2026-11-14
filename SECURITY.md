@@ -122,7 +122,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - Review marks (a gone file or a move marked intended or restore) are records about files: seen only with the file
   (row-level security), written only through `mark_changes()`, which lets the file's owner and co-owners mark it, an
   administrator only in a step-up (audited for the owners), and nobody else; readers and annotators can't. The web
-  role has no write on the table itself.
+  role has no write on the table itself. Under a token (`pinakes review`), `mark_changes()` also needs the token's
+  `review` scope and skips changes outside its roots.
 - `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
   batch, last complete scan and whether it is stale. It names hosts and nothing else (no root, person or file, no
   error text), through `pinakes_app` with no person set, so row-level security would hide any file it touched. A

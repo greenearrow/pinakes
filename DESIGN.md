@@ -347,13 +347,15 @@ pinakes dupes [ROOT:PATH]              duplicates, largest first
 pinakes history FILE                   what happened to a file
 pinakes lineage FILE                   where this file came from and what came from it, on every host
 pinakes versions FILE                  each known version (hash, dates) and which backup copies hold it
-pinakes changes [FOLDER] [--days N] [--host]   what changed
+pinakes changes [PATH] [--days N] [--host]     what changed
+pinakes review intended|restore [PATH]  mark the gone files and moves under it reviewed (shown, then confirmed)
 pinakes meta SCHEMA.FIELD=VALUE        files by metadata
 pinakes stale                          hosts whose last scan is older than their schedule allows
 ```
 
 FILE, FOLDER and PATH are a path on this machine (none: the current folder) or ROOT:PATH; a folder report given a
-file answers for the file. Read-only, scoped to what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
+file answers for the file. Read-only but for `review`, which marks only what the caller owns or co-owns; scoped to
+what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
 [QUERIES.md](QUERIES.md).
 
 ## Wish: an MCP server

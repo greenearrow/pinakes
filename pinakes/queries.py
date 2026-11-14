@@ -244,12 +244,12 @@ _REVIEW_WHERE = """(%s::text IS NULL OR (%s = 'reviewed' AND m.history_id IS NOT
 def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None,
             review=None, until=None, elsewhere=False):
     """History in the last `days` (and up to `until`, a date), optionally only some kinds, only what touched a folder
-    (ROOT:PATH; a move counts at both ends), only unreviewed or reviewed changes, and only gone files whose last
-    content is still in another root you can see, not a backup (`elsewhere`). Each row has its review mark, and for
+    or a file (ROOT:PATH; a move counts at both ends), only unreviewed or reviewed changes, and only gone files whose
+    last content is still in another root you can see, not a backup (`elsewhere`). Each row has its review mark, and for
     a gone file the copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in
     `elsewhere_at`) and `backups`."""
     since = today() - datetime.timedelta(days=days)
-    root, pre = (None, None)
+    root, pre, path = (None, None, None)
     if loc:
         root, path = split_location(loc)
         pre = _prefix(path)
@@ -275,11 +275,13 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
                          WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
                            AND (%s::text IS NULL OR h.name = %s)
                            AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
-                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s))
+                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s
+                                                                       OR hi.new_relpath = %s OR hi.old_relpath = %s))
                            AND """ + _REVIEW_WHERE + """
                            AND (NOT %s OR hi.kind = 'gone' AND c.elsewhere > 0)"""
                 + order(CHANGES_SORT, sort, direction, "hi.seen_on DESC, path, hi.history_id") + PAGE,
-                (since, until, until, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, rv, rv, rv,
+                (since, until, until, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, path, path,
+                 rv, rv, rv,
                  bool(elsewhere), limit, offset))
 
 

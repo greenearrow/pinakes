@@ -11,7 +11,10 @@
   pinakes history FILE
   pinakes versions FILE
   pinakes lineage FILE [--down]
-  pinakes changes [FOLDER] [--days N] [--host NAME]   no folder, outside every root: everything you can see
+  pinakes changes [PATH] [--days N] [--host NAME]   no path, outside every root: everything you can see
+  pinakes review intended|restore [PATH] [--days N] [--yes]   mark the unreviewed gone files and moves under PATH
+                                       (or of that file) reviewed, as on the web's Changes page: shown, then marked
+                                       once you say yes. Only your own or co-owned; the token needs the review scope
   pinakes meta SCHEMA.FIELD=VALUE
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
@@ -135,7 +138,7 @@ class Api:
         self.context = ssl.create_default_context(cafile=ca_file) if u.scheme == "https" else None
 
     def get(self, call, **args):
-        q = urllib.parse.urlencode({k: v for k, v in args.items() if v is not None and v is not False})
+        q = urllib.parse.urlencode({k: v for k, v in args.items() if v is not None and v is not False}, doseq=True)
         return self._ask(urllib.request.Request(self.base + call + ("?" + q if q else ""), headers=self._headers()))
 
     def post(self, call, body=None):
@@ -298,7 +301,9 @@ def versions(config, as_json):
 # commands ----------------------------------------------------------------------------------------------------------
 FILE = ("where", "history", "versions", "lineage")                  # take one file
 FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, or a file for itself
-COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups")
+COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review")
+MARKS = ("intended", "restore")
+REVIEWABLE = ("gone", "moved", "moved_changed")         # what a review marks (queries.REVIEWABLE)
 
 
 def location(api, cmd, given, host, want):
@@ -345,6 +350,9 @@ def run(api, a, cfg):
     def loc(want):
         return location(api, a.cmd, a.arg, _this_host(a.host, cfg), want)
 
+    if a.cmd == "review":
+        review(api, a, cfg)
+        return
     if a.cmd == "backups":
         if a.arg and not os.path.isdir(a.arg):
             raise Failed("%s is not a folder here" % a.arg)
@@ -374,7 +382,7 @@ def run(api, a, cfg):
     elif a.cmd == "changes":
         # --host is a filter here, not this machine's name; no folder outside every root: everything
         try:
-            where = location(api, a.cmd, a.arg, _this_host(None, cfg), "folder")
+            where = location(api, a.cmd, a.arg, _this_host(None, cfg), "any")
         except NotInRoot:
             if a.arg:
                 raise
@@ -391,6 +399,35 @@ def run(api, a, cfg):
     else:                                                               # dupes, stale, roots
         got = api.get(a.cmd)
     _print(got["rows"], a.json)
+
+
+def review(api, a, cfg):
+    """pinakes review intended|restore [PATH]: the unreviewed gone files and moves under PATH (or of that file) in
+    the last --days, shown, then marked once confirmed (or with --yes). The catalog marks only what the person owns
+    or co-owns, in the token's roots and with its review scope, and says how many."""
+    if a.arg not in MARKS:
+        raise Failed("pinakes review needs intended or restore, then a path (none: the current folder)")
+    where = location(api, "review", a.path, _this_host(a.host, cfg), "any")
+    rows = api.get("changes", loc=where, days=a.days, review="unreviewed", what=list(REVIEWABLE))["rows"]
+    if not rows:
+        print("nothing to review under %s in the last %d days" % (where, a.days))
+        return
+    if not a.json:
+        print("%d unreviewed gone file(s) and move(s) under %s in the last %d days:" % (len(rows), where, a.days))
+        _print(rows, False, ["seen_on", "root", "path", "old_relpath", "kind"])
+    if not a.yes:
+        if not sys.stdin.isatty():
+            raise Failed("not marked: add --yes to mark them without being asked")
+        if input("Mark these %d as %s? [y/N] " % (len(rows), a.arg)).strip().lower() not in ("y", "yes"):
+            print("not marked")
+            return
+    got = api.post("review", {"mark": a.arg, "ids": [r["history_id"] for r in rows]})
+    if a.json:
+        print(json.dumps(dict(got, changes=rows), indent=1))
+        return
+    print("marked %d of %d as %s" % (got["marked"], got["asked"], a.arg))
+    if got["marked"] < got["asked"]:
+        print("the rest are not yours or co-owned to mark (readers can't), or outside this token's roots")
 
 
 def open_api(a, cfg):
@@ -418,10 +455,12 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("cmd", nargs="?", metavar="COMMAND", choices=COMMANDS)
     ap.add_argument("arg", nargs="?")
+    ap.add_argument("path", nargs="?", help=argparse.SUPPRESS)          # review MARK PATH
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--down", action="store_true", help="lineage: what came from the file, not where it came from")
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--host", help="changes: only this host's; backups: this machine's name in the catalog")
+    ap.add_argument("--yes", action="store_true", help="review: mark without asking")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
     ap.add_argument("--as", dest="person", metavar="NAME",
                     help="as this person: asks for their password (and second factor) or a token of theirs")
@@ -430,6 +469,8 @@ def main(argv=None):
     ap.add_argument("--config", default=os.environ.get("PINAKES_CONFIG", "/etc/pinakes/server.toml"),
                     help="--versions: the server's config")
     a = ap.parse_intermixed_args(argv)          # options before or after the command and its argument
+    if a.path and a.cmd != "review":
+        ap.error("pinakes %s takes one argument" % a.cmd)
     try:
         if a.versions:
             if a.cmd or a.person:

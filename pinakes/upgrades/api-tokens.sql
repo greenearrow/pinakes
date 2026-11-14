@@ -167,6 +167,54 @@ LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
     RETURNING true
 $$;
 
+-- Mark changes reviewed: 'intended', 'restore', or NULL to clear. Only gone files and moves, only by the file's
+-- owner or a co-owner, or by an administrator in a step-up, which is audited for the owners; under a token (ROADMAP
+-- 37), only with its `review` scope and only in the roots it may see. Changes the person may not mark are skipped;
+-- returns how many were marked or cleared.
+CREATE OR REPLACE FUNCTION mark_changes(ids bigint[], what text) RETURNS int
+LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
+DECLARE
+    me int := current_person();
+    up boolean := stepped_up();
+    ok bigint[];
+    theirs int[];
+    others int;
+    n int;
+BEGIN
+    IF me IS NULL THEN RAISE EXCEPTION 'no person set'; END IF;
+    IF current_token() IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.token_id = current_token() AND 'review' = ANY (t.scopes)) THEN
+        RAISE EXCEPTION 'this token doesn''t have the review scope';
+    END IF;
+    IF what IS NOT NULL AND what NOT IN ('intended', 'restore') THEN
+        RAISE EXCEPTION 'a mark is intended or restore';
+    END IF;
+    WITH t AS (
+        SELECT hi.history_id, f.acl_id,
+               EXISTS (SELECT 1 FROM acl_members am WHERE am.acl_id = f.acl_id AND am.person_id = me
+                                                      AND am.role IN ('owner', 'co-owner')) AS mine
+        FROM history hi JOIN files f USING (file_id)
+        WHERE hi.history_id = ANY (ids) AND hi.kind IN ('gone', 'moved', 'moved_changed')
+          AND (token_roots() IS NULL OR f.root_id = ANY (token_roots())))
+    SELECT array_agg(history_id) FILTER (WHERE mine OR up), array_agg(DISTINCT acl_id) FILTER (WHERE NOT mine AND up),
+           count(*) FILTER (WHERE NOT mine AND up)
+    INTO ok, theirs, others FROM t;
+    IF what IS NULL THEN
+        DELETE FROM review_marks WHERE history_id = ANY (ok);
+    ELSE
+        INSERT INTO review_marks (history_id, mark, marked_by) SELECT unnest(ok), what, me
+        ON CONFLICT (history_id) DO UPDATE SET mark = EXCLUDED.mark, marked_by = EXCLUDED.marked_by, marked_at = now();
+    END IF;
+    GET DIAGNOSTICS n = ROW_COUNT;
+    IF others > 0 THEN
+        INSERT INTO audit (actor, action, affects, detail)
+        SELECT me, 'review', coalesce(array_agg(DISTINCT am.person_id), '{}'),
+               jsonb_build_object('mark', coalesce(what, 'cleared'), 'changes', others)
+        FROM acl_members am WHERE am.acl_id = ANY (theirs) AND am.person_id <> me AND am.role IN ('owner', 'co-owner');
+    END IF;
+    RETURN n;
+END $$;
+
 DROP POLICY files_visible ON files;
 -- under a token, only the roots it may see (ROADMAP 34); token_roots() is evaluated once per query
 CREATE POLICY files_visible ON files FOR SELECT USING (acl_id = ANY (visible_acls())

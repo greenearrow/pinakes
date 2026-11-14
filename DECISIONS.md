@@ -413,3 +413,9 @@ were made while building, to keep going, and are open to change.
   it is read only, for every root but the protected ones, because a person signing in for someone else's view at a
   shell shouldn't carry their protected roots along. It lasts 10 minutes and the command revokes it at its end; if
   the command dies first, the minutes run out. The sign-in is a POST; the queries stay GET.
+- **Reviewing from a folder (ROADMAP 37).** `pinakes review` shows what it would mark and marks exactly those, by
+  their ids, once the person says yes: new changes arriving between the two aren't swept in, and nothing is marked
+  unseen. Without a terminal it marks only with `--yes`. `mark_changes()` checks the token's scope and roots itself,
+  because it reads history and files as the schema's owner, where the files policy doesn't apply; the test was
+  checked to fail without it (two changes outside the token's roots were marked). Its new body ships in
+  `api-tokens.sql` with the rest of release 5. Tags wait for person-entered metadata (16).

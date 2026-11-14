@@ -646,6 +646,11 @@ class TestReview(ServerCase):
             c.execute("DROP FUNCTION pinakes.mark_changes(bigint[], text); DROP TABLE pinakes.review_marks")
             with open(path) as f:
                 c.execute(f.read())
+            # and mark_changes() as api-tokens.sql replaces it (a token's scope and roots, ROADMAP 37)
+            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
+                tokens = f.read()
+            start = tokens.index("CREATE OR REPLACE FUNCTION mark_changes")
+            c.execute("SET search_path = pinakes; " + tokens[start:tokens.index("END $$;", start) + len("END $$;")])
             c.execute("RESET search_path")                  # the file sets its own; compare as before
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertEqual(fresh[3:], (True, False))

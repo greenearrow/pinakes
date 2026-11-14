@@ -13,13 +13,18 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   find?q=NAME-OR-GLOB
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up?loc=ROOT:PATH
-  changes?days=N&host=NAME&loc=ROOT:PATH                  meta?field=SCHEMA.FIELD&value=VALUE
+  changes?days=N&host=NAME&loc=ROOT:PATH&review=unreviewed|reviewed&what=KIND...
+  meta?field=SCHEMA.FIELD&value=VALUE
+  POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
+                                  only gone files and moves, only the person's own or co-owned, only in the
+                                  token's roots; {"asked", "marked"}
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
   POST session {"name", "password", "code"}   pinakes --as: the person's password, and their second factor if
                                   they have one, for a read-only token of minutes ({"token", "until"}); limited
                                   like the web sign-in, and recorded for the person
   POST session/end                that token, revoked (its command is done)
+  POST is for these three; every other call is GET
   limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
   {"error": "..."} with 400, 401, 403, 404 or 429.
 
@@ -439,8 +444,30 @@ def create_app(cfg, connect=None):
 
     @api("changes")
     def api_changes():
+        review = request.args.get("review")
+        if review and review not in queries.REVIEWS:
+            raise ValueError("review is %s" % " or ".join(queries.REVIEWS))
+        kinds = request.args.getlist("what")
+        if set(kinds) - set(queries.KINDS):
+            raise ValueError("what is one of %s" % ", ".join(queries.KINDS))
         return {"rows": queries.changes(g.db, _int_arg("days", 7, 1, 3650), request.args.get("host") or None,
-                                        *lim(), loc=request.args.get("loc") or None)}
+                                        *lim(), loc=request.args.get("loc") or None, review=review or None,
+                                        kinds=kinds or None)}
+
+    @app.route(API + "review", methods=["POST"])
+    def api_review():
+        """Mark changes reviewed, by their ids (as `changes` listed them): the database skips what this person, this
+        token's roots or its scope don't allow, and answers how many it marked."""
+        if "review" not in g.scopes:
+            return api_answer({"error": "this token doesn't have the review scope"}, 403)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        mark, ids = body.get("mark"), body.get("ids")
+        if mark not in ("intended", "restore"):
+            return api_answer({"error": "a mark is intended or restore"}, 400)
+        if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
+            return api_answer({"error": "ids is a list of change numbers"}, 400)
+        return api_answer({"asked": len(ids), "marked": queries.mark_changes(g.db, ids, mark) if ids else 0})
 
     @api("host-roots")
     def api_host_roots():
