@@ -336,21 +336,24 @@ safer; the operation would use that where it exists.
 ## Queries
 
 ```
+pinakes                               inside a scanned folder: its files, backups, copies and changes in numbers
 pinakes find NAME-OR-GLOB              where files with this name are
-pinakes where PATH|SHA256              every copy and backup of this file
-pinakes only-here HOST:PATH            files under PATH with no copy on another disk
-pinakes safe-to-delete HOST:PATH       every file has a copy in a primary or backup root on another disk? (lists the ones that don't)
-pinakes backed-up HOST:PATH            per file: backup copies, newest age
-pinakes dupes [HOST:PATH]              duplicates, largest first
-pinakes history HOST:PATH              what happened to a file or folder
-pinakes lineage HOST:PATH              where this file came from and what came from it, on every host
-pinakes versions HOST:PATH             each known version (hash, dates) and which backup copies hold it
-pinakes changes --since DATE [--host]  what changed
+pinakes where FILE                     every copy and backup of this file
+pinakes only-here [PATH]               files under PATH with no copy on another disk
+pinakes safe-to-delete [PATH]          every file has a copy in a primary or backup root on another disk? (lists the ones that don't)
+pinakes backed-up [PATH]               per file: backup copies, newest age
+pinakes backups [FOLDER]               the same, least backed up first, with how many have none
+pinakes dupes [ROOT:PATH]              duplicates, largest first
+pinakes history FILE                   what happened to a file
+pinakes lineage FILE                   where this file came from and what came from it, on every host
+pinakes versions FILE                  each known version (hash, dates) and which backup copies hold it
+pinakes changes [FOLDER] [--days N] [--host]   what changed
 pinakes meta SCHEMA.FIELD=VALUE        files by metadata
 pinakes stale                          hosts whose last scan is older than their schedule allows
 ```
 
-Read-only, scoped to what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
+FILE, FOLDER and PATH are a path on this machine (none: the current folder) or ROOT:PATH; a folder report given a
+file answers for the file. Read-only, scoped to what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
 [QUERIES.md](QUERIES.md).
 
 ## Wish: an MCP server

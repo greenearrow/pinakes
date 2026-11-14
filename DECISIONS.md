@@ -399,3 +399,10 @@ were made while building, to keep going, and are open to change.
   ask for a secret. `pinakes --versions` stays a server-local command (no person, no token, the database through
   `server.toml`) until ops tokens (39), so a site's deploy checks change once, when `pinakes releases` replaces it.
   `backups` asks the API for the host's roots with their paths there and works out the folder's place locally.
+- **Commands from inside a folder (ROADMAP 33).** One rule for every command: a path that exists here is local,
+  anything else is `ROOT:PATH`, none is the current folder. File commands refuse a folder; folder reports take a
+  file and answer for it, because a file matched as a folder has nothing under it, and an empty answer from
+  `safe-to-delete` means safe: the web report did that too, and now doesn't. `changes` with no folder outside
+  every root keeps its old meaning, everything, and says so in its first line; `--host` stays its filter there, so
+  a folder is found by this machine's configured name. Bare `pinakes` outside a root, or before a token is set up,
+  prints usage and the reason, and exits 1.

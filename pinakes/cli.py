@@ -1,28 +1,31 @@
 """pinakes: ask the catalog from a shell on any machine, through its API, as the person whose token it holds.
 
+  pinakes                              inside a scanned folder: its files, backups, copies and changes in numbers
   pinakes find NAME-OR-GLOB
-  pinakes where ROOT:PATH              every copy and backup of the file at that path
-  pinakes only-here ROOT:PATH          files under PATH with no copy on another disk
-  pinakes safe-to-delete ROOT:PATH     files under PATH with no kept copy on another disk (none: safe), and the
+  pinakes where FILE                   every copy and backup of the file
+  pinakes only-here [PATH]             files under the folder (or the file) with no copy on another disk
+  pinakes safe-to-delete [PATH]        files under it with no kept copy on another disk (none: safe), and the
                                        symlinks elsewhere that lead into it
-  pinakes backed-up ROOT:PATH
+  pinakes backed-up [PATH]
   pinakes dupes
-  pinakes history ROOT:PATH
-  pinakes versions ROOT:PATH
-  pinakes lineage ROOT:PATH [--down]
-  pinakes changes [--days N] [--host NAME]
+  pinakes history FILE
+  pinakes versions FILE
+  pinakes lineage FILE [--down]
+  pinakes changes [FOLDER] [--days N] [--host NAME]   no folder, outside every root: everything you can see
   pinakes meta SCHEMA.FIELD=VALUE
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
-  pinakes backups [FOLDER]             from inside a scanned folder (or FOLDER): where its files are backed up,
-                                       the least-backed-up first. The folder's root is found from this machine's
-                                       name (--host, else [client] host, else [agent] host in agent.toml, else
-                                       its hostname).
+  pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
   pinakes --versions [--config FILE]   on the catalog server only: this server's release and protocol, whether its
                                        schema is applied, and each agent's last check-in (release, protocol, locked
                                        or not, newest batch, refusals, the last time its batch numbering went back).
                                        It reads server.toml and the database and needs no person or token.
   Add --json for JSON.
+
+FILE, FOLDER and PATH are a path here (none: the current folder) or ROOT:PATH; a path that exists here is taken
+as one.
+A path here is found among the roots this machine reports, by its name in the catalog: --host (except for
+changes, where it filters), else [client] host, else [agent] host in agent.toml, else its hostname.
 
 The catalog's address is [client] url in ~/.config/pinakes/client.toml (or $PINAKES_CLIENT_CONFIG, or
 /etc/pinakes/client.toml), or --url; https, or http to this machine only; [client] ca_file for a site's own CA.
@@ -56,6 +59,10 @@ TIMEOUT = 60
 
 class Failed(Exception):
     """Something the person must fix or know: printed as `pinakes: ...`, exit 1."""
+
+
+class NotInRoot(Failed):
+    """A local path outside every root this machine reports."""
 
 
 # where to ask, and as whom ---------------------------------------------------------------------------------------
@@ -194,9 +201,13 @@ def _this_host(given, cfg):
     return socket.gethostname().split(".")[0]
 
 
-def here(api, host, folder):
-    """ROOT:PATH of a local folder: the deepest root this host reports that holds it. Raises Failed if none."""
-    real = os.path.realpath(folder)
+def here(api, host, local):
+    """(root, path in it) of a local folder or file: the deepest root this host reports that holds it. A file's own
+    name is kept as it is (a symlink is itself, not its target); its folders are resolved. NotInRoot if none."""
+    if os.path.isdir(local) and not os.path.islink(local):
+        real = os.path.realpath(local)
+    else:
+        real = os.path.join(os.path.realpath(os.path.dirname(os.path.abspath(local))), os.path.basename(local))
     best = None
     for r in api.get("host-roots", host=host)["rows"]:
         base = os.path.realpath(r["path"])
@@ -204,7 +215,7 @@ def here(api, host, folder):
             if best is None or len(base) > len(best[0]):
                 best = (base, r)
     if not best:
-        raise Failed("%s is not inside a root that %s reports; `pinakes roots` lists them" % (real, host))
+        raise NotInRoot("%s is not inside a root that %s reports; `pinakes roots` lists them" % (real, host))
     base, r = best
     rel = os.path.relpath(real, base)
     return r, "" if rel == "." else rel.replace(os.sep, "/")
@@ -271,16 +282,54 @@ def versions(config, as_json):
 
 
 # commands ----------------------------------------------------------------------------------------------------------
-FILE = ("where", "history", "versions", "lineage")                  # take one file, ROOT:PATH
-FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, ROOT:PATH
+FILE = ("where", "history", "versions", "lineage")                  # take one file
+FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups")
 
 
+def location(api, cmd, given, host, want):
+    """ROOT:PATH for a command's argument. A path that exists here, or none (the current folder), is found among
+    the roots this machine (host) reports; anything else is taken as ROOT:PATH. want is "file", "folder" or
+    "any"."""
+    if given is None or os.path.lexists(given):
+        path = given or "."
+        is_folder = os.path.isdir(path) and not os.path.islink(path)
+        if want == "file" and is_folder:
+            raise Failed("pinakes %s needs a file; %s is a folder" % (cmd, path))
+        if want == "folder" and not is_folder:
+            raise Failed("pinakes %s needs a folder; %s is a file: `pinakes history` shows its changes" % (cmd, path))
+        root, rel = here(api, host, path)
+        return "%s:%s" % (root["label"], rel)
+    if ":" not in given:
+        raise Failed("%s is neither a path here nor ROOT:PATH" % given)
+    return given
+
+
+def count(got):
+    return got["rows"][0]["total_rows"] if got["rows"] else 0
+
+
+def summary(api, cfg, days=7, host=None):
+    """Bare `pinakes` inside a root: the current folder in a few numbers."""
+    root, rel = here(api, _this_host(host, cfg), ".")
+    loc = "%s:%s" % (root["label"], rel)
+    b = api.get("backups", loc=loc, show=1)
+    line = "%s: %d file(s) you can see" % (loc, b["files"])
+    if root["kind"] != "backup":
+        line += ", %d with no backup, %d with no copy on another disk" % (
+            b["unbacked"], count(api.get("only-here", loc=loc, limit=1)))
+    print(line + ", %d change(s) in the last %d days" % (count(api.get("changes", loc=loc, days=days, limit=1)), days))
+    print("(pinakes --help for the commands)")
+
+
 def run(api, a, cfg):
-    def need(what="ROOT:PATH"):
+    def need(what):
         if not a.arg:
             raise Failed("pinakes %s needs %s" % (a.cmd, what))
         return a.arg
+
+    def loc(want):
+        return location(api, a.cmd, a.arg, _this_host(a.host, cfg), want)
 
     if a.cmd == "backups":
         if a.arg and not os.path.isdir(a.arg):
@@ -288,28 +337,38 @@ def run(api, a, cfg):
         backups_here(api, _this_host(a.host, cfg), a.arg or ".", a.json)
         return
     if a.cmd == "safe-to-delete":
-        loc = need()
-        got = api.get("safe-to-delete", loc=loc)
+        where = loc("any")
+        got = api.get("safe-to-delete", loc=where)
         if a.json:
             print(json.dumps(got, indent=1))
             return
         if not got["not_safe"]:
-            print("safe: every file under %s has a kept copy on another disk" % loc)
+            print("safe: every file under %s has a kept copy on another disk" % where)
         else:
             _print(got["not_safe"], False)
         links = got["links_into"]
         if links:
-            print("\n%d symlink(s) elsewhere lead into %s and would be left dangling:" % (len(links), loc))
+            print("\n%d symlink(s) elsewhere lead into %s and would be left dangling:" % (len(links), where))
             _print([{"link": "%s:%s" % (l["root"], l["relpath"]), "target": l["link_target"]} for l in links], False)
         return
     if a.cmd == "find":
         got = api.get("find", q=need("a name or glob"))
     elif a.cmd in FILE:
-        got = api.get(a.cmd, loc=need(), down=1 if a.cmd == "lineage" and a.down else None)
+        got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None)
     elif a.cmd in FOLDER:
-        got = api.get(a.cmd, loc=need())
+        got = api.get(a.cmd, loc=loc("any"))
     elif a.cmd == "changes":
-        got = api.get("changes", days=a.days, host=a.host)
+        # --host is a filter here, not this machine's name; no folder outside every root: everything
+        try:
+            where = location(api, a.cmd, a.arg, _this_host(None, cfg), "folder")
+        except NotInRoot:
+            if a.arg:
+                raise
+            where = None
+        got = api.get("changes", days=a.days, host=a.host, loc=where)
+        if not a.json:
+            print("changes %s in the last %d days%s:" % ("under " + where if where else "everywhere you can see",
+                                                         a.days, ", on " + a.host if a.host else ""))
     elif a.cmd == "meta":
         key, eq, value = need("SCHEMA.FIELD=VALUE").partition("=")
         if not eq:
@@ -341,9 +400,14 @@ def main(argv=None):
                 ap.error("--versions takes no command")
             versions(a.config, a.json)
             return 0
-        if not a.cmd:
-            ap.error("a command is needed")
         cfg = client_config()
+        if not a.cmd:
+            try:
+                summary(Api(a.url or cfg.get("url"), find_token()[0], cfg.get("ca_file")), cfg, a.days, a.host)
+            except Failed as e:                 # outside a root, or not set up yet: how to use it, and why
+                ap.print_usage()
+                sys.exit("pinakes: %s" % e)
+            return 0
         token, _ = find_token()
         run(Api(a.url or cfg.get("url"), token, cfg.get("ca_file")), a, cfg)
     except Failed as e:

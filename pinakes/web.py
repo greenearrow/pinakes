@@ -13,7 +13,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   find?q=NAME-OR-GLOB
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up?loc=ROOT:PATH
-  changes?days=N&host=NAME        meta?field=SCHEMA.FIELD&value=VALUE
+  changes?days=N&host=NAME&loc=ROOT:PATH                  meta?field=SCHEMA.FIELD&value=VALUE
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
   limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
@@ -404,7 +404,7 @@ def create_app(cfg, connect=None):
     @api("changes")
     def api_changes():
         return {"rows": queries.changes(g.db, _int_arg("days", 7, 1, 3650), request.args.get("host") or None,
-                                        *lim())}
+                                        *lim(), loc=request.args.get("loc") or None)}
 
     @api("host-roots")
     def api_host_roots():

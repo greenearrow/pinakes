@@ -70,7 +70,9 @@ ORDER BY r.kind, h.name, f.relpath;
 Files with no copy on another disk. A copy is on another disk when it is on another host, or on another device of
 the same host (a device the catalog doesn't know counts as the same disk). Copies are counted physically, as
 distinct (host, device, inode), and a hard link of the file itself is not a copy. `same_disk` counts the copies
-outside the folder on the file's own disk, which die with it; 0 means no copy anywhere else.
+outside the folder on the file's own disk, which die with it; 0 means no copy anywhere else. Given a file rather
+than a folder, this and the two reports below answer for the file itself (with nothing under a file, "none" would
+read as safe).
 
 ```sql
 -- pinakes only-here downloads:camera/
@@ -86,7 +88,8 @@ CROSS JOIN LATERAL (
       WHERE o.content_id = f.content_id
         AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'camera/%')   -- copies inside the folder don't count
         AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s  -- nor hard links
-WHERE r.label = 'downloads' AND f.relpath LIKE 'camera/%' AND s.other_disk = 0
+WHERE r.label = 'downloads' AND (f.relpath LIKE 'camera/%' OR f.relpath = 'camera')  -- or the file itself
+  AND s.other_disk = 0
   AND NOT f.is_symlink                                                  -- a symlink holds no data
 ORDER BY f.relpath;
 ```
@@ -111,7 +114,7 @@ CROSS JOIN LATERAL (
         AND ro.kind IN ('primary', 'backup')
         AND NOT (o.root_id = f.root_id AND o.relpath LIKE 'old-phone/%')
         AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)) s
-WHERE r.label = 'downloads' AND f.relpath LIKE 'old-phone/%' AND s.other_disk = 0
+WHERE r.label = 'downloads' AND (f.relpath LIKE 'old-phone/%' OR f.relpath = 'old-phone') AND s.other_disk = 0
   AND NOT f.is_symlink
 ORDER BY f.relpath;
 ```
@@ -145,7 +148,7 @@ FROM present f
 JOIN roots r USING (root_id)
 LEFT JOIN present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
 LEFT JOIN roots br ON br.root_id = b.root_id
-WHERE r.label = 'store' AND f.relpath LIKE 'people/user-1/%'
+WHERE r.label = 'store' AND (f.relpath LIKE 'people/user-1/%' OR f.relpath = 'people/user-1')
 GROUP BY f.file_id, f.relpath
 ORDER BY backup_copies, f.relpath;                 -- unprotected files first
 ```

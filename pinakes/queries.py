@@ -139,11 +139,14 @@ COPY_SORT = dict(FILE_SORT, same_disk=("s.same_disk",))
 def _no_copy_on_another_disk(conn, loc, kinds, limit, offset, sort, direction):
     root, path = split_location(loc)
     pre = _prefix(path)
+    # the folder's files, or the file itself: a file given would otherwise have nothing under it, which reads as safe
     return rows(conn, """SELECT %s, s.same_disk, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) %s
-                         WHERE r.label = %%s AND f.relpath LIKE %%s AND s.other_disk = 0 AND NOT f.is_symlink"""
+                         WHERE r.label = %%s AND (f.relpath LIKE %%s OR f.relpath = %%s) AND s.other_disk = 0
+                           AND NOT f.is_symlink"""
                 % (FILE_COLS, TOTAL, _COPIES % ("AND ro.kind IN ('primary', 'backup')" if kinds else ""))
-                + order(COPY_SORT, sort, direction, "f.relpath, f.file_id") + PAGE, (pre, root, pre, limit, offset))
+                + order(COPY_SORT, sort, direction, "f.relpath, f.file_id") + PAGE,
+                (pre, root, pre, path, limit, offset))
 
 
 def only_here(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
@@ -182,10 +185,10 @@ def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
                          FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
                          LEFT JOIN pinakes.roots br ON br.root_id = b.root_id
-                         WHERE r.label = %s AND f.relpath LIKE %s
+                         WHERE r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s)
                          GROUP BY f.file_id, f.relpath"""
                 + order(BACKED_UP_SORT, sort, direction, "backup_copies, f.relpath, f.file_id") + PAGE,
-                (root, _prefix(path), limit, offset))
+                (root, _prefix(path), path, limit, offset))
 
 
 def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
@@ -564,8 +567,8 @@ def unbacked(conn, loc):
     root, path = split_location(loc)
     return conn.execute("""SELECT count(*) FROM (SELECT 1 FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                            LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
-                           WHERE r.label = %s AND f.relpath LIKE %s GROUP BY f.file_id
-                           HAVING count(b.file_id) = 0) x""", (root, _prefix(path))).fetchone()[0]
+                           WHERE r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s) GROUP BY f.file_id
+                           HAVING count(b.file_id) = 0) x""", (root, _prefix(path), path)).fetchone()[0]
 
 
 def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):

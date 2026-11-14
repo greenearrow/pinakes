@@ -339,6 +339,7 @@ class CliRun:
                 except SystemExit as e:
                     rc = e.code if isinstance(e.code, int) else 1
                     if code:
+                        self.out = out.getvalue()                       # what it printed before it stopped
                         return str(e.code)
             self.case.assertEqual(rc, code, out.getvalue())
         finally:
@@ -480,3 +481,99 @@ class TestCli(ServerCase):
         cfg = cli.client_config(os.path.join(TOP, "client.example.toml"))
         self.assertEqual(cfg, {"url": "https://pinakes.example.net"})
         cli.Api(cfg["url"], "pinakes_x")                                # an address the client accepts
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliHere(ServerCase):
+    """The commands from inside a folder (ROADMAP 33): a path here, or none for the current folder, as well as
+    ROOT:PATH."""
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
+        self.scan("server-1", "store")
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')                              # this machine's name in the catalog
+        self.mine = self.path("server-1", "store", "people/user-1")
+        self.outside = os.path.join(self.tmp, "elsewhere")
+        os.makedirs(self.outside)
+
+    def test_each_command_from_inside_a_folder_and_given_one(self):
+        cli, mine = self.cli, self.mine
+        self.assertIn("people/user-1/taxes.txt", cli("where", "taxes.txt", cwd=mine))
+        self.assertIn("new", cli("history", "taxes.txt", cwd=mine))
+        self.assertEqual(len(json.loads(cli("versions", "taxes.txt", "--json", cwd=mine))), 1)
+        self.assertEqual(json.loads(cli("lineage", "taxes.txt", "--down", "--json", cwd=mine)), [])
+        here = [r["relpath"] for r in json.loads(cli("only-here", "--json", cwd=mine))]
+        self.assertEqual(sorted(here), ["people/user-1/shared-with-2/plan.txt", "people/user-1/taxes.txt"])
+        self.assertEqual([r["relpath"] for r in json.loads(cli("only-here", "shared-with-2", "--json", cwd=mine))],
+                         ["people/user-1/shared-with-2/plan.txt"])
+        self.assertIn("people/user-1/taxes.txt", cli("safe-to-delete", cwd=mine))
+        self.assertIn("people/user-1/taxes.txt", cli("backed-up", cwd=mine))
+        changes = cli("changes", cwd=mine)
+        self.assertTrue(changes.startswith("changes under store:people/user-1 in the last 7 days:\n"), changes)
+        self.assertIn("people/user-1/taxes.txt", changes)
+        # given the folder or the file from somewhere else, by its path here, or as ROOT:PATH as before
+        self.assertIn("people/user-1/taxes.txt", cli("only-here", mine, cwd=self.outside))
+        self.assertIn("people/user-1/taxes.txt", cli("where", os.path.join(mine, "taxes.txt"), cwd=self.outside))
+        self.assertIn("people/user-1/taxes.txt", cli("only-here", "store:people/user-1/", cwd=self.outside))
+        self.assertIn("people/user-1/taxes.txt", cli("changes", mine, cwd=self.outside))
+        # the whole root, from its top
+        self.assertIn("people/user-1/taxes.txt", cli("only-here", cwd=self.path("server-1", "store", "")))
+
+    def test_a_file_for_a_folder_report_and_a_folder_for_a_file(self):
+        cli, mine = self.cli, self.mine
+        # a folder report given a file answers for that file (nothing under a file would read as safe)
+        for cmd in ("only-here", "safe-to-delete", "backed-up"):
+            self.assertIn("people/user-1/taxes.txt", cli(cmd, "taxes.txt", cwd=mine))
+            self.assertIn("people/user-1/taxes.txt", cli(cmd, "store:people/user-1/taxes.txt", cwd=self.outside))
+        self.assertNotIn("plan.txt", cli("only-here", "taxes.txt", cwd=mine))
+        for cmd in ("where", "history", "versions", "lineage"):
+            self.assertEqual(cli(cmd, cwd=mine, code=1), "pinakes: pinakes %s needs a file; . is a folder" % cmd)
+        self.assertEqual(cli("changes", "taxes.txt", cwd=mine, code=1),
+                         "pinakes: pinakes changes needs a folder; taxes.txt is a file: `pinakes history` shows its "
+                         "changes")
+        self.assertEqual(cli("where", "nothing.txt", cwd=mine, code=1),
+                         "pinakes: nothing.txt is neither a path here nor ROOT:PATH")
+
+    def test_a_folder_outside_every_root_is_refused(self):
+        cli = self.cli
+        with open(os.path.join(self.outside, "note.txt"), "w") as f:
+            f.write("not scanned")
+        refused = "pinakes: %s is not inside a root that server-1 reports; `pinakes roots` lists them"
+        for cmd in ("only-here", "safe-to-delete", "backed-up"):
+            self.assertEqual(cli(cmd, cwd=self.outside, code=1), refused % os.path.realpath(self.outside))
+        self.assertEqual(cli("where", "note.txt", cwd=self.outside, code=1),
+                         refused % os.path.join(os.path.realpath(self.outside), "note.txt"))
+        self.assertEqual(cli("changes", ".", cwd=self.outside, code=1), refused % os.path.realpath(self.outside))
+        # changes with no folder, outside every root: everything you can see, as before
+        everything = cli("changes", cwd=self.outside)
+        self.assertTrue(everything.startswith("changes everywhere you can see in the last 7 days:\n"))
+        self.assertIn("people/user-1/taxes.txt", everything)
+        # another machine's name: its roots, not this one's
+        self.assertIn("not inside a root that laptop-1 reports",
+                      cli("only-here", "--host", "laptop-1", cwd=self.mine, code=1))
+
+    def test_another_persons_files_are_left_out(self):
+        cli = self.cli
+        theirs = self.path("server-1", "store", "people/user-2")
+        self.assertEqual(cli("only-here", cwd=theirs), "(none)\n")
+        self.assertEqual(cli("safe-to-delete", cwd=theirs),
+                         "safe: every file under store:people/user-2 has a kept copy on another disk\n")
+        self.assertEqual(cli("where", "diary.txt", cwd=theirs, code=1), "pinakes: no file you can see there")
+        self.assertNotIn("diary", cli("changes", cwd=theirs))
+        self.assertNotIn("diary", cli("changes", cwd=self.path("server-1", "store", "people")))
+        self.assertIn("store:people/user-2: 0 file(s) you can see", cli(cwd=theirs))
+
+    def test_bare_pinakes_sums_up_the_folder(self):
+        cli = self.cli
+        self.assertEqual(cli(cwd=self.mine), "store:people/user-1: 2 file(s) you can see, 2 with no backup, 2 with "
+                                             "no copy on another disk, 2 change(s) in the last 7 days\n"
+                                             "(pinakes --help for the commands)\n")
+        # outside every root: how to use it, and why not here
+        self.assertIn("is not inside a root that server-1 reports", cli(cwd=self.outside, code=1))
+        self.assertTrue(cli.out.startswith("usage: pinakes "), cli.out)
