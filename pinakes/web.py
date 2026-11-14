@@ -8,8 +8,10 @@ revoked on the account page, never the session cookie. It acts as that person un
 the roots the token may (every root but the protected ones unless it names them), never steps up, and is recorded
 for the person. GET only for now; a token needs the `read` scope for these calls:
 
-  whoami                          the token's person, scopes and roots
-  roots, stale, dupes             as the CLI's commands
+  whoami                          the token's person, kind, scopes and roots (any token)
+  roots, stale, dupes             as the CLI's commands (stale: an ops token too)
+  releases                        (ops tokens only) this server's release, protocol and schema, and each agent's
+                                  last check-in: hosts, numbers and times, never a root, person or file
   find?q=NAME-OR-GLOB
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up?loc=ROOT:PATH
@@ -50,7 +52,7 @@ import psycopg
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException, NotFound
 
-from . import auth, queries, registry
+from . import auth, compat, queries, registry
 from .server_config import load as load_server_config
 
 LOGIN_LIMIT = 5          # failed sign-ins per address
@@ -327,13 +329,15 @@ def create_app(cfg, connect=None):
         return e
 
     def api(rule, scope="read"):
-        """An API call: GET only (none of them steps up or changes anything), the token's scope checked, the
-        answer as JSON, a bad argument a 400."""
+        """An API call: GET only (none of them steps up or changes anything), the token's scope checked (one of
+        them, for a tuple), the answer as JSON, a bad argument a 400."""
+        allowed = (scope,) if isinstance(scope, str) else scope
+
         def deco(view):
             @functools.wraps(view)
             def wrapper(*a, **kw):
-                if scope not in g.scopes:
-                    return api_answer({"error": "this token doesn't have the %s scope" % scope}, 403)
+                if not set(allowed) & set(g.scopes):
+                    return api_answer({"error": "this token doesn't have the %s scope" % " or ".join(allowed)}, 403)
                 try:
                     return api_answer(view(*a, **kw))
                 except ValueError as e:
@@ -391,17 +395,30 @@ def create_app(cfg, connect=None):
     def api_sign_out():
         return api_answer({"ended": bool(g.db.execute("SELECT pinakes.end_cli_session()").fetchone()[0])})
 
-    @api("whoami")
+    @api("whoami", SCOPES + ("ops",))
     def whoami():
+        if g.person is None:                    # an ops token: no person, no root
+            return {"person": None, "kind": "ops", "scopes": list(g.scopes), "roots": []}
         me = g.db.execute("SELECT name, display FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()
-        return {"person": me[0], "display": me[1], "scopes": list(g.scopes),
+        return {"person": me[0], "display": me[1], "kind": "person", "scopes": list(g.scopes),
                 "roots": [r["label"] for r in queries.roots(g.db)]}
+
+    @api("releases", "ops")
+    def api_releases():
+        """This server's release and protocol, whether its schema is applied, and each agent's last check-in: host
+        names, numbers and times only (ROADMAP 39: what pinakes --versions read from the database)."""
+        from .ingest import schema_missing
+        missing = schema_missing(g.db)
+        return {"server": {"release": compat.RELEASE, "protocol": compat.PROTOCOL,
+                           "min_agent_protocol": compat.MIN_AGENT_PROTOCOL, "schema_applied": not missing,
+                           "upgrades_missing": missing},
+                "agents": queries.agent_versions(g.db)}
 
     @api("roots")
     def api_roots():
         return {"rows": queries.roots(g.db)}
 
-    @api("stale")
+    @api("stale", ("read", "ops"))
     def api_stale():
         return {"rows": queries.stale(g.db)}
 
@@ -687,8 +704,8 @@ def create_app(cfg, connect=None):
         pending = session.get("totp_pending")
         if request.method == "POST":
             action = request.form.get("action")
-            if action == "make-token":
-                msg, new_token = make_token(request.form)
+            if action in ("make-token", "make-ops-token"):
+                msg, new_token = make_token(request.form, ops=action == "make-ops-token")
             elif action == "revoke-token":
                 ok = g.db.execute("SELECT pinakes.revoke_token(%s)",
                                   (_int(request.form.get("token"), 0, 0, 2 ** 31 - 1),)).fetchone()[0]
@@ -721,7 +738,7 @@ def create_app(cfg, connect=None):
                                new_token=new_token, tokens=queries.rows(g.db, "SELECT * FROM pinakes.my_tokens()"),
                                root_choices=queries.root_choices(g.db), scopes=SCOPES)
 
-    def make_token(form):
+    def make_token(form, ops=False):
         """A new token for the signed-in person, from the account page's form: the current password again (a
         borrowed session can't mint itself a lasting key), a client name, scopes, every root but the protected ones
         or the roots ticked, and a lifetime in days or none. Returns (message, the secret: shown once, never kept)."""
@@ -730,9 +747,11 @@ def create_app(cfg, connect=None):
         if not auth.check_password(form.get("current", ""), row[1] or auth.DUMMY_HASH):
             return "The current password is wrong.", None
         client = form.get("client", "").strip()[:100]
-        scopes = [sc for sc in SCOPES if sc in form.getlist("scope")]
+        scopes = ["ops"] if ops else [sc for sc in SCOPES if sc in form.getlist("scope")]
+        if ops and "operator" not in g.roles:
+            return "Only an operator makes ops tokens.", None
         try:
-            roots = None if form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
+            roots = None if ops or form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
             days = int(form["days"]) if form.get("days", "").strip() else None
         except ValueError:
             return "Roots and days are numbers.", None
@@ -751,7 +770,7 @@ def create_app(cfg, connect=None):
                              (client, hashlib.sha256(secret.encode()).digest(), scopes, roots, days))
         except psycopg.errors.RaiseException as e:
             return "Not made: %s." % e.diag.message_primary, None
-        return "Token made for %s. Copy it now: it isn't shown again." % client, secret
+        return "%s made for %s. Copy it now: it isn't shown again." % ("Ops token" if ops else "Token", client), secret
 
     @app.route("/step-up", methods=["GET", "POST"])
     @signed_in

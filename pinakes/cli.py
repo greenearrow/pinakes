@@ -19,10 +19,11 @@
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
   pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
-  pinakes --versions [--config FILE]   on the catalog server only: this server's release and protocol, whether its
-                                       schema is applied, and each agent's last check-in (release, protocol, locked
-                                       or not, newest batch, refusals, the last time its batch numbering went back).
-                                       It reads server.toml and the database and needs no person or token.
+  pinakes releases                     this server's release and protocol, whether its schema is applied, and each
+                                       agent's last check-in (release, protocol, locked or not, newest batch,
+                                       refusals, the last time its batch numbering went back). It needs an ops
+                                       token, which an operator makes on the account page, and sees nothing else
+                                       but `stale`; on the catalog server, [client] url can be http://127.0.0.1.
   Add --json for JSON, --as NAME to ask as another person (their password and second factor, or a token of theirs,
   at a hidden prompt; the command then sees only what they may see).
 
@@ -51,7 +52,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import compat
 from .config import tomllib
 
 CLIENT_CONFIGS = ("~/.config/pinakes/client.toml", "/etc/pinakes/client.toml")
@@ -254,38 +254,24 @@ def backups_here(api, host, folder, as_json):
             print("... and %d more (fewest backups first)" % (got["files"] - len(got["shown"])))
 
 
-# the server's own report -----------------------------------------------------------------------------------------
-def versions(config, as_json):
-    """On the catalog server, from server.toml and the database: no person, no token (ROADMAP 39 moves it to the
-    API with an ops token)."""
-    import psycopg
-    from . import queries
-    from .ingest import schema_missing
-    from .server_config import load as load_server_config
-    web = load_server_config(config).web
-    kw = {"conninfo": web.get("dsn", "")}
-    pw = web.get("password_file")
-    if pw and os.path.exists(pw):
-        with open(pw) as f:
-            kw["password"] = f.read().strip()
-    with psycopg.connect(**kw) as conn:
-        # hosts, check-ins and batch times only (no row-level security, nothing about a person or file)
-        missing = schema_missing(conn)
-        agents = queries.agent_versions(conn) if "checkins.sql" not in missing and "schema.sql" not in missing else []
-    server = {"release": compat.RELEASE, "protocol": compat.PROTOCOL, "min_agent_protocol": compat.MIN_AGENT_PROTOCOL,
-              "schema_applied": not missing, "upgrades_missing": missing}
+# the server's own report ----------------------------------------------------------------------------------------
+def releases(api, as_json):
+    """pinakes releases: the server's release, protocol and schema, and each agent's last check-in, through the API
+    with an ops token (ROADMAP 39; before it, pinakes --versions read the database on the server)."""
+    got = api.get("releases")
+    server, agents = got["server"], got["agents"]
     if as_json:
-        print(json.dumps({"server": server, "agents": agents}, default=queries.json_default, indent=1))
+        print(json.dumps(got, indent=1))
         return
     print("server: release %d, protocol %d, accepts agents of protocol %d or later; schema %s" % (
-        compat.RELEASE, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL,
-        "applied" if not missing else "lacks " + ", ".join(missing)))
+        server["release"], server["protocol"], server["min_agent_protocol"],
+        "applied" if server["schema_applied"] else "lacks " + ", ".join(server["upgrades_missing"])))
     for a in agents:
         if a["checked_in"] is None:
             a["state"] = "no check-in" if a["newest_batch"] else "never heard from"
         else:
             a["state"] = "LOCKED" if a["locked"] else "sending"
-        if a["refused_at"] and (a["newest_batch"] is None or a["refused_at"] > a["newest_batch"]):
+        if a["refused_at"] and (a["newest_batch"] is None or _when(a["refused_at"]) > _when(a["newest_batch"])):
             a["state"] = "REFUSED"                  # its batches are held: the reason is below
     _print(agents, False, ["host", "checked_in", "release", "protocol", "min_server", "state", "newest_batch",
                            "batch_protocol"])
@@ -298,10 +284,15 @@ def versions(config, as_json):
             print("%s: numbering went back %s: %s" % (a["host"], _cell(a["seq_reset_at"]), a["seq_reset"]))
 
 
+def _when(iso):
+    return datetime.datetime.fromisoformat(iso)
+
+
 # commands ----------------------------------------------------------------------------------------------------------
 FILE = ("where", "history", "versions", "lineage")                  # take one file
 FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, or a file for itself
-COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review")
+COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
+                                         "releases")
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed")         # what a review marks (queries.REVIEWABLE)
 
@@ -352,6 +343,9 @@ def run(api, a, cfg):
 
     if a.cmd == "review":
         review(api, a, cfg)
+        return
+    if a.cmd == "releases":
+        releases(api, a.json)
         return
     if a.cmd == "backups":
         if a.arg and not os.path.isdir(a.arg):
@@ -464,19 +458,15 @@ def main(argv=None):
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
     ap.add_argument("--as", dest="person", metavar="NAME",
                     help="as this person: asks for their password (and second factor) or a token of theirs")
-    ap.add_argument("--versions", action="store_true", help="on the catalog server: releases and protocols of the "
-                                                           "server and each agent")
-    ap.add_argument("--config", default=os.environ.get("PINAKES_CONFIG", "/etc/pinakes/server.toml"),
-                    help="--versions: the server's config")
+    ap.add_argument("--versions", action="store_true", help=argparse.SUPPRESS)      # before ROADMAP 39
+    ap.add_argument("--config", help=argparse.SUPPRESS)
     a = ap.parse_intermixed_args(argv)          # options before or after the command and its argument
     if a.path and a.cmd != "review":
         ap.error("pinakes %s takes one argument" % a.cmd)
     try:
         if a.versions:
-            if a.cmd or a.person:
-                ap.error("--versions takes no command and no --as")
-            versions(a.config, a.json)
-            return 0
+            raise Failed("--versions is now `pinakes releases`, through the API with an ops token (made by an "
+                         "operator on the account page)")
         cfg = client_config()
         try:
             api, session = open_api(a, cfg)

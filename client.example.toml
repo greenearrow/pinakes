@@ -5,3 +5,7 @@
 url = "https://pinakes.example.net"     # the catalog's web UI; http only to this machine (localhost)
 # ca_file = "/etc/ssl/certs/example-net-ca.pem"   # a site's own CA, if the system's don't sign it
 # host = "laptop-1"                     # this machine's name in the catalog (default: [agent] host, else hostname)
+
+# On the catalog server, for the deploy's `pinakes releases` (with an operator's ops token in the service account's
+# ~/.config/pinakes/token):
+# url = "http://127.0.0.1:8080"         # [web] listen

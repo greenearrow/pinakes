@@ -1090,8 +1090,8 @@ class TestCheckIn(ServerCase):
     def test_through_the_forced_key_locked_until_the_upgrade_then_reported(self):
         """The real route: a stand-in ssh runs pinakes-ingest --host as an agent's forced key would, with what was
         asked for in SSH_ORIGINAL_COMMAND. The catalog lacks checkins.sql: the agent locks; once it runs, the next
-        run sends what was held, and pinakes --versions shows it."""
-        from pinakes import agent, cli
+        run sends what was held, and pinakes releases shows it."""
+        from pinakes import agent
         conf = os.path.join(self.tmp, "server.toml")
         with open(conf, "w") as f:
             f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s[web]\ndsn = "host=%s '
@@ -1139,10 +1139,12 @@ class TestCheckIn(ServerCase):
         c = self.checkin()
         self.assertEqual((c["release"], c["protocol"], c["locked"], c["batch_protocol"]),
                          (compat.RELEASE, compat.PROTOCOL, None, compat.PROTOCOL))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
-        lines = out.getvalue().splitlines()
+        # the deploy's report: pinakes releases, through the API, with an ops token (an operator's: user-1)
+        from tests.test_api import CliRun, make_token
+        ops = CliRun(self)
+        self.addCleanup(ops.close)
+        ops.save(ops.home_token(), make_token(self, "user-1", scopes=("ops",), client="deploy"))
+        lines = ops("releases", cwd=self.tmp).splitlines()
         self.assertEqual(lines[0], "server: release %d, protocol %d, accepts agents of protocol %d or later; schema "
                                    "applied" % (compat.RELEASE, compat.PROTOCOL, compat.MIN_AGENT_PROTOCOL))
         self.assertEqual(lines[1].split(), ["host", "checked_in", "release", "protocol", "min_server", "state",
@@ -1151,30 +1153,14 @@ class TestCheckIn(ServerCase):
         self.assertEqual(sorted(rows), ["laptop-1", "server-1", "server-2"])
         self.assertIn("sending", rows["server-1"])
         self.assertIn("never heard from", rows["server-2"])
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            cli.main(["--config", conf, "--versions", "--json"])
-        got = json.loads(out.getvalue())
+        got = json.loads(ops("releases", "--json", cwd=self.tmp))
         self.assertTrue(got["server"]["schema_applied"])
         self.assertEqual([a["host"] for a in got["agents"] if a["locked"] is None and a["checked_in"]], ["server-1"])
-        # the deploy's service account, which is no person and has no token: --versions needs neither; the
-        # questions about files need a token
-        home = os.path.join(self.tmp, "svc-home")
-        os.makedirs(home)
-        env = {"HOME": home, "PINAKES_CLIENT_CONFIG": os.path.join(home, "none.toml")}
-        with unittest.mock.patch.dict(os.environ, env):
-            out = io.StringIO()
-            with contextlib.redirect_stdout(out):
-                self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
-            self.assertEqual(out.getvalue().splitlines()[0], lines[0])
-            old = os.getcwd()
-            os.chdir(home)
-            try:
-                with self.assertRaises(SystemExit) as e:
-                    cli.main(["roots"])
-            finally:
-                os.chdir(old)
-        self.assertIn("pinakes: no token", str(e.exception.code))
+        # nothing that names a file or person; and the old flag says where it went
+        self.assertEqual(ops("roots", cwd=self.tmp, code=1), "pinakes: this token doesn't have the read scope")
+        self.assertEqual(ops("--versions", cwd=self.tmp, code=1),
+                         "pinakes: --versions is now `pinakes releases`, through the API with an ops token (made by "
+                         "an operator on the account page)")
 
 
 class TestTakeover(ServerCase):
@@ -1258,18 +1244,15 @@ class TestTakeover(ServerCase):
         self.assertIn("1 waiting batch(es) renumbered 1-1 to 5-5", agent.follow(cfg, 4, answer["last_header_sha256"]))
         self.assertEqual(self.send(cfg), ["applied"])
         self.assertIn("new.txt", self.present())
-        from pinakes import cli
-        conf = os.path.join(self.tmp, "server.toml")
-        with open(conf, "w") as f:
-            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s[web]\ndsn = "host=%s '
-                    'user=pinakes_app dbname=%s"\n' % (PGHOST, self.db, SERVER, PGHOST, self.db))
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            self.assertEqual(cli.main(["--config", conf, "--versions"]), 0)
-        self.assertIn("server-1: numbering went back ", out.getvalue())
+        from tests.test_api import CliRun, make_token
+        ops = CliRun(self)
+        self.addCleanup(ops.close)
+        ops.save(ops.home_token(), make_token(self, "user-1", scopes=("ops",), client="deploy"))
+        out = ops("releases", cwd=self.tmp)
+        self.assertIn("server-1: numbering went back ", out)
         self.assertIn(": the agent's next batch was 4, this host's batches are applied up to 4: it was told to "
-                      "continue after 4", out.getvalue())                    # the last check-in above
-        row = [l for l in out.getvalue().splitlines() if l.startswith("server-1 ")][0]
+                      "continue after 4", out)                                # the last check-in above
+        row = [l for l in out.splitlines() if l.startswith("server-1 ")][0]
         self.assertIn("sending", row)                                   # applied since its refusal
 
     def test_a_batch_from_before_headers_were_kept(self):

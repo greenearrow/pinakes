@@ -5,19 +5,23 @@
 SET search_path = pinakes;
 
 -- API tokens (ROADMAP 34): one per person per client, made and revoked by the person in the web UI. Only the
--- secret's SHA-256 is kept. The application reads and writes these only through the functions below.
+-- secret's SHA-256 is kept. The application reads and writes these only through the functions below. An ops token
+-- (ROADMAP 39) is an operator's, and acts as no person: hosts, check-ins, releases and staleness only.
 CREATE TABLE tokens (
     token_id    serial PRIMARY KEY,
     person_id   int NOT NULL REFERENCES people ON DELETE CASCADE,
     client      text NOT NULL,                              -- the person's name for it: a machine, a script
     secret_sha256 bytea UNIQUE NOT NULL,
-    scopes      text[] NOT NULL CHECK (cardinality(scopes) > 0 AND scopes <@ '{read,review,tag}'),
+    kind        text NOT NULL DEFAULT 'person' CHECK (kind IN ('person', 'ops')),
+    scopes      text[] NOT NULL CHECK (cardinality(scopes) > 0 AND scopes <@ '{read,review,tag,ops}'),
     roots       int[],                                      -- NULL: every root but the protected ones
     created     timestamptz NOT NULL DEFAULT now(),
     expires     timestamptz,                                -- NULL: until revoked
     revoked     timestamptz,
     last_used   timestamptz,
-    cli_session boolean NOT NULL DEFAULT false              -- pinakes --as: minutes long, ended by its command
+    cli_session boolean NOT NULL DEFAULT false,             -- pinakes --as: minutes long, ended by its command
+    CHECK ((kind = 'ops') = (scopes = '{ops}')),            -- an ops token has the ops scope, and only it does
+    CHECK (kind = 'person' OR roots IS NULL)
 );
 
 -- The token this transaction acts by (set only by begin_token_call), or NULL: a web session or the CLI.
@@ -67,7 +71,8 @@ $$;
 
 -- An API call by token: if the secret's hash names a token neither revoked nor expired, act as its person for this
 -- transaction, record the call (the person sees it on their access page) and return the person and the scopes;
--- else no row. A token's session is never a web session's, and stepped_up() is false under a token.
+-- else no row. A token's session is never a web session's, and stepped_up() is false under a token. An ops token
+-- acts as no person (its person is NULL): row-level security shows it no file, and the call is its maker's record.
 CREATE FUNCTION begin_token_call(secret bytea, call text) RETURNS TABLE (person_id int, scopes text[])
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
 DECLARE
@@ -76,52 +81,63 @@ BEGIN
     SELECT * INTO t FROM tokens tk
     WHERE tk.secret_sha256 = secret AND tk.revoked IS NULL AND (tk.expires IS NULL OR tk.expires > now());
     IF NOT FOUND THEN RETURN; END IF;
-    PERFORM set_config('pinakes.person', t.person_id::text, true),
+    PERFORM set_config('pinakes.person', CASE WHEN t.kind = 'person' THEN t.person_id::text ELSE '' END, true),
             set_config('pinakes.session', 'token:' || t.token_id, true),
             set_config('pinakes.token', t.token_id::text, true);
     UPDATE tokens tk SET last_used = now() WHERE tk.token_id = t.token_id;
     INSERT INTO audit (actor, action, detail)
     VALUES (t.person_id, 'api', jsonb_build_object('token', t.client, 'call', left(call, 500)));
-    RETURN QUERY SELECT t.person_id, t.scopes;
+    RETURN QUERY SELECT CASE WHEN t.kind = 'person' THEN t.person_id END, t.scopes;
 END $$;
 
 -- A new token for the current person, from a web session (a token can't make one). The application makes the secret
 -- and passes its SHA-256; `limit_roots` NULL is every root but the protected ones, else exactly those roots (a
--- protected one only if listed); `days` NULL: until revoked. Audited for the person; returns the token's id.
+-- protected one only if listed); `days` NULL: until revoked. Scopes {ops} alone make an ops token, for an
+-- operator only, with no root list. Audited for the person; returns the token's id.
 CREATE FUNCTION make_token(client text, secret bytea, scopes text[], limit_roots int[], days int) RETURNS int
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
 DECLARE
     me int := current_person();
     id int;
+    ops boolean := 'ops' = ANY (scopes);
     until timestamptz := CASE WHEN days IS NULL THEN NULL ELSE now() + make_interval(days => greatest(days, 1)) END;
 BEGIN
     IF me IS NULL THEN RAISE EXCEPTION 'no person set'; END IF;
     IF current_token() IS NOT NULL THEN RAISE EXCEPTION 'a token can''t make tokens'; END IF;
     IF coalesce(btrim(client), '') = '' THEN RAISE EXCEPTION 'name the client'; END IF;
+    IF ops AND (scopes <> '{ops}' OR limit_roots IS NOT NULL) THEN
+        RAISE EXCEPTION 'an ops token has the ops scope alone, and no roots';
+    END IF;
+    IF ops AND NOT has_role('operator') THEN RAISE EXCEPTION 'only an operator makes ops tokens'; END IF;
     IF limit_roots IS NOT NULL AND (cardinality(limit_roots) = 0
        OR EXISTS (SELECT unnest(limit_roots) EXCEPT SELECT root_id FROM roots)) THEN
         RAISE EXCEPTION 'not a root list';
     END IF;
-    INSERT INTO tokens (person_id, client, secret_sha256, scopes, roots, expires)
-    VALUES (me, btrim(client), secret, scopes, limit_roots, until) RETURNING token_id INTO id;
+    INSERT INTO tokens (person_id, kind, client, secret_sha256, scopes, roots, expires)
+    VALUES (me, CASE WHEN ops THEN 'ops' ELSE 'person' END, btrim(client), secret, scopes, limit_roots, until)
+    RETURNING token_id INTO id;
     INSERT INTO audit (actor, action, affects, detail)
     VALUES (me, 'token_made', ARRAY[me], jsonb_build_object(
         'client', btrim(client), 'scopes', scopes, 'until', until,
-        'roots', CASE WHEN limit_roots IS NULL THEN to_jsonb('every root but the protected ones'::text)
-                      ELSE (SELECT to_jsonb(array_agg(label ORDER BY label)) FROM roots WHERE root_id = ANY (limit_roots))
+        'roots', CASE WHEN ops THEN to_jsonb('none: an ops token'::text)
+                      WHEN limit_roots IS NULL THEN to_jsonb('every root but the protected ones'::text)
+                      ELSE (SELECT to_jsonb(array_agg(label ORDER BY label)) FROM roots
+                            WHERE root_id = ANY (limit_roots))
                  END));
     RETURN id;
 END $$;
 
 -- The current person's tokens, without their secrets' hashes.
-CREATE FUNCTION my_tokens() RETURNS TABLE (token_id int, client text, scopes text[], roots text[], created timestamptz,
-                                           expires timestamptz, revoked timestamptz, last_used timestamptz)
+CREATE FUNCTION my_tokens() RETURNS TABLE (token_id int, kind text, client text, scopes text[], roots text[],
+                                           created timestamptz, expires timestamptz, revoked timestamptz,
+                                           last_used timestamptz)
 LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
-    SELECT t.token_id, t.client, t.scopes,
+    SELECT t.token_id, t.kind, t.client, t.scopes,
            CASE WHEN t.roots IS NULL THEN NULL
                 ELSE (SELECT array_agg(r.label ORDER BY r.label) FROM roots r WHERE r.root_id = ANY (t.roots)) END,
            t.created, t.expires, t.revoked, t.last_used
-    FROM tokens t WHERE t.person_id = current_person() AND NOT t.cli_session ORDER BY t.revoked NULLS FIRST, t.created DESC
+    FROM tokens t WHERE t.person_id = current_person() AND NOT t.cli_session
+    ORDER BY t.revoked NULLS FIRST, t.created DESC
 $$;
 
 -- Revoke one of the current person's own tokens, from a web session; audited. False if it isn't theirs or is

@@ -26,9 +26,9 @@ ask the catalog as you: only what you may see, never stepped up. Make one per ma
 Every call it makes is listed on <a href="{{ url_for('access') }}">Access to your records</a>.</p>
 {% if new_token %}<p>Your new token: <span class="mono">{{ new_token }}</span></p>{% endif %}
 {% if tokens %}<div class="scroll"><table>
-  <tr><th>Client</th><th>Scopes</th><th>Roots</th><th>Made</th><th>Expires</th><th>Last used</th><th></th></tr>
-  {% for t in tokens %}<tr><td>{{ t.client }}</td><td>{{ t.scopes | join(', ') }}</td>
-    <td>{{ t.roots | join(', ') if t.roots is not none else 'every root but the protected ones' }}</td>
+  <tr><th>Client</th><th>Kind</th><th>Scopes</th><th>Roots</th><th>Made</th><th>Expires</th><th>Last used</th><th></th></tr>
+  {% for t in tokens %}<tr><td>{{ t.client }}</td><td>{{ t.kind }}</td><td>{{ t.scopes | join(', ') }}</td>
+    <td>{{ 'none' if t.kind == 'ops' else (t.roots | join(', ') if t.roots is not none else 'every root but the protected ones') }}</td>
     <td>{{ t.created.strftime('%Y-%m-%d') }}</td><td>{{ t.expires.strftime('%Y-%m-%d') if t.expires else 'never' }}</td>
     <td>{{ t.last_used.strftime('%Y-%m-%d %H:%M') if t.last_used else 'never' }}</td>
     <td>{% if t.revoked %}revoked {{ t.revoked.strftime('%Y-%m-%d') }}{% else %}<form method="post">
@@ -51,4 +51,14 @@ Every call it makes is listed on <a href="{{ url_for('access') }}">Access to you
   <label>Expires after (days; empty: until revoked) <input name="days" inputmode="numeric"></label>
   <label>Your current password <input name="current" type="password" autocomplete="current-password" required></label>
   <button>Make a token</button></form>
+{% if 'operator' in roles %}
+<h3>Ops token</h3>
+<p class="muted">For a deploy's checks (<span class="mono">pinakes releases</span>, <span class="mono">pinakes stale</span>):
+it acts as no person and sees hosts, agents' check-ins, releases and staleness, never a root, a person or a file.</p>
+<form method="post" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="make-ops-token">
+  <label>For (a deploy, a monitor) <input name="client" maxlength="100" required></label>
+  <label>Expires after (days; empty: until revoked) <input name="days" inputmode="numeric"></label>
+  <label>Your current password <input name="current" type="password" autocomplete="current-password" required></label>
+  <button>Make an ops token</button></form>
+{% endif %}
 {% endblock %}

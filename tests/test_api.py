@@ -27,7 +27,9 @@ PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345"}
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")
-class TestApi(ServerCase):
+class ApiCase(ServerCase):
+    """A catalog by real scans, an app, and the helpers to make tokens and call the API."""
+
     def setUp(self):
         super().setUp()
         self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
@@ -85,6 +87,10 @@ class TestApi(ServerCase):
     def csrf(self, c, url):
         return re.search(r'name="csrf" value="([^"]+)"', c.get(url).get_data(as_text=True)).group(1)
 
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestApi(ApiCase):
     # acting as exactly one person ----------------------------------------------------------------------------
     def test_a_token_acts_as_exactly_its_person(self):
         his, hers = self.token("user-1"), self.token("user-2")
@@ -93,7 +99,8 @@ class TestApi(ServerCase):
         self.assertEqual(self.paths("find?q=*.txt", hers),
                          ["store:people/user-1/shared-with-2/plan.txt", "store:people/user-2/diary.txt"])
         self.assertEqual(self.get("whoami", hers)[1],
-                         {"person": "user-2", "display": "User Two", "scopes": ["read"], "roots": ["store"]})
+                         {"person": "user-2", "display": "User Two", "kind": "person", "scopes": ["read"],
+                          "roots": ["store"]})
         # someone else's file is not there at all, by path or by id
         diary = self.file("store", "people/user-2/diary.txt")
         for path in ("where?loc=store:people/user-2/diary.txt", "history?file=%d" % diary, "versions?file=%d" % diary):
@@ -222,7 +229,8 @@ class TestApi(ServerCase):
         self.assertIn("find?q=diary*", access)
         self.assertIn("token made", access)
         account = c2.get("/account").get_data(as_text=True)
-        self.assertRegex(account, r"<td>laptop-1</td><td>read</td>\s*<td>every root but the protected ones</td>"
+        self.assertRegex(account, r"<td>laptop-1</td><td>person</td><td>read</td>"
+                                  r"\s*<td>every root but the protected ones</td>"
                                   r"\s*<td>[\d-]+</td><td>never</td>\s*<td>[\d-]+ [\d:]+</td>")
         # nobody else sees them
         c1 = self.login("user-1")
@@ -811,3 +819,73 @@ as = "co-owner"
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.load(r)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestOpsToken(ApiCase):
+    """Ops tokens (ROADMAP 39): an operator's, acting as no person: releases and stale, and nothing that names a
+    file, a root or a person."""
+
+    def test_an_operator_makes_one_on_the_account_page_and_others_cant(self):
+        c = self.login("user-1")                                        # an operator
+        page = c.post("/account", data={"csrf": self.csrf(c, "/account"), "action": "make-ops-token",
+                                        "client": "deploy", "days": "", "current": PASSWORDS["user-1"]})
+        text = page.get_data(as_text=True)
+        self.assertIn("Ops token made for deploy.", text)
+        secret = re.search(r'Your new token: <span class="mono">(pinakes_[\w-]+)</span>', text).group(1)
+        self.assertEqual(self.get("whoami", secret)[1], {"person": None, "kind": "ops", "scopes": ["ops"],
+                                                         "roots": []})
+        self.assertIn("<td>deploy</td><td>ops</td><td>ops</td>\n    <td>none</td>",
+                      c.get("/account").get_data(as_text=True))
+        # someone who isn't an operator: no form, refused by the page and by the database
+        c2 = self.login("user-2")
+        self.assertNotIn("make-ops-token", c2.get("/account").get_data(as_text=True))
+        page = c2.post("/account", data={"csrf": self.csrf(c2, "/account"), "action": "make-ops-token",
+                                         "client": "deploy", "days": "", "current": PASSWORDS["user-2"]})
+        self.assertIn("Only an operator makes ops tokens.", page.get_data(as_text=True))
+        with self.assertRaisesRegex(psycopg.errors.RaiseException, "only an operator"):
+            self.token("user-2", scopes=("ops",))
+        # ops alone, and no roots
+        for scopes, roots in ((("ops", "read"), None), (("ops",), [self.root_id("store")])):
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "the ops scope alone"):
+                self.token("user-1", scopes=scopes, roots=roots)
+
+    def test_it_answers_releases_and_stale_and_nothing_else(self):
+        ops = self.token("user-1", scopes=("ops",), client="deploy")
+        status, got = self.get("releases", ops)
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(got), ["agents", "server"])
+        self.assertTrue(got["server"]["schema_applied"])
+        self.assertEqual(sorted(a["host"] for a in got["agents"]), ["laptop-1", "server-1", "server-2"])
+        self.assertEqual(self.get("stale", ops)[0], 200)
+        # every other call, now and later: refused
+        answered = {"whoami", "releases", "stale"}
+        args = "?q=*&loc=store:people/user-1/&file=1&host=server-1&field=dc.title&value=x"
+        calls = [r.rule[len("/api/v1/"):] for r in self.app.url_map.iter_rules()
+                 if r.rule.startswith("/api/v1/") and "GET" in r.methods]
+        self.assertGreater(len(calls), 15)
+        for call in calls:
+            if call not in answered:
+                self.assertEqual(self.get(call + args, ops)[0], 403, call)
+        r = self.app.test_client().post("/api/v1/review", json={"mark": "intended", "ids": [1]},
+                                        headers={"Authorization": "Bearer " + ops})
+        self.assertEqual(r.status_code, 403)
+        # and a person's token doesn't get releases
+        self.assertEqual(self.get("releases", self.token("user-1")),
+                         (403, {"error": "this token doesn't have the ops scope"}))
+
+    def test_the_database_gives_it_no_person(self):
+        ops = self.token("user-1", scopes=("ops",), client="deploy")
+        self.get("stale", ops)
+        # its calls are its maker's record
+        self.assertEqual(self.q("SELECT p.name, a.detail->>'token', a.detail->>'call' FROM pinakes.audit a "
+                                "JOIN pinakes.people p ON p.person_id = a.actor WHERE a.action = 'api'"),
+                         [("user-1", "deploy", "stale")])
+        with self.app_conn() as conn:
+            row = conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
+                               (hashlib.sha256(ops.encode()).digest(),)).fetchone()
+            self.assertEqual(row, (None, ["ops"]))
+            self.assertEqual(conn.execute("SELECT pinakes.current_person(), count(*) FROM pinakes.files")
+                             .fetchone(), (None, 0))
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "no person set"):
+                conn.execute("SELECT pinakes.mark_changes('{1}', 'intended')")

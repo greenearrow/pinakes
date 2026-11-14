@@ -78,8 +78,8 @@ text, never hashes. Filesystem checksums (btrfs, ZFS) are per block, for integri
 - **`pinakes-web`**: the web UI and its JSON API (below). Each request runs with the signed-in person's identity
   set for the database, so row-level security, not the application code, decides what they can see.
 - **`pinakes`**: the command-line client, on any machine, using the same API as the web UI with the person's token
-  (ROADMAP "The command line, through an API"). Only `pinakes --versions`, the server's own report, still reads the
-  database, on the catalog server, until ops tokens (ROADMAP 39).
+  (ROADMAP "The command line, through an API"). The server's own report, `pinakes releases`, goes through it too,
+  with an operator's ops token.
 
 Python 3.11+ throughout. The standard library first; where a dependency earns its place, the preferred ones are
 **Flask** (web) and **waitress** (its WSGI server). The agent's core is standard library only (`hashlib`, `sqlite3`,

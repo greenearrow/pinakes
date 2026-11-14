@@ -419,3 +419,10 @@ were made while building, to keep going, and are open to change.
   because it reads history and files as the schema's owner, where the files policy doesn't apply; the test was
   checked to fail without it (two changes outside the token's roots were marked). Its new body ships in
   `api-tokens.sql` with the rest of release 5. Tags wait for person-entered metadata (16).
+- **Ops tokens and `pinakes releases` (ROADMAP 39).** An ops token is a token of its own kind (`tokens.kind`), made
+  by an operator, scope `ops` alone: the database sets no person for its calls, so even a call that forgot its
+  scope check would see no file, and it answers only `releases`, `stale` and `whoami` (a test calls every route).
+  Its calls go on its maker's record, so the operator sees what their deploy asked. `pinakes --versions` no longer
+  reads the database: it says to use `pinakes releases`, so a deploy check that wasn't updated fails loudly, not
+  quietly. On the catalog server the client config can name `http://127.0.0.1`. `releases` needs the web service
+  running and the catalog upgraded first (`api-tokens.sql`), which the release order already asks.
