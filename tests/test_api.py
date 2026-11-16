@@ -23,15 +23,21 @@ try:
 except ImportError:  # Flask missing
     web = None
 
-PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345"}
+PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345", "user-3": "kettle lantern 909"}
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")
 class ApiCase(ServerCase):
     """A catalog by real scans, an app, and the helpers to make tokens and call the API."""
 
+    SERVER_EXTRA = ""                   # more of server.toml, for a class that needs other people, rules or groups
+
     def setUp(self):
         super().setUp()
+        if self.SERVER_EXTRA:
+            self.scfg = server_config.loads(SERVER + self.SERVER_EXTRA)
+            self.ing = Ingester(self.conn, self.scfg)
+            self.ing.seed()
         self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
         self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
         self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
@@ -57,14 +63,77 @@ class ApiCase(ServerCase):
     def root_id(self, label):
         return self.q("SELECT root_id FROM pinakes.roots WHERE label = %s", (label,))[0][0]
 
-    def token(self, name, scopes=("read",), roots=None, days=None, client="laptop-1"):
-        """A token made the way the account page makes one: as the person, through make_token()."""
+    def token(self, name, scopes=("read",), roots=None, days=None, client="laptop-1", group=None):
+        """A token made the way the account page makes one: as the person, through make_token(); with `group`, a
+        group token of that group (ROADMAP 38)."""
         secret = "pinakes_test_%s_%s" % (name, os.urandom(8).hex())
         with self.app_conn() as c:
             c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid(name)),))
-            c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s)",
-                      (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots, days))
+            c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s, %s)",
+                      (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots, days,
+                       self.gid(group) if group else None))
         return secret
+
+    def gid(self, name):
+        return self.q("SELECT group_id FROM pinakes.groups WHERE name = %s", (name,))[0][0]
+
+    def check_upgrade_matches_the_schema(self):
+        """api-tokens.sql, run on the catalog as it was before release 5, gives what schema.sql gives: the tables,
+        constraints, policy, functions and grants it touches, and the groups each ACL names."""
+        tables = ["tokens", "acl_groups", "review_marks"]
+        defs = ("SELECT (SELECT array_agg(table_name || ':' || column_name || ':' || data_type || ':' || is_nullable "
+                "        || ':' || coalesce(column_default, '') ORDER BY table_name, ordinal_position) "
+                "        FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = ANY (%(tables)s)), "
+                "(SELECT array_agg(conrelid::regclass || ':' || pg_get_constraintdef(oid) "
+                "                  ORDER BY conrelid::regclass::text, pg_get_constraintdef(oid)) FROM pg_constraint "
+                " WHERE conrelid = ANY (SELECT to_regclass('pinakes.' || t) FROM unnest(%(tables)s::text[]) t)), "
+                "(SELECT array_agg(indexdef ORDER BY indexdef) FROM pg_indexes "
+                " WHERE schemaname = 'pinakes' AND tablename = ANY (%(tables)s)), "
+                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
+                " WHERE schemaname = 'pinakes' AND tablename = 'files'), "
+                "(SELECT array_agg(pg_get_functiondef(p.oid) ORDER BY p.proname) FROM pg_proc p "
+                " WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname = ANY (%(fns)s)), "
+                "(SELECT array_agg(grantee || ':' || routine_name || ':' || privilege_type "
+                "                 ORDER BY grantee, routine_name, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = ANY (%(fns)s)), "
+                "(SELECT array_agg(table_name || ':' || grantee || ':' || privilege_type "
+                "                  ORDER BY table_name, grantee, privilege_type) "
+                " FROM information_schema.table_privileges "
+                " WHERE table_schema = 'pinakes' AND table_name = ANY (%(tables)s))")
+        groups = ("SELECT array_agg(a.acl_key || ':' || g.name || ':' || ag.role ORDER BY a.acl_key, g.name) "
+                  "FROM pinakes.acl_groups ag JOIN pinakes.acls a USING (acl_id) JOIN pinakes.groups g USING (group_id)")
+        new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token",
+               "begin_cli_session", "end_cli_session", "current_group", "my_groups"]
+        args = {"fns": new + ["stepped_up", "begin_step_up", "mark_changes", "visible_acls", "sensitive_visible"],
+                "tables": tables}
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs, args).fetchone() + c.execute(groups).fetchone()
+            # back to the catalog before it: the old policy and functions, no tokens or groups per ACL, marks by
+            # people only
+            c.execute("DROP POLICY files_visible ON pinakes.files")
+            c.execute("CREATE POLICY files_visible ON pinakes.files FOR SELECT USING "
+                      "(acl_id = ANY (pinakes.visible_acls()))")
+            for fn, returns in (("stepped_up()", "boolean"), ("visible_acls()", "int[]"),
+                                ("sensitive_visible(content bigint, file bigint)", "boolean"),
+                                ("begin_step_up(reason text, minutes int DEFAULT 15)", "timestamptz")):
+                c.execute("CREATE OR REPLACE FUNCTION pinakes.%s RETURNS %s LANGUAGE sql STABLE SECURITY DEFINER "
+                          "SET search_path = pinakes AS $$ SELECT NULL::%s $$" % (fn, returns, returns))
+            c.execute("DROP FUNCTION pinakes.token_roots(), pinakes.begin_token_call(bytea, text), "
+                      "pinakes.make_token(text, bytea, text[], int[], int, int), pinakes.my_tokens(), "
+                      "pinakes.revoke_token(int), pinakes.begin_cli_session(bytea, int, text), "
+                      "pinakes.end_cli_session(), pinakes.my_groups(), pinakes.current_group(), "
+                      "pinakes.current_token() CASCADE")
+            c.execute("DROP TABLE pinakes.tokens, pinakes.acl_groups")
+            c.execute("ALTER TABLE pinakes.review_marks DROP COLUMN marked_by_group, "
+                      "ALTER COLUMN marked_by SET NOT NULL")
+            self.assertNotEqual(c.execute(defs, args).fetchone(), fresh[:-1])
+            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs, args).fetchone() + c.execute(groups).fetchone(), fresh)
+        return fresh
 
     def get(self, path, secret=None, client=None):
         c = client or self.app.test_client()
@@ -257,46 +326,7 @@ class TestApi(ApiCase):
         self.assertEqual(self.get("whoami", secret)[1]["roots"], ["store"])
 
     def test_upgrade_file_matches_the_schema(self):
-        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
-                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
-                "        WHERE table_schema = 'pinakes' AND table_name = 'tokens'), "
-                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) FROM pg_constraint "
-                " WHERE conrelid = to_regclass('pinakes.tokens')), "
-                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
-                " WHERE schemaname = 'pinakes' AND tablename = 'files'), "
-                "(SELECT array_agg(pg_get_functiondef(p.oid) ORDER BY p.proname) FROM pg_proc p "
-                " WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname = ANY (%(fns)s)), "
-                "(SELECT array_agg(grantee || ':' || routine_name || ':' || privilege_type "
-                "                 ORDER BY grantee, routine_name, privilege_type) "
-                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
-                " AND routine_name = ANY (%(fns)s)), "
-                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
-                " FROM information_schema.table_privileges "
-                " WHERE table_schema = 'pinakes' AND table_name = 'tokens')")
-        new = ["current_token", "token_roots", "begin_token_call", "make_token", "my_tokens", "revoke_token",
-               "begin_cli_session", "end_cli_session"]
-        args = {"fns": new + ["stepped_up", "begin_step_up", "mark_changes"]}
-        with admin_conn(self.db) as c:
-            fresh = c.execute(defs, args).fetchone()
-            # back to the catalog before it: the old policy, step-up functions and no tokens
-            c.execute("DROP POLICY files_visible ON pinakes.files")
-            c.execute("CREATE POLICY files_visible ON pinakes.files FOR SELECT USING "
-                      "(acl_id = ANY (pinakes.visible_acls()))")
-            c.execute("CREATE OR REPLACE FUNCTION pinakes.stepped_up() RETURNS boolean LANGUAGE sql STABLE "
-                      "SECURITY DEFINER SET search_path = pinakes AS $$ SELECT false $$")
-            c.execute("CREATE OR REPLACE FUNCTION pinakes.begin_step_up(reason text, minutes int DEFAULT 15) "
-                      "RETURNS timestamptz LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes "
-                      "AS $$ SELECT now() $$")
-            c.execute("DROP FUNCTION pinakes.token_roots(), pinakes.begin_token_call(bytea, text), "
-                      "pinakes.make_token(text, bytea, text[], int[], int), pinakes.my_tokens(), "
-                      "pinakes.revoke_token(int), pinakes.begin_cli_session(bytea, int, text), "
-                      "pinakes.end_cli_session(), pinakes.current_token() CASCADE")
-            c.execute("DROP TABLE pinakes.tokens")
-            self.assertNotEqual(c.execute(defs, args).fetchone(), fresh)
-            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
-                c.execute(f.read())
-            c.execute("RESET search_path")
-            self.assertEqual(c.execute(defs, args).fetchone(), fresh)
+        self.check_upgrade_matches_the_schema()
 
 
 # the CLI, as a client of the API (ROADMAP 35) ------------------------------------------------------------------------
@@ -884,8 +914,183 @@ class TestOpsToken(ApiCase):
         with self.app_conn() as conn:
             row = conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
                                (hashlib.sha256(ops.encode()).digest(),)).fetchone()
-            self.assertEqual(row, (None, ["ops"]))
+            self.assertEqual(row, (None, ["ops"], "ops", None))
             self.assertEqual(conn.execute("SELECT pinakes.current_person(), count(*) FROM pinakes.files")
                              .fetchone(), (None, 0))
             with self.assertRaisesRegex(psycopg.errors.RaiseException, "no person set"):
                 conn.execute("SELECT pinakes.mark_changes('{1}', 'intended')")
+
+
+class TestGroupToken(ApiCase):
+    """Group tokens (ROADMAP 38): a token that acts as a group and no member. The household owns store:household
+    and reads store:people/user-2/for-household; user-3 is no member."""
+
+    SERVER_EXTRA = """
+[people.user-3]
+display = "User Three"
+roles = ["person"]
+[[ownership.rule]]
+root = "store"
+folder = "household"
+owner = "household"
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-2/for-household"
+group = "household"
+as = "reader"
+"""
+    GONE = ("household/old.txt", "people/user-2/for-household/old.txt", "people/user-1/old.txt")
+
+    def setUp(self):
+        super().setUp()
+        self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) VALUES (%s, %s)",
+                          (self.pid("user-3"), auth.hash_password(PASSWORDS["user-3"])))
+        for rel in ("household/budget.txt", "people/user-2/for-household/recipe.txt") + self.GONE:
+            self.write("server-1", "store", rel, b"content of " + rel.encode())
+        self.scan("server-1", "store")
+        for rel in self.GONE:
+            os.remove(self.path("server-1", "store", rel))
+        self.scan("server-1", "store")
+
+    def gone_ids(self):
+        return dict(self.q("SELECT old_relpath, history_id FROM pinakes.history WHERE kind = 'gone'"))
+
+    def test_it_sees_the_groups_files_and_no_members_own(self):
+        grp = self.token("user-1", group="household")
+        self.assertEqual(self.paths("find?q=*.txt", grp),
+                         ["store:household/budget.txt", "store:people/user-2/for-household/recipe.txt"])
+        self.assertEqual(self.get("whoami", grp)[1], {"person": None, "group": "household", "kind": "group",
+                                                      "scopes": ["read"], "roots": ["store"]})
+        self.assertEqual(self.get("where?loc=store:people/user-1/taxes.txt", grp)[0], 404)
+        self.assertEqual(sorted(r["path"] for r in self.get("changes?days=7&what=gone", grp)[1]["rows"]),
+                         ["household/old.txt", "people/user-2/for-household/old.txt"])
+        # its maker's own token sees theirs and the group's: the two are never added up in one token
+        self.assertIn("store:people/user-1/taxes.txt", self.paths("find?q=*.txt", self.token("user-1")))
+        # the database: no person, the group's files only, and its roots held as a person's are
+        with self.app_conn() as conn:
+            row = conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
+                               (hashlib.sha256(grp.encode()).digest(),)).fetchone()
+            self.assertEqual(row, (None, ["read"], "group", "household"))
+            self.assertEqual(conn.execute("SELECT pinakes.current_person(), pinakes.current_group(), "
+                                          "pinakes.stepped_up()").fetchone(), (None, self.gid("household"), False))
+            self.assertEqual(sorted(r[0] for r in conn.execute("SELECT relpath FROM pinakes.files")),
+                             ["household/budget.txt", "household/old.txt", "people/user-2/for-household/old.txt",
+                              "people/user-2/for-household/recipe.txt"])
+            self.assertEqual(conn.execute("SELECT count(*) FROM pinakes.audit").fetchone()[0], 0)
+        limited = self.token("user-1", group="household", roots=[self.root_id("downloads")])
+        self.assertEqual(self.paths("find?q=*.txt", limited), [])
+
+    def test_its_calls_are_on_every_members_record(self):
+        grp = self.token("user-2", group="household", client="kitchen")
+        self.get("find?q=budget*", grp)
+        self.assertEqual(self.q("SELECT p.name, a.affects, a.detail->>'token', a.detail->>'group', a.detail->>'call' "
+                                "FROM pinakes.audit a JOIN pinakes.people p ON p.person_id = a.actor "
+                                "WHERE a.action = 'api'"),
+                         [("user-2", [self.pid("user-1"), self.pid("user-2")], "kitchen", "household",
+                           "find?q=budget*")])
+        made = self.q("SELECT actor, affects, detail->>'group' FROM pinakes.audit WHERE action = 'token_made'")
+        self.assertEqual(made, [(self.pid("user-2"), [self.pid("user-1"), self.pid("user-2")], "household")])
+        page = self.login("user-1").get("/access").get_data(as_text=True)
+        self.assertIn("kitchen", page)
+        self.assertNotIn("kitchen", self.login("user-3").get("/access").get_data(as_text=True))
+
+    def test_only_members_make_see_and_revoke_it(self):
+        with self.assertRaisesRegex(psycopg.errors.RaiseException, "only a member of the group makes its tokens"):
+            self.token("user-3", group="household")
+        with self.assertRaisesRegex(psycopg.errors.RaiseException, "the ops scope alone, and no roots or group"):
+            self.token("user-1", scopes=("ops",), group="household")
+        # on the account page: a member chooses the group; a non-member has no choice, and a forged one is refused
+        c = self.login("user-2")
+        page = c.get("/account").get_data(as_text=True)
+        self.assertIn('<option value="%d">the group household</option>' % self.gid("household"), page)
+        page = c.post("/account", data={"csrf": self.csrf(c, "/account"), "action": "make-token", "client": "kitchen",
+                                        "as": str(self.gid("household")), "scope": "read", "roots": "all",
+                                        "days": "", "current": PASSWORDS["user-2"]}).get_data(as_text=True)
+        self.assertIn("Group token made for kitchen.", page)
+        secret = re.search(r'Your new token: <span class="mono">(pinakes_[\w-]+)</span>', page).group(1)
+        self.assertEqual(self.get("whoami", secret)[1]["group"], "household")
+        c3 = self.login("user-3")
+        self.assertNotIn('name="as"', c3.get("/account").get_data(as_text=True))
+        page = c3.post("/account", data={"csrf": self.csrf(c3, "/account"), "action": "make-token", "client": "x",
+                                         "as": str(self.gid("household")), "scope": "read", "roots": "all",
+                                         "days": "", "current": PASSWORDS["user-3"]}).get_data(as_text=True)
+        self.assertIn("Not made: only a member of the group makes its tokens.", page)
+        # every member sees it and may revoke it; no one else
+        listed = self.login("user-1").get("/account").get_data(as_text=True)
+        self.assertIn('<td>kitchen</td><td>group household <span class="muted">(by User Two)</span></td>', listed)
+        self.assertNotIn("kitchen", c3.get("/account").get_data(as_text=True))
+        tid = self.q("SELECT token_id FROM pinakes.tokens WHERE client = 'kitchen'")[0][0]
+        page = c3.post("/account", data={"csrf": self.csrf(c3, "/account"), "action": "revoke-token",
+                                         "token": str(tid)}).get_data(as_text=True)
+        self.assertIn("No such token of yours to revoke.", page)
+        self.assertEqual(self.get("whoami", secret)[0], 200)
+        c1 = self.login("user-1")
+        page = c1.post("/account", data={"csrf": self.csrf(c1, "/account"), "action": "revoke-token",
+                                         "token": str(tid)}).get_data(as_text=True)
+        self.assertIn("Token revoked.", page)
+        self.assertEqual(self.get("whoami", secret)[0], 401)
+        self.assertEqual(self.q("SELECT actor, affects, detail->>'group' FROM pinakes.audit "
+                                "WHERE action = 'token_revoked'"),
+                         [(self.pid("user-1"), [self.pid("user-1"), self.pid("user-2")], "household")])
+
+    def test_a_former_members_token_stops_working(self):
+        grp = self.token("user-2", group="household")
+        self.assertEqual(self.get("whoami", grp)[0], 200)
+        self.conn.execute("DELETE FROM pinakes.group_members WHERE person_id = %s", (self.pid("user-2"),))
+        self.ing.refresh_acl_members()
+        self.assertEqual(self.get("whoami", grp)[0], 401)
+        self.assertEqual(self.get("find?q=*.txt", grp)[0], 401)
+        with self.assertRaisesRegex(psycopg.errors.RaiseException, "only a member of the group makes its tokens"):
+            self.token("user-2", group="household")
+        with self.app_conn() as conn:                   # nor listed for them, nor theirs to revoke
+            conn.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-2")),))
+            self.assertEqual(conn.execute("SELECT count(*) FROM pinakes.my_tokens()").fetchone()[0], 0)
+            tid = self.q("SELECT token_id FROM pinakes.tokens")[0][0]
+            self.assertFalse(conn.execute("SELECT pinakes.revoke_token(%s)", (tid,)).fetchone()[0])
+        # a member's token of the same group still works: the group didn't change, its maker did
+        self.assertEqual(self.paths("find?q=budget*", self.token("user-1", group="household")),
+                         ["store:household/budget.txt"])
+
+    def test_its_marks_are_the_groups(self):
+        ids = self.gone_ids()
+        post = lambda secret: self.app.test_client().post(
+            "/api/v1/review", json={"mark": "intended", "ids": sorted(ids.values())},
+            headers={"Authorization": "Bearer " + secret})
+        self.assertEqual(post(self.token("user-1", group="household")).status_code, 403)    # no review scope
+        r = post(self.token("user-1", scopes=("read", "review"), group="household", client="tidy"))
+        # its own folder only: not the one it reads, nor a member's own
+        self.assertEqual(r.get_json(), {"asked": 3, "marked": 1})
+        self.assertEqual(self.q("SELECT history_id, mark, marked_by, marked_by_group FROM pinakes.review_marks"),
+                         [(ids["household/old.txt"], "intended", None, self.gid("household"))])
+        self.assertEqual(self.q("SELECT actor, affects, detail - 'call' FROM pinakes.audit WHERE action = 'review'"),
+                         [(self.pid("user-1"), [self.pid("user-1"), self.pid("user-2")],
+                           {"mark": "intended", "changes": 1, "token": "tidy", "group": "household"})])
+        # shown as the group's, to a member on the web and through the API
+        page = self.login("user-2").get("/reports/changes?days=7").get_data(as_text=True)
+        self.assertIn('<span class="tag">intended</span> <span class="muted">household,', page)
+        rows = self.get("changes?days=7", self.token("user-2"))[1]["rows"]
+        self.assertEqual({r["path"]: r["marked_by"] for r in rows if r["mark"]}, {"household/old.txt": "household"})
+        # a member marking the same change later makes it theirs
+        with self.app_conn() as conn:
+            conn.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-2")),))
+            self.assertEqual(conn.execute("SELECT pinakes.mark_changes(%s, 'restore')",
+                                          ([ids["household/old.txt"]],)).fetchone()[0], 1)
+        self.assertEqual(self.q("SELECT mark, marked_by, marked_by_group FROM pinakes.review_marks"),
+                         [("restore", self.pid("user-2"), None)])
+
+    def test_sensitive_metadata_where_the_group_owns(self):
+        for rel in ("household/budget.txt", "people/user-2/for-household/recipe.txt"):
+            self.conn.execute("INSERT INTO pinakes.metadata (content_id, schema, vals, source, sensitive) "
+                              "SELECT content_id, 'exif', '{\"gps\": [0, 0]}', 'embedded', true FROM pinakes.files "
+                              "WHERE relpath = %s", (rel,))
+        grp = self.token("user-1", group="household")
+        with self.app_conn() as conn:
+            conn.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')", (hashlib.sha256(grp.encode()).digest(),))
+            self.assertEqual([r[0] for r in conn.execute(
+                "SELECT f.relpath FROM pinakes.metadata m JOIN pinakes.files f USING (content_id) WHERE m.sensitive")],
+                ["household/budget.txt"])                    # the owner's, not the reader's
+
+    def test_upgrade_fills_the_groups_of_each_acl(self):
+        fresh = self.check_upgrade_matches_the_schema()
+        self.assertEqual(len(fresh[-1]), 2, fresh[-1])                  # the household's two ACLs, by its key
+        self.assertEqual(sorted(x.rsplit(":", 1)[1] for x in fresh[-1]), ["owner", "reader"])

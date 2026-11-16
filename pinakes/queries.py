@@ -257,12 +257,13 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
     return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
                                 coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
                                 hi.file_id, hi.history_id, hi.kind IN ('gone', 'moved', 'moved_changed') AS reviewable,
-                                m.mark, m.marked_at, mp.display AS marked_by,
+                                m.mark, m.marked_at, coalesce(mp.display, mg.name) AS marked_by,
                                 c.elsewhere, c.elsewhere_at, c.backups, """ + TOTAL + """
                          FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                          LEFT JOIN pinakes.review_marks m ON m.history_id = hi.history_id
                          LEFT JOIN pinakes.people mp ON mp.person_id = m.marked_by
+                         LEFT JOIN pinakes.groups mg ON mg.group_id = m.marked_by_group
                          LEFT JOIN LATERAL (
                              SELECT count(*) FILTER (WHERE ro.kind <> 'backup') AS elsewhere,
                                     min(oh.name || ' · ' || ro.label || ':' || o.relpath)
@@ -307,12 +308,13 @@ def restores(conn, loc=None, back=False, limit=None, offset=0, sort=None, direct
         root, path = split_location(loc)
         pre = _prefix(path)
     return rows(conn, """SELECT hi.history_id, hi.file_id, hi.kind, hi.seen_on, h.name AS host, r.label AS root,
-                                hi.old_relpath, hi.new_relpath, m.marked_at, mp.display AS marked_by,
+                                hi.old_relpath, hi.new_relpath, m.marked_at, coalesce(mp.display, mg.name) AS marked_by,
                                 encode(ct.sha256, 'hex') AS sha256, b.backups, b.held_in, k.back, """ + TOTAL + """
                          FROM pinakes.review_marks m JOIN pinakes.history hi USING (history_id)
                          JOIN pinakes.files f ON f.file_id = hi.file_id
                          JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
                          LEFT JOIN pinakes.people mp ON mp.person_id = m.marked_by
+                         LEFT JOIN pinakes.groups mg ON mg.group_id = m.marked_by_group
                          LEFT JOIN pinakes.contents ct ON ct.content_id = hi.old_content_id
                          CROSS JOIN LATERAL (
                              SELECT EXISTS (SELECT 1 FROM pinakes.present o

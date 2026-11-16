@@ -36,7 +36,7 @@ The catalog's address is [client] url in ~/.config/pinakes/client.toml (or $PINA
 /etc/pinakes/client.toml), or --url; https, or http to this machine only; [client] ca_file for a site's own CA.
 The token is the first of: a .pinakes-token file in the current folder or one above it, ~/.config/pinakes/token.
 Make one on the web UI's account page; a token file must be yours and readable by you alone (chmod 600). The CLI
-shows only what that person may see, and never steps up.
+shows only what that person (or, with a group token, that group) may see, and never steps up.
 """
 
 import argparse

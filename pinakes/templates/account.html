@@ -23,11 +23,14 @@
 <h2>Tokens</h2>
 <p class="muted">A token lets a program on one of your machines (the <span class="mono">pinakes</span> command, a script)
 ask the catalog as you: only what you may see, never stepped up. Make one per machine, so you can revoke one alone.
-Every call it makes is listed on <a href="{{ url_for('access') }}">Access to your records</a>.</p>
+Every call it makes is listed on <a href="{{ url_for('access') }}">Access to your records</a>.{% if my_groups %} A group
+token asks as one of your groups instead: it sees what the group owns or has shared with it, and none of your own or
+any other member's files; every member sees its calls and may revoke it, and it stops working if you leave the
+group.{% endif %}</p>
 {% if new_token %}<p>Your new token: <span class="mono">{{ new_token }}</span></p>{% endif %}
 {% if tokens %}<div class="scroll"><table>
   <tr><th>Client</th><th>Kind</th><th>Scopes</th><th>Roots</th><th>Made</th><th>Expires</th><th>Last used</th><th></th></tr>
-  {% for t in tokens %}<tr><td>{{ t.client }}</td><td>{{ t.kind }}</td><td>{{ t.scopes | join(', ') }}</td>
+  {% for t in tokens %}<tr><td>{{ t.client }}</td><td>{{ t.kind }}{% if t.group_name %} {{ t.group_name }} <span class="muted">(by {{ t.made_by }})</span>{% endif %}</td><td>{{ t.scopes | join(', ') }}</td>
     <td>{{ 'none' if t.kind == 'ops' else (t.roots | join(', ') if t.roots is not none else 'every root but the protected ones') }}</td>
     <td>{{ t.created.strftime('%Y-%m-%d') }}</td><td>{{ t.expires.strftime('%Y-%m-%d') if t.expires else 'never' }}</td>
     <td>{{ t.last_used.strftime('%Y-%m-%d %H:%M') if t.last_used else 'never' }}</td>
@@ -38,6 +41,8 @@ Every call it makes is listed on <a href="{{ url_for('access') }}">Access to you
 </table></div>{% else %}<p>No tokens yet.</p>{% endif %}
 <form method="post" class="stack"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="action" value="make-token">
   <label>For (a machine or script) <input name="client" maxlength="100" required></label>
+  {% if my_groups %}<label>Asks as <select name="as"><option value="me" selected>you</option>{% for gr in my_groups %}
+    <option value="{{ gr.group_id }}">the group {{ gr.name }}</option>{% endfor %}</select></label>{% endif %}
   <fieldset><legend>Scopes</legend>{% for sc in scopes %}
     <label><input type="checkbox" name="scope" value="{{ sc }}"{% if sc == 'read' %} checked{% endif %}> {{ sc }}</label>{% endfor %}
     <p class="muted">read: ask questions. review and tag: for later commands; nothing uses them yet.</p></fieldset>

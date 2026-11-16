@@ -294,6 +294,13 @@ class Ingester:
         for pid, role in members.items():
             self.q("INSERT INTO pinakes.acl_members (acl_id, person_id, role) VALUES (%s, %s, %s)",
                    (acl_id, pid, role))
+        groups = {owner[1]: "owner"} if owner[0] == "g" else {}       # each group's own role: what its token sees
+        for role, kind, ident in enr:
+            if kind == "g" and (ident not in groups or rank[role] > rank[groups[ident]]):
+                groups[ident] = role
+        self.q("DELETE FROM pinakes.acl_groups WHERE acl_id = %s", (acl_id,))
+        for gid, role in groups.items():
+            self.q("INSERT INTO pinakes.acl_groups (acl_id, group_id, role) VALUES (%s, %s, %s)", (acl_id, gid, role))
 
     def refresh_acl_members(self):
         """Re-expand every ACL (after a group's membership changes)."""

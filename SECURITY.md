@@ -132,14 +132,14 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 
 ## Tokens and the CLI (person tokens built; the rest planned)
 
-ROADMAP 34 to 40; person tokens (34, 36, 37) and ops tokens (39) are built, group and admin tokens not. Every
+ROADMAP 34 to 40; person tokens (34, 36, 37), group tokens (38) and ops tokens (39) are built, admin tokens not. Every
 person-facing function goes through the API in `pinakes-web`, and every client authenticates there; no client holds
 a database credential, not even on the catalog server.
 
 | Token | Acts as | Can |
 |---|---|---|
 | **person** | one person | their own files, what is shared with them and their groups'; scoped `read`, `review`, `tag` |
-| **group** | one group, no member | what the group owns or has shared with it; made by the group's co-owners |
+| **group** | one group, no member | what the group owns or has shared with it, never a member's own; made, seen and revoked by the group's members, and dead once its maker leaves; marks only where the group owns or co-owns, as the group; scoped `read`, `review`, `tag` |
 | **ops** | no person (made by an operator) | `releases`, `stale` and `whoami`; never a person, root or file: the database sets no person for it, so row-level security shows it nothing |
 | **admin** | an administrator (later) | every function (`*`); another person's records still only in a step-up |
 

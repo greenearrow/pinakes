@@ -301,7 +301,7 @@ def create_app(cfg, connect=None):
     def api_begin():
         """Authenticate an API call by its bearer token, before anything else: the database checks the token, sets
         its person for this transaction and records the call. A refused token counts toward the address's limit."""
-        g.person, g.api, g.stepped_up, g.roles, g.scopes = None, True, False, [], ()
+        g.person, g.api, g.stepped_up, g.roles, g.scopes, g.kind, g.group = None, True, False, [], (), None, None
         if request.path == API + "session" and request.method == "POST":
             return                      # signing in: by password, with no token yet
         addr = request.remote_addr or "?"
@@ -319,7 +319,7 @@ def create_app(cfg, connect=None):
         if not row:
             api_failures[addr] = recent + [time.time()]
             return api_answer({"error": "a valid token is needed (Authorization: Bearer ...)"}, 401)
-        g.person, g.scopes = row[0], tuple(row[1])
+        g.person, g.scopes, g.kind, g.group = row[0], tuple(row[1]), row[2], row[3]
 
     @app.errorhandler(HTTPException)
     def http_error(e):
@@ -397,8 +397,11 @@ def create_app(cfg, connect=None):
 
     @api("whoami", SCOPES + ("ops",))
     def whoami():
-        if g.person is None:                    # an ops token: no person, no root
+        if g.kind == "ops":                     # no person, no root
             return {"person": None, "kind": "ops", "scopes": list(g.scopes), "roots": []}
+        if g.kind == "group":                   # the group, and no member
+            return {"person": None, "group": g.group, "kind": "group", "scopes": list(g.scopes),
+                    "roots": [r["label"] for r in queries.roots(g.db)]}
         me = g.db.execute("SELECT name, display FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()
         return {"person": me[0], "display": me[1], "kind": "person", "scopes": list(g.scopes),
                 "roots": [r["label"] for r in queries.roots(g.db)]}
@@ -736,12 +739,14 @@ def create_app(cfg, connect=None):
         return render_template("account.html", msg=msg, has_totp=has_totp, pending=pending,
                                uri=auth.otpauth_uri(pending, g.display or "me") if pending else None,
                                new_token=new_token, tokens=queries.rows(g.db, "SELECT * FROM pinakes.my_tokens()"),
-                               root_choices=queries.root_choices(g.db), scopes=SCOPES)
+                               root_choices=queries.root_choices(g.db), scopes=SCOPES,
+                               my_groups=queries.rows(g.db, "SELECT * FROM pinakes.my_groups()"))
 
     def make_token(form, ops=False):
         """A new token for the signed-in person, from the account page's form: the current password again (a
-        borrowed session can't mint itself a lasting key), a client name, scopes, every root but the protected ones
-        or the roots ticked, and a lifetime in days or none. Returns (message, the secret: shown once, never kept)."""
+        borrowed session can't mint itself a lasting key), a client name, whether it acts as them or as one of their
+        groups, scopes, every root but the protected ones or the roots ticked, and a lifetime in days or none.
+        Returns (message, the secret: shown once, never kept)."""
         name = g.db.execute("SELECT name FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()[0]
         row = g.db.execute("SELECT * FROM pinakes.login_material(%s)", (name,)).fetchone()
         if not auth.check_password(form.get("current", ""), row[1] or auth.DUMMY_HASH):
@@ -753,8 +758,9 @@ def create_app(cfg, connect=None):
         try:
             roots = None if ops or form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
             days = int(form["days"]) if form.get("days", "").strip() else None
+            group = None if ops or form.get("as", "me") == "me" else min(int(form["as"]), 2 ** 31 - 1)
         except ValueError:
-            return "Roots and days are numbers.", None
+            return "Roots, days and the group are numbers.", None
         if not client:
             return "Name the client the token is for (a machine, a script).", None
         if not scopes:
@@ -766,11 +772,12 @@ def create_app(cfg, connect=None):
         secret = TOKEN_PREFIX + secrets.token_urlsafe(32)
         try:
             with g.db.transaction():
-                g.db.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s)",
-                             (client, hashlib.sha256(secret.encode()).digest(), scopes, roots, days))
+                g.db.execute("SELECT pinakes.make_token(%s, %s, %s, %s, %s, %s)",
+                             (client, hashlib.sha256(secret.encode()).digest(), scopes, roots, days, group))
         except psycopg.errors.RaiseException as e:
             return "Not made: %s." % e.diag.message_primary, None
-        return "%s made for %s. Copy it now: it isn't shown again." % ("Ops token" if ops else "Token", client), secret
+        kind = "Ops token" if ops else "Group token" if group is not None else "Token"
+        return "%s made for %s. Copy it now: it isn't shown again." % (kind, client), secret
 
     @app.route("/step-up", methods=["GET", "POST"])
     @signed_in

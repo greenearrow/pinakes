@@ -12,6 +12,7 @@ import io
 import json
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -2293,6 +2294,12 @@ class TestExtracted(ServerCase):
                 with open(os.path.join(UPGRADES, name)) as f:
                     c.execute(f.read())
                 c.execute("RESET search_path")
+            # api-tokens.sql, later in the order, replaces sensitive_visible() for group tokens (ROADMAP 38)
+            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
+                later = re.search(r"^CREATE OR REPLACE FUNCTION sensitive_visible\(.*?^\$\$;$", f.read(), re.M | re.S)
+            c.execute("SET search_path = pinakes")
+            c.execute(later.group(0))
+            c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
 
 

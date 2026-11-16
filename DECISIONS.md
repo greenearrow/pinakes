@@ -426,3 +426,13 @@ were made while building, to keep going, and are open to change.
   reads the database: it says to use `pinakes releases`, so a deploy check that wasn't updated fails loudly, not
   quietly. On the catalog server the client config can name `http://127.0.0.1`. `releases` needs the web service
   running and the catalog upgraded first (`api-tokens.sql`), which the release order already asks.
+- **Group tokens (ROADMAP 38).** "Made and revoked by the group's co-owners": groups have no co-owners of their own
+  (a group is a list of members in `server.toml`), and a group that owns a folder makes every member an owner of it,
+  so a group token is made by any member, seen by every member and revocable by any of them. It stops working when its
+  maker leaves the group, so a departing member can't keep the group's view; another member's tokens go on. It acts
+  as no person: the database finds the group from the token itself (`current_group()`), and `visible_acls()` reads
+  `acl_groups`, the groups each ACL names with the group's own role, so a group token sees a folder the household
+  owns or reads and never a member's own, and its view doesn't change when members come and go. A mark is the
+  group's (`review_marks.marked_by_group`), only where the group is the owner or a co-owner; the audit entry names
+  the token and its maker and goes to every member, as do its calls. Its sensitive metadata follows the owner's rule,
+  by the group's role. Tagging waits for 37.
