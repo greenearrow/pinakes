@@ -376,6 +376,109 @@ folder safe to delete" or "where are the photos from that trip" from the catalog
   everything on the LAN; a hosted assistant receives whatever file names and metadata its queries return. The token
   can be limited to some roots for that reason.
 
+## Scrub: reading unchanged files again (ROADMAP 41)
+
+A file is hashed again only when its size, mtime or inode changes ("Matching moves and changes"), so after its first
+hash nothing reads it again. Bytes that change underneath an unchanged mtime go unnoticed: a disk returning wrong
+data, a bad sector found only on a read, or a program that rewrites a file and puts its mtime back (a tag editor
+"keeping the date", `touch -r`). The catalog would go on vouching for the old hash, and "safe to delete" would count a
+copy that is no longer one. The scrub re-reads every file over a period, in rotation, and checks its hash.
+
+### The unit is a filesystem, the number is days
+
+Disks are read in parallel and fail one by one, so the budget is per filesystem: the unit the agent can see under its
+roots (a partition, an md array, a ZFS dataset, a btrfs volume). Each has one number, `days`: a full pass every that
+many days. The default is 30 (about 3.3 % of its bytes a night); 0 turns it off. A filesystem's bytes are those of
+its cataloged files, an inode counted once, so a hard-linked snapshot root costs one read per inode, not per snapshot.
+
+### The file the agent writes
+
+The agent writes the scrub file itself, from what it finds under its roots; the person edits the numbers. Its path is
+`[agent] scrub` in `agent.toml`, by default `scrub.toml` beside it. On each run the agent:
+
+- creates the file if it is missing, one block per filesystem under its roots, each with the default;
+- appends a block for a filesystem it finds that the file doesn't list, with the default, and says so in one line;
+- never rewrites a block, so a number the person set is never changed and a comment they added stays;
+- leaves a block for a filesystem no longer under any root; `scrub status` shows it as not seen;
+- if it can't write the file (its folder read-only to the agent's user), uses the defaults and says once a run what it
+  would have added.
+
+```toml
+# Written by pinakes-agent from the filesystems under its roots. Edit the numbers; the agent never changes them,
+# and adds a block at the end when it finds a new filesystem.
+# days: read every file of this filesystem again and check its hash, a full pass every this many days
+# (30: about 3.3 % of its bytes a night). 0: off.
+
+[[filesystem]]
+id = "uuid:7d3e1f52-0c4a-4b8e-9a61-2f5c8e0d4b17"   # /mnt/store, ext4; roots store, store-writing
+days = 30
+
+[[filesystem]]
+id = "uuid:c41a09d3-5e7b-4f2a-8d16-0b9e3a7c5f28"   # /mnt/backup, ext4; root store-snapshots
+days = 30
+
+[[filesystem]]
+id = "source:server-2:/export/media"               # /mnt/media, nfs4; root media
+days = 0             # a network filesystem: off by default, its own host's agent should scrub it
+```
+
+A filesystem's `id` is the filesystem's UUID where it has one (found standard-library only: `st_dev` of a root,
+matched in `/proc/self/mountinfo`, the source device's link in `/dev/disk/by-uuid`), else `source:` and the mount
+source (a ZFS dataset, an NFS export). The device number alone is not used: it can change across a reboot for a USB
+or md device. The comment (mount point, type, roots) is written once and is for the person; the agent reads only `id`
+and `days`. Network filesystems (`nfs`, `nfs4`, `cifs`, `smb3`, `fuse.sshfs`) get 0: reading them over the network
+checks the network as much as the disk, and the host that owns the disk can scrub it locally.
+
+### Each run
+
+After a completed scan (`pinakes-agent run` and `scan`; not after one interrupted), per filesystem with `days` above
+0, at the unit's idle I/O priority:
+
+- **The budget** is the filesystem's bytes × the time since its last scrub run ÷ `days`, capped at seven nights'
+  share, so a laptop off for a month catches up over a few runs and not in one. `[agent] scrub_max_minutes`, if set,
+  ends a run's scrub early on every filesystem; the rotation then takes longer, which `scrub status` shows.
+- **The order** is least recently verified first; files never verified (every file when the scrub starts) by device
+  and inode, close to disk order. Each file has a `verified` time in the agent's state, set when it is first hashed
+  and when a scrub confirms it. An inode is read once however many paths it has.
+- **A file** whose size, mtime or inode changed since the state is skipped: the scan just handled it. Otherwise it is
+  read and hashed, its stat taken before and after:
+  - same hash: `verified` set to now. Nothing is sent;
+  - another hash, the stat unchanged before and after the read: a **mismatch**, sent as its own record with the new
+    hash (and chunks, if the root makes them), never as an edit;
+  - the stat changed during the read: skipped, the next scan sees it;
+  - a read error (`EIO` and the like): sent as **unreadable** with the error's name; its `verified` is left as it was,
+    so the next run tries it first.
+
+Interrupted, it loses nothing: each file's `verified` is committed as it goes. A protected root is scrubbed like any
+other, hashes only. Archives are not listed again and metadata is not extracted again: only the whole file's hash is
+checked.
+
+### What the catalog does with it
+
+- A **mismatch** is a history row of its own kind (`mismatch`), with the old and new hash, the window and the file's
+  unchanged times; the file's content becomes the new hash, so only-here, safe-to-delete and duplicates stop counting
+  it as a copy of the old one. It is shown apart from edits on the changes page and is reviewed like a gone file
+  ("Reviewing changes"): *intended* (it was rewritten on purpose) or *restore*, which names the backups holding the
+  old hash.
+- An **unreadable** file keeps its content but is marked (`unreadable_on`, the error) and is not counted as a copy
+  by only-here and safe-to-delete until a later read succeeds; it is reviewed the same way. A file that reads again
+  with its old hash clears the mark; with another hash it becomes a mismatch.
+- Per root, the batch's summary carries the oldest `verified` date, the bytes read and the counts of mismatches and
+  unreadable files. `/health` shows per host the oldest verified date, and calls a host stale when it is older than
+  twice the longest `days`; the operator page shows the same per root, totals only (ROADMAP 10). The scrub file's
+  ids, mount points and comments stay on the machine.
+
+`pinakes-agent scrub status` prints per filesystem: the id, mount point, `days`, bytes, a night's share, the oldest
+verified date, the files never verified, and the last run's mismatches and errors. `pinakes-agent scrub` runs the
+scrub alone, for a machine whose scans run elsewhere in the day.
+
+### What it is not
+
+It finds, never repairs: restoring is the backup tool's, from the restore list. It reads one side of a mirror (md
+RAID1 picks one), so an md array still wants its own check, and on ZFS or btrfs the filesystem's own scrub covers
+corruption below it more cheaply; the pinakes scrub still catches rewrites that kept their mtime and errors above the
+disk. It reads only files the scan already reads, with the same rights: the agent gains no new power.
+
 ## Running on machines that are often off
 
 - Timer with `Persistent=true`, so a missed run happens soon after boot or wake.

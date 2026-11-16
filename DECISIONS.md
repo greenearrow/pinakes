@@ -29,6 +29,12 @@ were made while building, to keep going, and are open to change.
   the start. Every action is a subcommand, flags only modify: `pinakes releases` replaces `pinakes --versions`, and
   a site's deploy checks change with it.
 
+- **The scrub** (2026-11-16). Every file is read again and its hash checked over a period, in rotation, not by
+  random sampling, so each file has a known longest time unchecked. The budget is per filesystem, as one number,
+  `days` for a full pass, default 30 (about 3.3 % a night). The agent writes the file of numbers itself from the
+  filesystems under its roots and the person edits it; a published pinakes has to work for sites that never open
+  it. A changed hash with an unchanged mtime is its own kind of change, not an edit.
+
 ## Build
 
 - **Layout:** one Python package, `pinakes/`, with the agent, ingester, CLI and web as modules; console entry points

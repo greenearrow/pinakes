@@ -76,6 +76,25 @@ copies, found when the first deployment's backup roots turned out to share their
    works by folder rules. The first deployment's shares all write as one account, so uids decide nothing there yet; they
    will once people write as themselves (per-person Samba accounts, no `force user`). Keep `uid_map`; build this then.
 
+## Checking what is stored
+
+41. [Correctness; also stability] **A scrub: re-hash every file over a period, per filesystem** (DESIGN.md "Scrub",
+    agreed 2026-11-16). After a completed scan the agent re-reads its least recently verified files, per filesystem,
+    up to that filesystem's share for the run: its bytes × time since its last scrub ÷ `days`, capped at seven
+    nights. The agent writes `scrub.toml` itself, one block per filesystem under its roots with `days = 30` (0, off,
+    for network filesystems), and appends new ones; the person edits the numbers and the agent never changes them. A
+    hash that differs with the size and mtime unchanged is a `mismatch`, a read error `unreadable`: each its own kind
+    of change, reviewed as *intended* or *restore*, and an unreadable file no copy until it reads again. Needs: a
+    `verified` time per file in the agent's state, filesystem ids from `mountinfo` and `/dev/disk/by-uuid`, the
+    batch format's new records (a new protocol, RELEASES.toml), the history kind and an upgrade. *Done when:* a test
+    flips one byte of a file and puts its mtime back, and the next scrub reports a mismatch, not an edit; an edited
+    file (mtime changed) is not reported; a read error is reported and the file stops counting as a copy until it
+    reads; the file is written with the defaults, a new filesystem is appended, and a number the person changed
+    survives; a filesystem with `days = 0` is never read; the budget and the seven-night cap are respected and a
+    hard-linked inode is read once; an interrupted scrub resumes where it stopped; a protected root is scrubbed with
+    hashes only; another person sees none of the first one's mismatches; the oldest verified date reaches `/health`
+    without a path.
+
 ## The web UI, read-write
 
 8. [Feature; also security] **Owners and enrollments per folder:** give a folder away, enroll people as co-owners,
@@ -158,19 +177,10 @@ folder, 36, `--as`, reviewing from a folder (37's first part), 38, group tokens,
 
 ## Proposed (from a review of the whole project; not yet agreed)
 
-Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started.
+Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started
+(41, the scrub, was agreed and moved above).
 Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
 
-41. [Correctness; also stability] **A scrub: re-hash a rolling share of unchanged files.** A file is hashed again only
-    when its size, mtime or inode changes (DESIGN.md "Incremental"), so a disk that silently returns different bytes
-    is never noticed: the catalog goes on vouching for a hash the file no longer has, and "safe to delete" trusts it.
-    A scan option re-reads the least recently verified files up to a budget (bytes or minutes per night), and a
-    mismatch with unchanged size and mtime is reported as its own kind of change, never as an edit. Sits next to:
-    resumable scans, the mass-gone guard, the changes page. Value: high (it is what makes a hash a guarantee and not a
-    memory). Cost: M. Risk: I/O on a small server; a budget and the unit's own limits bound it. Needs: a `verified`
-    date per file in the agent's state. *Done when:* a test flips one byte of a file without touching its mtime and
-    the next scrub reports it; an edited file (mtime changed) is not reported as corruption; a protected root is
-    scrubbed like any other (hashes only); the budget is respected.
 42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
     folder by folder before a disk fails. One report per device: how much has no copy on another disk, by owner and
     by top folder, with the largest folders first, and the same per host ("if this machine burned"). On the operator
