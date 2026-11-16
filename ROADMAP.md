@@ -221,6 +221,24 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
+48. [Scalability; also security] **A fast home page after sign-in.** Signing in is one scrypt check (a few tenths
+    of a second, by design); the page it lands on counts every present file of every root twice, all and hidden,
+    under row-level security, on every visit (`queries.roots()`). In two steps, measuring first:
+    (a) EXPLAIN ANALYZE the home page's queries on a generated catalog the size of the first deployment's. The
+    `files` policy calls `visible_acls()` bare while `token_roots()` is wrapped as `(SELECT ...)`; if the function
+    runs per row, wrapping it too runs it once per query, for every page and not only this one. Stop here if that
+    is enough.
+    (b) Otherwise keep the counts: present files and bytes per root, ACL and hidden flag, rewritten for a root when
+    its scan completes (where `last_complete_on` is set) and for the roots a batch, a retire-root or an ACL change
+    touched; under the same policy as `files`, so the home page sums the few rows a person may see and gets exactly
+    today's numbers, for a person, a group token or a token held to some roots. Keyed by ACL, a change of group
+    membership needs no rewrite. Not one total per root: totals differ by person, and a shared number would tell a
+    person how many files others have. `upgrades/root-counts.sql` fills it once. Sits next to: hidden files (the
+    count left out), the operator page (10), growth (47), which could read the same table. Value: high (every
+    sign-in). Cost: S for (a), M for (b). Risk: counts going stale when a write path forgets them. *Done when:* the
+    home page's numbers equal a live count for two people, a group token and a token held to some roots, hidden
+    shown and not, after a full scan, a partial batch, a retire-root and an ACL change; and the page's time on the
+    generated catalog is stated before and after.
 
 ## Later, or a wish
 
