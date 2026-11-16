@@ -31,9 +31,9 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   {"error": "..."} with 400, 401, 403, 404 or 429.
 
 /health answers without sign-in, for monitoring: whether the database is reachable, and per host its newest batch,
-last complete scan, whether it is stale, whether its batches are being refused (protocol or sequence) and when its
-agent's numbering last went back (200 when all is well, 503 when a host is stale or refused). It names hosts, never
-a root, person or file. [web] health_listen serves it alone on a second address, for a monitor that can't reach the
+last complete scan, whether it is stale, whether its batches are being refused (protocol or sequence), when its
+agent's numbering last went back, and its scrub's oldest check and whether the scrub is behind (200 when all is
+well, 503 when a host is stale, refused or its scrub behind). It names hosts, never a root, person or file. [web] health_listen serves it alone on a second address, for a monitor that can't reach the
 UI's.
 """
 
@@ -154,11 +154,12 @@ def health_report(connect):
     finally:
         db.close()
     status = ("refused" if any(h["refused"] for h in hosts) else "stale" if any(h["stale"] for h in hosts)
-              else "ok")
+              else "scrub behind" if any(h["scrub_behind"] for h in hosts) else "ok")
     body = {"status": status, "database": "ok",
             "hosts": [{"host": h["host"], "newest_batch": _iso(h["newest_batch"]), "last_scan": _iso(h["last_scan"]),
                        "expected_every_s": int(h["expected_every"].total_seconds()) if h["expected_every"] else None,
-                       "stale": h["stale"], "refused": h["refused"], "seq_reset": _iso(h["seq_reset_at"])}
+                       "stale": h["stale"], "refused": h["refused"], "seq_reset": _iso(h["seq_reset_at"]),
+                       "scrub_oldest": _iso(h["scrub_oldest"]), "scrub_behind": h["scrub_behind"]}
                       for h in hosts]}
     return (200 if body["status"] == "ok" else 503), body
 

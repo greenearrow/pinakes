@@ -131,6 +131,11 @@ class ApiCase(ServerCase):
             self.assertNotEqual(c.execute(defs, args).fetchone(), fresh[:-1])
             with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:
                 c.execute(f.read())
+            # then mark_changes() as scrub.sql, later in the order, replaces it (scrub findings reviewed, ROADMAP 41)
+            with open(os.path.join(UPGRADES, "scrub.sql")) as f:
+                scrub = f.read()
+            start = scrub.index("CREATE OR REPLACE FUNCTION mark_changes")
+            c.execute("SET search_path = pinakes; " + scrub[start:scrub.index("END $$;", start) + len("END $$;")])
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs, args).fetchone() + c.execute(groups).fetchone(), fresh)
         return fresh
@@ -776,7 +781,8 @@ as = "co-owner"
         cli = self.as_("user-1")
         with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", return_value="n"):
             out = cli("review", "intended", cwd=self.folder)
-        self.assertIn("3 unreviewed gone file(s) and move(s) under store:people/user-1/cleanup", out)
+        self.assertIn("3 unreviewed change(s) (gone, moved, or found by the scrub) under store:people/user-1/cleanup",
+                      out)
         self.assertTrue(out.endswith("not marked\n"), out)
         self.assertEqual(self.marks(), {})
         with mock.patch("sys.stdin.isatty", return_value=True), \

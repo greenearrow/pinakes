@@ -4,8 +4,8 @@
   tools/test                         every test, on the newest PostgreSQL installed, with .venv's Python
   tools/test --pg 18                 on PostgreSQL 18 (/usr/lib/postgresql/18/bin), or --pg-bin DIR
   tools/test --python PATH           with another interpreter (it needs the server extras: psycopg, flask)
-  tools/test --agent-only            only the agent's tests (test_agent, test_extract, test_registry, test_releases): no
-                                     PostgreSQL, standard library only
+  tools/test --agent-only            only the agent's tests (test_agent, test_scrub, test_extract, test_registry,
+                                     test_releases): no PostgreSQL, standard library only
   tools/test test_server.TestSymlinks ...   only these
   tools/test --matrix [--jobs N]     each Python in .matrix/ and each PostgreSQL installed once, paired oldest with
                                      oldest (the shorter list repeats); --matrix full: every pair. One line per
@@ -201,7 +201,7 @@ def main():
     ap.add_argument("--pg-bin", help="the folder holding initdb and pg_ctl")
     ap.add_argument("--python", help="the interpreter to test with (default: .venv/bin/python, else this one)")
     ap.add_argument("--agent-only", action="store_true",
-                    help="test_agent, test_extract, test_registry and test_releases only; no PostgreSQL")
+                    help="test_agent, test_scrub, test_extract, test_registry and test_releases only; no PostgreSQL")
     ap.add_argument("--keep", action="store_true", help="on failure, keep the cluster's folder and say where")
     ap.add_argument("--matrix", nargs="?", const="lean", choices=("lean", "full"),
                     help="run across Pythons and PostgreSQL versions (see above)")
@@ -226,7 +226,8 @@ def main():
     env = dict(os.environ)
     for k in ("PINAKES_TEST_PGHOST", "PINAKES_TEST_PGUSER", "PGHOST", "PGPORT", "PGUSER", "PGDATABASE"):
         env.pop(k, None)
-    names = args.tests or (["test_agent", "test_extract", "test_registry", "test_releases"] if args.agent_only else [])
+    names = args.tests or (["test_agent", "test_scrub", "test_extract", "test_registry", "test_releases"]
+                           if args.agent_only else [])
     on = "Python %s, %s %s, %s" % (pyver, platform.system(), platform.release(), platform.machine())
 
     tmp = None

@@ -431,8 +431,10 @@ checks the network as much as the disk, and the host that owns the disk can scru
 
 ### Each run
 
-After a completed scan (`pinakes-agent run` and `scan`; not after one interrupted), per filesystem with `days` above
-0, at the unit's idle I/O priority:
+After the scans (`pinakes-agent run` and `scan`; `scan --root` only on that root's filesystems), per filesystem with
+`days` above 0 and no root on it with a scan unfinished, at the unit's idle I/O priority. Over ssh it runs only once
+the server's last check-in said protocol 2 or later, the first that takes its batches; an agent on the server itself
+always runs it:
 
 - **The budget** is the filesystem's bytes × the time since its last scrub run ÷ `days`, capped at seven nights'
   share, so a laptop off for a month catches up over a few runs and not in one. `[agent] scrub_max_minutes`, if set,
@@ -449,8 +451,10 @@ After a completed scan (`pinakes-agent run` and `scan`; not after one interrupte
   - a read error (`EIO` and the like): sent as **unreadable** with the error's name; its `verified` is left as it was,
     so the next run tries it first.
 
-Interrupted, it loses nothing: each file's `verified` is committed as it goes. A protected root is scrubbed like any
-other, hashes only. Archives are not listed again and metadata is not extracted again: only the whole file's hash is
+Interrupted, it loses nothing: a file found right has its `verified` committed as it goes; a finding to send (a
+mismatch, a read error or its clearing) is kept in the state together with the batch that sends it, at the end of the
+run, so one interrupted before that is found again the next time. Each run writes one batch per root it scrubbed,
+with the root's summary, whether it found anything or not. A protected root is scrubbed like any other, hashes only. Archives are not listed again and metadata is not extracted again: only the whole file's hash is
 checked.
 
 ### What the catalog does with it
@@ -463,10 +467,14 @@ checked.
 - An **unreadable** file keeps its content but is marked (`unreadable_on`, the error) and is not counted as a copy
   by only-here and safe-to-delete until a later read succeeds; it is reviewed the same way. A file that reads again
   with its old hash clears the mark; with another hash it becomes a mismatch.
-- Per root, the batch's summary carries the oldest `verified` date, the bytes read and the counts of mismatches and
-  unreadable files. `/health` shows per host the oldest verified date, and calls a host stale when it is older than
-  twice the longest `days`; the operator page shows the same per root, totals only (ROADMAP 10). The scrub file's
-  ids, mount points and comments stay on the machine.
+- A backup root keeps no history of its own (as for edits): a mismatch there only gives the copy its new content and
+  an unreadable copy is only marked, which is what stops either counting as a copy.
+- Per root, the batch's summary carries the run's date, the root's `days`, its files' oldest `verified` date, how
+  many were never verified, and the counts of mismatches and unreadable files. `/health` shows per host the oldest
+  check (before a first pass is done, the day the scrub began there) and whether the scrub is behind: its last run
+  older than `days`, a file's last check older than twice `days`, or a first pass not done in twice `days`; behind
+  answers 503, as a stale host does. An operator page (ROADMAP 10) is to show the same per root, totals only. The
+  scrub file's ids, mount points and comments stay on the machine.
 
 `pinakes-agent scrub status` prints per filesystem: the id, mount point, `days`, bytes, a night's share, the oldest
 verified date, the files never verified, and the last run's mismatches and errors. `pinakes-agent scrub` runs the

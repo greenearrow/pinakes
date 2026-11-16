@@ -5,7 +5,7 @@ import datetime
 import re
 
 FILE_COLS = ("f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on, "
-             "f.hidden")
+             "f.hidden, f.unreadable_on, f.unreadable_error")
 
 
 def today():
@@ -124,14 +124,16 @@ def where(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
 
 # Copies of a file f (in root r) outside a folder, counted physically: distinct (host, device, inode), never f's own
 # inode (a hard link of f is the same data, not a copy). A copy is on another disk when its host differs, or its
-# device does on the same host; a device the catalog doesn't know counts as the same disk. %%s: the folder's pattern.
+# device does on the same host; a device the catalog doesn't know counts as the same disk. A copy the scrub couldn't
+# read (unreadable_on) is no copy until it reads again (DESIGN.md "Scrub"). %%s: the folder's pattern.
 _COPIES = """CROSS JOIN LATERAL (
         SELECT count(DISTINCT (ro.host_id, o.dev, o.ino))
                    FILTER (WHERE NOT coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS same_disk,
                count(DISTINCT (ro.host_id, o.dev, o.ino))
                    FILTER (WHERE coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS other_disk
         FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
-        WHERE o.content_id = f.content_id AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s)
+        WHERE o.content_id = f.content_id AND o.unreadable_on IS NULL
+          AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s)
           AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false) %s) s"""
 COPY_SORT = dict(FILE_SORT, same_disk=("s.same_disk",))
 
@@ -184,6 +186,7 @@ def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
                                 count(b.file_id) AS snapshots, max(b.snapshot) AS newest, """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
+                                                     AND b.unreadable_on IS NULL
                          LEFT JOIN pinakes.roots br ON br.root_id = b.root_id
                          WHERE r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s)
                          GROUP BY f.file_id, f.relpath"""
@@ -218,7 +221,7 @@ def history(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
                 + order(HISTORY_SORT, sort, direction, "h.seen_on, h.history_id") + PAGE, (file_id, limit, offset))
 
 
-KINDS = ("new", "changed", "moved", "moved_changed", "gone")
+KINDS = ("new", "changed", "moved", "moved_changed", "gone", "mismatch", "unreadable")
 
 
 def _kinds(kinds):
@@ -227,7 +230,8 @@ def _kinds(kinds):
     return k or None
 
 
-REVIEWABLE = ("gone", "moved", "moved_changed")         # the kinds a review marks (ROADMAP 32)
+REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # the kinds a review marks (ROADMAP 32,
+                                                                            # 41)
 REVIEWS = ("unreviewed", "reviewed")
 
 
@@ -235,10 +239,10 @@ def _review(review):
     return review if review in REVIEWS else None
 
 
-# The review filter on history hi with its mark m: unreviewed is a gone file or a move with no mark.
-_REVIEW_WHERE = """(%s::text IS NULL OR (%s = 'reviewed' AND m.history_id IS NOT NULL)
-                     OR (%s = 'unreviewed' AND m.history_id IS NULL
-                         AND hi.kind IN ('gone', 'moved', 'moved_changed')))"""
+# The review filter on history hi with its mark m: unreviewed is a reviewable change with no mark.
+_REVIEW_WHERE = """(%%s::text IS NULL OR (%%s = 'reviewed' AND m.history_id IS NOT NULL)
+                     OR (%%s = 'unreviewed' AND m.history_id IS NULL
+                         AND hi.kind IN (%s)))""" % ", ".join("'%s'" % k for k in REVIEWABLE)
 
 
 def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None,
@@ -256,7 +260,7 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
     rv = _review(review)
     return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
                                 coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
-                                hi.file_id, hi.history_id, hi.kind IN ('gone', 'moved', 'moved_changed') AS reviewable,
+                                hi.file_id, hi.history_id, hi.kind IN ('gone', 'moved', 'moved_changed', 'mismatch', 'unreadable') AS reviewable,
                                 m.mark, m.marked_at, coalesce(mp.display, mg.name) AS marked_by,
                                 c.elsewhere, c.elsewhere_at, c.backups, """ + TOTAL + """
                          FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
@@ -272,7 +276,8 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
                                         AS backups
                              FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
                              JOIN pinakes.hosts oh ON oh.host_id = ro.host_id
-                             WHERE hi.kind = 'gone' AND o.content_id = hi.old_content_id) c ON true
+                             WHERE hi.kind = 'gone' AND o.content_id = hi.old_content_id
+                               AND o.unreadable_on IS NULL) c ON true
                          WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
                            AND (%s::text IS NULL OR h.name = %s)
                            AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
@@ -319,6 +324,7 @@ def restores(conn, loc=None, back=False, limit=None, offset=0, sort=None, direct
                          CROSS JOIN LATERAL (
                              SELECT EXISTS (SELECT 1 FROM pinakes.present o
                                             WHERE o.root_id = f.root_id AND o.content_id = hi.old_content_id
+                                              AND o.unreadable_on IS NULL
                                               AND (hi.kind = 'gone' OR o.relpath = hi.old_relpath)) AS back) k
                          CROSS JOIN LATERAL (
                              SELECT count(*) AS backups,
@@ -330,6 +336,7 @@ def restores(conn, loc=None, back=False, limit=None, offset=0, sort=None, direct
                                    FROM pinakes.present bo JOIN pinakes.roots br ON br.root_id = bo.root_id
                                    JOIN pinakes.hosts bh ON bh.host_id = br.host_id
                                    WHERE br.kind = 'backup' AND bo.content_id = hi.old_content_id
+                                     AND bo.unreadable_on IS NULL
                                    ORDER BY bh.host_id, bo.dev, bo.ino, bo.snapshot DESC NULLS LAST) x) b
                          WHERE m.mark = 'restore' AND (%s OR NOT k.back)
                            AND (%s::text IS NULL OR r.label = %s AND (hi.old_relpath LIKE %s OR hi.new_relpath LIKE %s))"""
@@ -344,7 +351,8 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
     """Per folder, what happened under it in the last `days`: files new, changed, moved in (destination), moved out
     (source) and gone. A tracked move counts at both ends, never as new and gone; a move inside a folder counts
     there as both in and out. From the folder `loc` (ROOT:PATH; None: every root) down `depth` levels, in tree order.
-    `unreviewed` counts the gone files and moves under it with no review mark (a move once), and `review` filters
+    `scrub` counts what the scrub found (a mismatch or an unreadable file). `unreviewed` counts the gone files, moves
+    and scrub findings under it with no review mark (a move once), and `review` filters
     as in changes(). `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
     since = today() - datetime.timedelta(days=days)
     root, pre, base = None, "%", 0
@@ -354,8 +362,8 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
         base = len([p for p in path.split("/") if p])
     return rows(conn, """WITH ev AS (
                              SELECT h.name AS host, r.label AS root, f.owner_id, x.role, hi.history_id,
-                                    (m.history_id IS NULL AND hi.kind IN ('gone', 'moved', 'moved_changed'))
-                                        AS unreviewed,
+                                    (m.history_id IS NULL AND hi.kind IN ('gone', 'moved', 'moved_changed',
+                                                                          'mismatch', 'unreadable')) AS unreviewed,
                                     string_to_array(x.path, '/') AS parts
                              FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
                              JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
@@ -365,7 +373,9 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
                                  (CASE WHEN hi.kind IN ('moved', 'moved_changed') THEN hi.old_relpath END, 'out'),
                                  (CASE WHEN hi.kind = 'new' THEN hi.new_relpath END, 'new'),
                                  (CASE WHEN hi.kind = 'changed' THEN hi.new_relpath END, 'changed'),
-                                 (CASE WHEN hi.kind = 'gone' THEN hi.old_relpath END, 'gone')) AS x (path, role)
+                                 (CASE WHEN hi.kind = 'gone' THEN hi.old_relpath END, 'gone'),
+                                 (CASE WHEN hi.kind IN ('mismatch', 'unreadable') THEN hi.new_relpath END, 'scrub'))
+                                 AS x (path, role)
                              WHERE hi.seen_on >= %s AND x.path IS NOT NULL AND x.path LIKE %s
                                AND (%s::text IS NULL OR r.label = %s)
                                AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
@@ -380,6 +390,7 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
                                 count(*) FILTER (WHERE role = 'in') AS moved_in,
                                 count(*) FILTER (WHERE role = 'out') AS moved_out,
                                 count(*) FILTER (WHERE role = 'gone') AS gone,
+                                count(*) FILTER (WHERE role = 'scrub') AS scrub,
                                 count(DISTINCT history_id) FILTER (WHERE unreviewed) AS unreviewed,
                                 array_agg(DISTINCT owner_id) FILTER (WHERE owner_id IS NOT NULL) AS owners
                          FROM t GROUP BY host, root, folder ORDER BY host, root, folder LIMIT %s""",
@@ -511,10 +522,20 @@ def stale(conn):
                          ORDER BY last_scan NULLS FIRST""")
 
 
+# A root's scrub is behind (DESIGN.md "Scrub") when its last run is older than a full pass, or a file still there
+# was last checked more than two full passes ago (or never, two passes after the scrub began). Off (days 0) or not
+# reported: never behind.
+_SCRUB_BEHIND = """(r.scrub_days > 0 AND (r.scrub_on < current_date - r.scrub_days
+                    OR r.scrub_oldest < current_date - 2 * r.scrub_days
+                    OR (r.scrub_never > 0 AND r.scrub_since < current_date - 2 * r.scrub_days)))"""
+
+
 def health(conn):
     """Per host: its newest batch, its last complete scan, how often it should report, whether it is stale, whether
-    its batches are being refused (a refusal since its newest batch applied: for its protocol or its sequence), and
-    when its agent's numbering last went back. Host names and times only: no root, person or file."""
+    its batches are being refused (a refusal since its newest batch applied: for its protocol or its sequence), when
+    its agent's numbering last went back, and its scrub: the oldest check of a file on any of its roots (before a
+    full pass, the day the scrub began there) and whether the scrub is behind. Host names, dates and times only: no
+    root, person or file."""
     return rows(conn, """SELECT x.*, (x.refused_at IS NOT NULL AND (x.newest_batch IS NULL
                                       OR x.refused_at > x.newest_batch)) AS refused
                          FROM (SELECT h.name AS host, (SELECT max(i.at) FROM pinakes.ingested i
@@ -522,8 +543,14 @@ def health(conn):
                                       h.last_scan, h.expected_every,
                                       (h.expected_every IS NOT NULL AND (h.last_scan IS NULL
                                        OR h.last_scan < now() - h.expected_every)) AS stale,
-                                      c.refused_at, c.seq_reset_at
-                               FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id)) x
+                                      c.refused_at, c.seq_reset_at, s.scrub_oldest, coalesce(s.scrub_behind, false)
+                                          AS scrub_behind
+                               FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id)
+                               LEFT JOIN LATERAL (
+                                   SELECT min(CASE WHEN r.scrub_never > 0 THEN r.scrub_since ELSE r.scrub_oldest END)
+                                              FILTER (WHERE r.scrub_days > 0) AS scrub_oldest,
+                                          bool_or(""" + _SCRUB_BEHIND + """) AS scrub_behind
+                                   FROM pinakes.roots r WHERE r.host_id = h.host_id) s ON true) x
                          ORDER BY x.host""")
 
 

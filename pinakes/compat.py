@@ -8,14 +8,19 @@ nothing and counts as protocol 0.
 
 RELEASE = 5                 # the newest entry in RELEASES.toml (cut or being prepared)
 PROTOCOL = 2                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
-                            # server at check-in, a complete full scan retires what it didn't send
+                            # server at check-in, a complete full scan retires what it didn't send, scrub batches
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
 # What a batch may carry, by the protocol above: a field outside these fails the tests, so adding one raises it.
 BATCH_FIELDS = {
     "header": ("t", "format", "host", "root", "scan", "started", "root_def", "seq", "complete", "records",
-               "release", "protocol", "min_server_protocol", "full", "accept_gone"),
+               "release", "protocol", "min_server_protocol", "full", "accept_gone", "scrub"),
+    # a scrub batch (DESIGN.md "Scrub"): its header's "scrub" in place of "scan", and only these records
+    "scrub": ("on", "days", "oldest", "never", "mismatches", "unreadable"),
+    "mismatch": ("t", "path", "size", "mtime_ns", "dev", "ino", "sha256", "verified", "chunk_params", "chunks"),
+    "unreadable": ("t", "path", "error"),
+    "readable": ("t", "path"),
     "root_def": ("path", "kind", "protected", "mirrors"),
     "file": ("t", "path", "size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256",
              "chunk_params", "chunks", "members", "members_error", "unstable", "protected_link", "hidden", "meta",
@@ -41,6 +46,8 @@ UPGRADE_PROBES = {
     "takeovers.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.checkins') "
                      "AND attname = 'seq_reset' AND NOT attisdropped)",
     "api-tokens.sql": "to_regclass('pinakes.tokens') IS NOT NULL",
+    "scrub.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
+                 "AND attname = 'unreadable_on' AND NOT attisdropped)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

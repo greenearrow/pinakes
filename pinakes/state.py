@@ -29,7 +29,8 @@ class State:
         have = [r["name"] for r in self.db.execute("PRAGMA table_info(files)")]
         # state from an older release: a file whose new fields aren't empty gets sent again by the next scan
         for col, typ in (("protected_link", "INTEGER"), ("t", "TEXT"), ("target", "TEXT"), ("link_root", "TEXT"),
-                         ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT"), ("hidden", "INTEGER")):
+                         ("link_path", "TEXT"), ("dangling", "INTEGER"), ("meta_v", "TEXT"), ("hidden", "INTEGER"),
+                         ("verified", "REAL"), ("scrub_error", "TEXT")):
             if col not in have:
                 self.db.execute("ALTER TABLE files ADD COLUMN %s %s" % (col, typ))
         # full: the scan resent every file from its start (scan --full each time it ran), so the server may retire
@@ -43,6 +44,10 @@ class State:
         # file, so it was never read. A row with a hash was a regular file then (a symlink got none); one without is
         # an old symlink, resent anyway as its type now differs, or a file not hashed, which nothing is read from.
         # Once: every row written since has its type
+        # verified: when the file's content was last read and its hash found right (hashed by a scan, or confirmed
+        # by the scrub, DESIGN.md "Scrub"); NULL: never, so the scrub reads it first. scrub_error: the read error the
+        # scrub last sent for it, so it isn't sent again each run, and its clearing is
+        self.db.execute("CREATE INDEX IF NOT EXISTS files_verified ON files (verified, dev, ino)")
         if self.db.execute("SELECT 1 FROM meta WHERE key = 'types_filled'").fetchone() is None:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("UPDATE files SET t = 'file' WHERE t IS NULL AND sha256 IS NOT NULL")
@@ -116,10 +121,28 @@ class State:
                                (sha256, meta_v)).fetchone() is not None
 
     def put(self, root, relpath, rec, scan_id):
+        """Keep a file's row as last sent. Its content was read now unless the row before had the same hash, size,
+        mtime and inode (only its metadata changed): then when it was last verified, and any read error, stay."""
+        prev = self.db.execute("SELECT sha256, size, mtime_ns, dev, ino, verified, scrub_error FROM files "
+                               "WHERE root = ? AND relpath = ?", (root, relpath)).fetchone()
+        if rec.get("sha256") is None:
+            verified, err = None, None
+        elif prev is not None and (prev["sha256"], prev["size"], prev["mtime_ns"], prev["dev"], prev["ino"]) == (
+                rec.get("sha256"), rec.get("size"), rec.get("mtime_ns"), rec.get("dev"), rec.get("ino")):
+            verified, err = prev["verified"], prev["scrub_error"]
+        else:
+            verified, err = time.time(), None
         self.db.execute(
-            "INSERT OR REPLACE INTO files (root, relpath, %s, seen_scan) VALUES (?, ?, %s, ?)"
-            % (", ".join(COLUMNS), ", ".join("?" * len(COLUMNS))),
-            (root, relpath) + tuple(rec.get(c) for c in COLUMNS) + (scan_id,))
+            "INSERT OR REPLACE INTO files (root, relpath, %s, seen_scan, verified, scrub_error) "
+            "VALUES (?, ?, %s, ?, ?, ?)" % (", ".join(COLUMNS), ", ".join("?" * len(COLUMNS))),
+            (root, relpath) + tuple(rec.get(c) for c in COLUMNS) + (scan_id, verified, err))
+
+    def get_meta(self, key):
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key, value):
+        self.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
 
     def mark_seen(self, root, relpath, scan_id):
         self.db.execute("UPDATE files SET seen_scan = ? WHERE root = ? AND relpath = ?", (scan_id, root, relpath))

@@ -38,7 +38,8 @@
 {% else %}<tr><td colspan="3" class="muted">No duplicates.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "contents") }}
 {% elif name == 'changes' %}
-{% set labels = {'new': 'new', 'changed': 'changed', 'moved': 'moved', 'moved_changed': 'moved and changed', 'gone': 'gone'} %}
+{% set labels = {'new': 'new', 'changed': 'changed', 'moved': 'moved', 'moved_changed': 'moved and changed', 'gone': 'gone', 'mismatch': 'mismatch (scrub)', 'unreadable': 'unreadable (scrub)'} %}
+{% set reviewable = ['gone', 'moved', 'moved_changed', 'mismatch', 'unreadable'] %}
 <form class="filters">
   <label>Last <input name="days" value="{{ ch.days }}" size="3" inputmode="numeric"> days</label>
   <label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (all roots)" size="30"></label>
@@ -53,30 +54,30 @@
 <p class="muted">Files under each folder. A tracked move counts as moved in at its destination and moved out at its source, not as new and gone; a move within a folder counts there as both. A move between roots is not tracked: it shows as gone and new.</p>
 {% macro n(t, count, what, review=ch.review) %}{% if count %}<a href="{{ url_for('report', name='changes', days=ch.days, depth=ch.depth, loc=t.root ~ ':' ~ t.folder ~ ('/' if t.folder else ''), what=what, review=review) }}">{{ count }}</a>{% else %}<span class="muted">·</span>{% endif %}{% endmacro %}
 <div class="scroll"><table class="tree">
-<tr><th>Folder</th><th class="num">New</th><th class="num">Changed</th><th class="num">Moved in</th><th class="num">Moved out</th><th class="num">Gone</th><th class="num">Unreviewed</th></tr>
+<tr><th>Folder</th><th class="num">New</th><th class="num">Changed</th><th class="num">Moved in</th><th class="num">Moved out</th><th class="num">Gone</th><th class="num">Scrub</th><th class="num">Unreviewed</th></tr>
 {% set base = ch.tree[0].level if ch.tree else 0 %}
 {% for t in ch.tree %}<tr><td class="t{{ [t.level - base, 8]|min }}">{% set here = t.root ~ ':' ~ t.folder ~ ('/' if t.folder else '') %}<a href="{{ url_for('report', name='changes', days=ch.days, depth=ch.depth, loc=here, what=ch.kinds, review=ch.review) }}">{% if t.folder %}{{ t.folder.split('/')[-1] }}/{% else %}{{ t.host }} · {{ t.root }}{% endif %}</a></td>
   <td class="num">{{ n(t, t.new, ['new']) }}</td><td class="num">{{ n(t, t.changed, ['changed']) }}</td>
   <td class="num">{{ n(t, t.moved_in, ['moved', 'moved_changed']) }}</td><td class="num">{{ n(t, t.moved_out, ['moved', 'moved_changed']) }}</td>
-  <td class="num">{{ n(t, t.gone, ['gone']) }}</td><td class="num">{{ n(t, t.unreviewed, ['gone', 'moved', 'moved_changed'], 'unreviewed') }}</td></tr>
-{% else %}<tr><td colspan="7" class="muted">Nothing changed{% if loc %} under {{ loc }}{% endif %} in the last {{ ch.days }} days.</td></tr>{% endfor %}
+  <td class="num">{{ n(t, t.gone, ['gone']) }}</td><td class="num">{{ n(t, t.scrub, ['mismatch', 'unreadable']) }}</td><td class="num">{{ n(t, t.unreviewed, reviewable, 'unreviewed') }}</td></tr>
+{% else %}<tr><td colspan="8" class="muted">Nothing changed{% if loc %} under {{ loc }}{% endif %} in the last {{ ch.days }} days.</td></tr>{% endfor %}
 </table></div>
 {% if ch.tree_cut %}<p class="muted">Only the first {{ ch.tree|length }} folders: pick a folder or a smaller depth.</p>{% endif %}
 <h2>Each change</h2>
 {% macro keep() %}<input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="days" value="{{ ch.days }}"><input type="hidden" name="depth" value="{{ ch.depth }}"><input type="hidden" name="loc" value="{{ loc }}">{% for k in ch.kinds %}<input type="hidden" name="what" value="{{ k }}">{% endfor %}<input type="hidden" name="review" value="{{ ch.review or '' }}">{% endmacro %}
 <form id="marks" method="post" action="{{ url_for('mark_changes') }}">{{ keep() }}
   <p>Ticked: <button name="mark" value="intended">intended</button> <button name="mark" value="restore">restore</button> <button name="mark" value="clear">clear the mark</button>
-  <span class="muted">Gone files and moves only. Restoring is done from the backup on its own machine; pinakes only says where the copy is.</span></p>
+  <span class="muted">Gone files, moves and what the scrub found only. Restoring is done from the backup on its own machine; pinakes only says where the copy is.</span></p>
 </form>
 {{ pager(pg, "changes") }}
 <div class="scroll"><table><tr><th></th>{{ th(pg, "seen", "Seen") }}{{ th(pg, "where", "Where") }}{{ th(pg, "what", "What") }}{{ th(pg, "path", "Path") }}<th>Review</th></tr>
-{% for r in rows %}<tr><td>{% if r.reviewable %}<input type="checkbox" form="marks" name="id" value="{{ r.history_id }}" aria-label="select {{ r.path }}">{% endif %}</td><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ labels[r.kind] }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a>{% if r.kind in ('moved', 'moved_changed') %}<br><span class="muted">from {{ r.old_relpath }}</span>{% endif %}{% if r.kind == 'gone' %}<br>{% if r.elsewhere %}<span class="muted">still at {{ r.elsewhere_at }}{% if r.elsewhere > 1 %} and {{ r.elsewhere - 1 }} more{% endif %}</span>{% elif r.backups %}<span class="error">only in {{ r.backups }} backup cop{{ 'y' if r.backups == 1 else 'ies' }}: restore it, or mark it intended</span>{% else %}<span class="error">no other copy you can see: may be lost</span>{% endif %}{% endif %}</td>
+{% for r in rows %}<tr><td>{% if r.reviewable %}<input type="checkbox" form="marks" name="id" value="{{ r.history_id }}" aria-label="select {{ r.path }}">{% endif %}</td><td>{{ r.seen_on }}</td><td>{{ r.host }} · {{ r.root }}</td><td>{{ labels[r.kind] }}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.path }}</a>{% if r.kind in ('moved', 'moved_changed') %}<br><span class="muted">from {{ r.old_relpath }}</span>{% endif %}{% if r.kind == 'mismatch' %}<br><span class="error">its content changed with its size and date unchanged: restore it, or mark it intended if it was rewritten on purpose</span>{% elif r.kind == 'unreadable' %}<br><span class="error">couldn't be read: not counted as a copy until it reads again</span>{% endif %}{% if r.kind == 'gone' %}<br>{% if r.elsewhere %}<span class="muted">still at {{ r.elsewhere_at }}{% if r.elsewhere > 1 %} and {{ r.elsewhere - 1 }} more{% endif %}</span>{% elif r.backups %}<span class="error">only in {{ r.backups }} backup cop{{ 'y' if r.backups == 1 else 'ies' }}: restore it, or mark it intended</span>{% else %}<span class="error">no other copy you can see: may be lost</span>{% endif %}{% endif %}</td>
   <td>{% if r.mark %}<span class="tag">{{ r.mark }}</span> <span class="muted">{{ r.marked_by }}, {{ r.marked_at.date() }}</span>{% elif r.reviewable %}<span class="muted">unreviewed</span>{% endif %}</td></tr>
 {% else %}<tr><td colspan="6" class="muted">Nothing changed.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "changes") }}
 {% if ch.unreviewed %}<h2>Mark in bulk</h2>
 <form method="post" action="{{ url_for('mark_changes') }}">{{ keep() }}<input type="hidden" name="scope" value="all">
-  <p>Every unreviewed gone file and move shown by the filters above ({{ ch.unreviewed }} in the last {{ ch.days }} days{% if loc %} under {{ loc }}{% endif %}), seen up to
+  <p>Every unreviewed gone file, move and scrub finding shown by the filters above ({{ ch.unreviewed }} in the last {{ ch.days }} days{% if loc %} under {{ loc }}{% endif %}), seen up to
   <input type="date" name="until" value="{{ ch.today }}" aria-label="seen up to">,
   <label><input type="checkbox" name="elsewhere" value="1"> only gone files still in another root (not a backup)</label>, as
   <button name="mark" value="intended">intended</button> <button name="mark" value="restore">restore</button>.
@@ -92,7 +93,7 @@
 {{ pager(pg, "changes") }}
 <div class="scroll"><table><tr>{{ th(pg, "marked", "Marked") }}{{ th(pg, "where", "Where") }}{{ th(pg, "path", "Path") }}{{ th(pg, "backups", "Held in backups") }}</tr>
 {% for r in rows %}<tr><td>{{ r.marked_at.date() }} <span class="muted">{{ r.marked_by }}</span></td><td>{{ r.host }} · {{ r.root }}</td>
-  <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.old_relpath }}</a>{% if r.kind != 'gone' %} <span class="muted">(moved to {{ r.new_relpath }})</span>{% endif %}{% if r.back %} <span class="tag">back</span>{% endif %}</td>
+  <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.old_relpath }}</a>{% if r.kind in ('moved', 'moved_changed') %} <span class="muted">(moved to {{ r.new_relpath }})</span>{% endif %}{% if r.back %} <span class="tag">back</span>{% endif %}</td>
   <td>{% if r.backups %}{% for b in r.held_in %}{{ b.root }}{% if b.snapshot %} · {{ b.snapshot }}{% endif %}: {{ b.path }}<br>{% endfor %}{% if r.backups > r.held_in|length %}<span class="muted">and {{ r.backups - r.held_in|length }} more</span>{% endif %}{% else %}<span class="error">none you can see</span>{% endif %}</td></tr>
 {% else %}<tr><td colspan="4" class="muted">Nothing to restore.</td></tr>{% endfor %}</table></div>
 {{ pager(pg, "changes") }}

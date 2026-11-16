@@ -8,6 +8,14 @@
                                                       rights, beside the last scan (compare: pinakes-ingest totals)
   pinakes-agent [--config FILE] renumber --after N     number the waiting batches, and the next ones, after N (the
                                                       server's last for this host; check-in does it by itself)
+  pinakes-agent [--config FILE] scrub [status]         read files again and check their hashes, each filesystem's
+                                                      share (run and scan do it after a scan); status: per
+                                                      filesystem, its days, bytes, a night's share and oldest check
+
+The scrub (DESIGN.md "Scrub") runs after the scans, per filesystem under the roots whose scans are all complete, as
+the scrub file says (`[agent] scrub`, by default scrub.toml beside this config): the agent writes that file itself,
+one block per filesystem with days = 30 (0 for a network filesystem), and the person edits the numbers. It sends its
+findings only to a server that takes them (protocol 2 or later, known from the last check-in); until then it waits.
 
 scan --full resends every file; when a scan was full from start to end, the server retires what it has of the root
 that the scan didn't send: after a new machine takes over a host, the old one's files. Most of a root goes only with
@@ -27,7 +35,7 @@ import os
 import subprocess
 import sys
 
-from . import compat, config, fsinfo, outbox, transport
+from . import compat, config, fsinfo, outbox, scrub, transport
 from .scan import Scanner, TooManyGone, check, check_verdict
 from .state import State
 
@@ -86,9 +94,88 @@ def cmd_scan(cfg, args):
                 continue
             print("%(root)s: scan %(scan)d%(r)s, %(sent)d sent, %(gone)d gone, %(errors)d errors, %(batches)d batches"
                   % dict(s, r=" (resumed)" if s["resumed"] else ""))
+        if getattr(args, "check_busy", False) and busy(cfg):
+            print("busy: no scrub")
+            return rc
+        rc = max(rc, run_scrub(cfg, st, [r.label for r in roots] if getattr(args, "root", None) else None))
     finally:
         st.close()
     return rc
+
+
+SCRUB_PROTOCOL = 2      # the oldest server that takes the scrub's batches (the "scrub" header, mismatch, unreadable)
+
+
+def scrub_waits(cfg, st):
+    """Why the scrub can't send to this agent's server yet, or None. An agent on the server itself (directory
+    transport) is from the same install; over ssh, the protocol its last check-in answered."""
+    if cfg.transport["kind"] != "ssh":
+        return None
+    p = st.get_meta("server_protocol")
+    if p is not None and int(p) >= SCRUB_PROTOCOL:
+        return None
+    return ("the server %s; the scrub waits for one of protocol %d or later"
+            % ("hasn't checked in yet" if p is None else "is at protocol %s" % p, SCRUB_PROTOCOL))
+
+
+def _gb(n):
+    return "%.1f GB" % (n / 1e9)
+
+
+def run_scrub(cfg, st, only_roots=None):
+    """The scrub after a scan (or alone): one line per filesystem. Returns an exit status."""
+    why = scrub_waits(cfg, st)
+    if why:
+        print("scrub: not run: %s" % why)
+        return 0
+    sc = scrub.Scrubber(cfg, st, progress=lambda m: print(m, flush=True))
+    try:
+        results = sc.run(cfg.scrub_max_minutes, only_roots=only_roots)
+    except config.ConfigError as e:
+        print("pinakes-agent: scrub: %s" % e, file=sys.stderr)
+        return 2
+    for line in sc.notes:
+        print(line)
+    for r in results:
+        if r["skipped"]:
+            print("scrub %s (%s): %s" % (r["mount"], r["id"], r["skipped"]))
+        else:
+            print("scrub %s (%s): %d files, %s of %s, %d mismatch(es), %d unreadable" % (
+                r["mount"], r["id"], r["files"], _gb(r["bytes"]), _gb(r["budget"]), r["mismatches"],
+                r["unreadable"]))
+    return 0
+
+
+def cmd_scrub(cfg, args):
+    st = State(cfg.state)
+    try:
+        if args.what != "status":
+            return run_scrub(cfg, st)
+        sc = scrub.Scrubber(cfg, st)
+        try:
+            rows = sc.status()
+        except config.ConfigError as e:
+            print("pinakes-agent: scrub: %s" % e, file=sys.stderr)
+            return 2
+        for line in sc.notes:
+            print(line)
+        print("scrub file: %s" % cfg.scrub)
+        why = scrub_waits(cfg, st)
+        if why:
+            print("not running: %s" % why)
+        for r in rows:
+            last = r["last"]
+            print("%s (%s, %s; root%s %s): days %s, %s, %s a night; oldest check %s, %d file(s) never checked; "
+                  "last run %s" % (
+                      r["mount"], r["id"], r["fstype"], "s" if len(r["roots"]) > 1 else "", ", ".join(r["roots"]),
+                      r["days"] if r["days"] else "0 (off)", _gb(r["bytes"]), _gb(r["per_night"]),
+                      r["oldest"] or "never", r["never"],
+                      "%s: %d files, %s, %d mismatch(es), %d unreadable" % (
+                          _utc(last["at"]), last["files"], _gb(last["bytes"]), last["mismatches"],
+                          last["unreadable"]) if last else "never"))
+    finally:
+        st.close()
+    return 0
 
 
 def next_number(cfg):
@@ -151,6 +238,11 @@ def check_in(cfg):
     except (OSError, transport.SendError) as e:
         return "unreachable", str(e)
     s_proto = compat.as_int(srv.get("protocol"))
+    st = State(cfg.state)
+    try:
+        st.set_meta("server_protocol", str(s_proto))      # whether the scrub's batches can go (scrub_waits())
+    finally:
+        st.close()
     v = compat.verdict(compat.PROTOCOL, compat.MIN_SERVER_PROTOCOL, s_proto,
                        compat.as_int(srv.get("min_agent_protocol")))
     if v is None and srv.get("schema_applied") is False:
@@ -268,11 +360,13 @@ def main(argv=None):
     c.add_argument("--root")
     r = sub.add_parser("renumber", help="number the waiting batches and the next ones after N")
     r.add_argument("--after", type=int, required=True, metavar="N")
+    b = sub.add_parser("scrub", help="read files again and check their hashes; status: what it does where")
+    b.add_argument("what", nargs="?", choices=["status"])
     args = ap.parse_args(argv)
     cfg = config.load(find_config(args.config))
     os.makedirs(os.path.dirname(os.path.abspath(cfg.state)), exist_ok=True)
     commands = {"run": cmd_run, "scan": cmd_scan, "send": cmd_send, "status": cmd_status, "check": cmd_check,
-                "renumber": cmd_renumber}
+                "renumber": cmd_renumber, "scrub": cmd_scrub}
     return commands[args.cmd](cfg, args)
 
 

@@ -6,6 +6,10 @@
 host = "server-1"                      # this machine's name in the catalog
 state = "/var/lib/pinakes/state.sqlite"
 outbox = "/var/lib/pinakes/outbox"
+# scrub = "/etc/pinakes/scrub.toml"    # the scrub file (DESIGN.md "Scrub"); by default scrub.toml beside this file.
+                                       # The agent writes it, one block per filesystem under the roots (days = 30:
+                                       # every file read again and its hash checked once a month); edit the numbers
+# scrub_max_minutes = 60               # end a run's scrub after this long, whatever is left of its share
 
 [schedule]
 only_on_ac = false                     # laptops: true

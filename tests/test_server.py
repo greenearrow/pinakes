@@ -652,6 +652,11 @@ class TestReview(ServerCase):
                 tokens = f.read()
             start = tokens.index("CREATE OR REPLACE FUNCTION mark_changes")
             c.execute("SET search_path = pinakes; " + tokens[start:tokens.index("END $$;", start) + len("END $$;")])
+            # and as scrub.sql replaces it (what the scrub finds is reviewed too, ROADMAP 41)
+            with open(os.path.join(UPGRADES, "scrub.sql")) as f:
+                scrub = f.read()
+            start = scrub.index("CREATE OR REPLACE FUNCTION mark_changes")
+            c.execute("SET search_path = pinakes; " + scrub[start:scrub.index("END $$;", start) + len("END $$;")])
             c.execute("RESET search_path")                  # the file sets its own; compare as before
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertEqual(fresh[3:], (True, False))
@@ -945,6 +950,11 @@ def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
         c.execute("DROP VIEW pinakes.present")
         for index in indexes:
             c.execute("DROP INDEX pinakes.%s" % index)
+        # from before the scrub too, which adds the last columns of files (upgrades/scrub.sql, run last)
+        columns = list(columns) + ["unreadable_on", "unreadable_error"]
+        files = list(files) + ["scrub.sql"]
+        c.execute("ALTER TABLE pinakes.roots DROP COLUMN scrub_on, DROP COLUMN scrub_since, DROP COLUMN scrub_days, "
+                  "DROP COLUMN scrub_oldest, DROP COLUMN scrub_never")
         c.execute("ALTER TABLE pinakes.files %s" % ", ".join("DROP COLUMN %s" % col for col in columns))
         c.execute("CREATE VIEW pinakes.present WITH (security_invoker = true) AS "
                   "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
@@ -1126,7 +1136,7 @@ class TestCheckIn(ServerCase):
                       "server must update (its catalog lacks checkins.sql, takeovers.sql)"
                       % ((compat.RELEASE, compat.PROTOCOL) * 2),
                       err)
-        self.assertEqual(len(outbox.pending(cfg.outbox)), 1)
+        self.assertEqual(len(outbox.pending(cfg.outbox)), 2)                # the scan's and its scrub's, held
         self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)
         with admin_conn(self.db) as c:
             for u in ("checkins.sql", "takeovers.sql"):
@@ -2379,3 +2389,233 @@ as = "co-owner"
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _OneFilesystem:
+    """Every path on one filesystem of the test's own id: the scrub's view of the disks, with no real mount table."""
+
+    def of(self, path, dev=None):
+        from pinakes.scrub import Filesystem
+        return Filesystem("uuid:test-fs", "/mnt/test", "ext4", "/dev/test")
+
+
+class TestScrub(ServerCase):
+    """The scrub's findings in the catalog (ROADMAP 41, DESIGN.md "Scrub"): a mismatch is a change of its own kind and
+    gives the file its new content, so it stops counting as a copy of the old; an unreadable file is no copy until it
+    reads again; both are reviewed; a backup root keeps no history of them; the root's summary reaches /health."""
+
+    U = "people/user-1/"
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", self.U + "a.txt", b"alpha" * 20)
+        self.write("server-1", "store", self.U + "b.txt", b"beta" * 20)
+        self.write("server-1", "store", "people/user-2/hers.txt", b"hers" * 20)
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/" + self.U + "a.txt", b"alpha" * 20)
+        self.write("server-2", "snapshots", "2026-01-01_0140/" + self.U + "b.txt", b"beta" * 20)
+        self.scan("server-2", "snapshots")
+        for key in self.agents:
+            with open(self.agents[key][1].scrub, "w") as f:
+                f.write('[[filesystem]]\nid = "uuid:test-fs"\ndays = 1\n')
+        self.fail = set()
+
+    def corrupt(self, host, label, rel):
+        p = self.path(host, label, rel)
+        st = os.stat(p)
+        with open(p, "r+b") as f:
+            f.write(b"X")
+        os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+    def scrub(self, host, label, days_later=0):
+        from pinakes.scan import hash_file
+        from pinakes.scrub import Scrubber
+        st, cfg, _ = self.agent(host, label)
+
+        def read(path, params=None):
+            if path in self.fail:
+                raise OSError(5, "Input/output error")
+            return hash_file(path, params)
+        Scrubber(cfg, st, _OneFilesystem(), now=lambda: time.time() + 60 + days_later * 86400, read=read).run()
+        out = []
+        for seq, p in outbox.pending(cfg.outbox):
+            header, recs = outbox.read(p)
+            out.append(self.ing.apply(header, recs, host))
+            outbox.ack(cfg.outbox, seq)
+        return out
+
+    def not_safe(self, conn=None):
+        return sorted(r["relpath"] for r in queries.not_safe_to_delete(conn or self.conn, "store:" + self.U))
+
+    def test_a_mismatch_in_a_kept_file_is_its_own_change_with_the_old_content_in_the_backup(self):
+        a = self.file("store", self.U + "a.txt")
+        old = self.q("SELECT content_id FROM pinakes.files WHERE file_id = %s", (a,))[0][0]
+        self.corrupt("server-1", "store", self.U + "a.txt")
+        self.scan("server-1", "store")                                 # only its ctime: not a change
+        self.assertEqual(self.history(a), ["new"])
+        self.assertEqual(self.scrub("server-1", "store"), ["applied"])
+        self.assertEqual(self.history(a), ["new", "mismatch"])
+        row = self.q("SELECT old_content_id, new_content_id, old_mtime = new_mtime, seen_after, seen_on, evidence, "
+                     "confidence FROM pinakes.history WHERE file_id = %s AND kind = 'mismatch'", (a,))[0]
+        new = self.q("SELECT content_id FROM pinakes.files WHERE file_id = %s", (a,))[0][0]
+        self.assertEqual(row[:3], (old, new, True))
+        self.assertNotEqual(old, new)
+        self.assertEqual((row[3], row[4]), (queries.today(), queries.today()))   # verified by today's scan
+        self.assertEqual(row[5:], ("scrub: another hash, size and mtime unchanged", "certain"))
+        self.assertEqual(self.not_safe(), [self.U + "a.txt"])           # its backup holds the old content now
+        with self.as_person("user-1") as c:
+            ch = queries.changes(c, kinds=["mismatch"])
+            self.assertEqual([(r["path"], r["reviewable"]) for r in ch], [(self.U + "a.txt", True)])
+            self.assertEqual(queries.mark_changes(c, [ch[0]["history_id"]], "restore"), 1)
+            c.commit()
+            (r,) = queries.restores(c)
+            self.assertEqual((r["kind"], r["backups"], r["back"]), ("mismatch", 1, False))
+            self.assertEqual(r["held_in"][0]["path"], "2026-01-01_0140/" + self.U + "a.txt")
+            tree = {t["folder"]: t["scrub"] for t in queries.change_tree(c, loc="store:" + self.U)}
+            self.assertEqual(tree["people/user-1"], 1)
+        with self.as_person("user-2") as c:                             # not hers: not seen
+            self.assertEqual(queries.changes(c, kinds=["mismatch"]), [])
+
+    def test_a_mismatch_in_a_backup_copy_ends_it_as_a_copy_without_history(self):
+        self.assertEqual(self.not_safe(), [])
+        snap = "2026-01-01_0140/" + self.U + "b.txt"
+        self.corrupt("server-2", "snapshots", snap)
+        self.scrub("server-2", "snapshots")
+        self.assertEqual(self.not_safe(), [self.U + "b.txt"])           # its only other copy is wrong now
+        self.assertEqual(self.history(self.file("snapshots", snap)), [])
+
+    def test_an_unreadable_copy_is_no_copy_until_it_reads(self):
+        snap = "2026-01-01_0140/" + self.U + "a.txt"
+        self.fail.add(self.path("server-2", "snapshots", snap))
+        self.scrub("server-2", "snapshots")
+        f = self.file("snapshots", snap)
+        self.assertEqual(self.q("SELECT unreadable_on, unreadable_error FROM pinakes.files WHERE file_id = %s",
+                                (f,)), [(queries.today(), "EIO")])
+        self.assertEqual(self.not_safe(), [self.U + "a.txt"])
+        self.assertEqual(self.history(f), [])                           # a backup root: no history
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["backup_copies"] for r in queries.backed_up(c, "store:" + self.U + "a.txt")], [0])
+        self.fail.clear()
+        self.scrub("server-2", "snapshots", days_later=1)
+        self.assertEqual(self.q("SELECT unreadable_on FROM pinakes.files WHERE file_id = %s", (f,)), [(None,)])
+        self.assertEqual(self.not_safe(), [])
+
+    def test_an_unreadable_kept_file_is_reviewed_and_its_restore_not_back_while_unreadable(self):
+        a = self.file("store", self.U + "a.txt")
+        self.fail.add(self.path("server-1", "store", self.U + "a.txt"))
+        self.scrub("server-1", "store")
+        self.scrub("server-1", "store", days_later=1)                  # still failing: one change, not two
+        self.assertEqual(self.history(a), ["new", "unreadable"])
+        with self.as_person("user-1") as c:
+            ch = queries.changes(c, review="unreviewed")
+            self.assertEqual([(r["kind"], r["path"]) for r in ch], [("unreadable", self.U + "a.txt")])
+            queries.mark_changes(c, [ch[0]["history_id"]], "restore")
+            c.commit()
+            self.assertEqual([r["back"] for r in queries.restores(c, back=True)], [False])
+        self.fail.clear()
+        self.scrub("server-1", "store", days_later=2)
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["back"] for r in queries.restores(c, back=True)], [True])
+        # a later rewrite (a scan seeing new content) clears a mark too
+        self.fail.add(self.path("server-1", "store", self.U + "b.txt"))
+        self.scrub("server-1", "store", days_later=3)
+        self.write("server-1", "store", self.U + "b.txt", b"rewritten")
+        self.scan("server-1", "store")
+        self.assertEqual(self.q("SELECT unreadable_on FROM pinakes.files WHERE relpath = %s", (self.U + "b.txt",)),
+                         [(None,)])
+
+    def test_a_reader_cannot_mark_what_the_scrub_found(self):
+        self.corrupt("server-1", "store", self.U + "a.txt")
+        self.scrub("server-1", "store")
+        hid = self.q("SELECT history_id FROM pinakes.history WHERE kind = 'mismatch'")[0][0]
+        with self.as_person("user-2") as c:
+            self.assertEqual(queries.mark_changes(c, [hid], "intended"), 0)
+
+    def test_the_summary_and_health(self):
+        from pinakes import web
+        self.scrub("server-1", "store")
+        self.assertEqual(self.q("SELECT scrub_on, scrub_since, scrub_days, scrub_oldest, scrub_never "
+                                "FROM pinakes.roots WHERE label = 'store'"),
+                         [(queries.today(), queries.today(), 1, queries.today(), 0)])
+        connect = lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)  # noqa: E731
+        code, body = web.health_report(connect)
+        h = {x["host"]: x for x in body["hosts"]}
+        self.assertEqual((h["server-1"]["scrub_oldest"], h["server-1"]["scrub_behind"]),
+                         (queries.today().isoformat(), False))
+        self.assertIsNone(h["server-2"]["scrub_oldest"])                # not scrubbed: nothing said
+        self.conn.execute("UPDATE pinakes.roots SET scrub_on = scrub_on - 2 WHERE label = 'store'")   # stopped
+        code, body = web.health_report(connect)
+        self.assertEqual((code, body["status"]), (503, "scrub behind"))
+        self.assertNotIn("store", json.dumps(body))                     # host names only
+        self.conn.execute("UPDATE pinakes.roots SET scrub_on = current_date, scrub_never = 3, "
+                          "scrub_since = current_date - 3 WHERE label = 'store'")       # a first pass overdue
+        self.assertTrue(web.health_report(connect)[1]["hosts"][1]["scrub_behind"])
+        self.conn.execute("UPDATE pinakes.roots SET scrub_days = 0 WHERE label = 'store'")          # turned off
+        self.assertEqual(web.health_report(connect)[1]["status"], "ok")
+
+    def test_records_in_the_wrong_kind_of_batch_are_refused(self):
+        st, cfg, _ = self.agent("server-1", "store")
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "seq": 50, "protocol": 2,
+                  "root_def": {"path": cfg.roots[0].path, "kind": "primary"}}
+        with self.assertRaisesRegex(Refused, "a file record in a scrub batch"):
+            self.ing.apply(dict(header, scrub={"on": "2026-11-16", "days": 1, "oldest": None, "never": 0}),
+                           [{"t": "file", "path": "x"}], "server-1")
+        with self.assertRaisesRegex(Refused, "a mismatch record outside a scrub batch"):
+            self.ing.apply(dict(header, scan=99, started="2026-11-16T00:00:00.000000Z"),
+                           [{"t": "mismatch", "path": "x"}], "server-1")
+        with self.assertRaisesRegex(Refused, "a scrub header needs its date"):
+            self.ing.apply(dict(header, scrub={"days": 1}), [], "server-1")
+        a = self.file("store", self.U + "a.txt")
+        with self.assertRaisesRegex(Refused, "a mismatch without its hash"):    # not a file emptied of its content
+            self.ing.apply(dict(header, scrub={"on": "2026-11-16", "days": 1, "oldest": None, "never": 0}),
+                           [{"t": "mismatch", "path": self.U + "a.txt", "sha256": None}], "server-1")
+        self.assertIsNotNone(self.q("SELECT content_id FROM pinakes.files WHERE file_id = %s", (a,))[0][0])
+
+    def test_a_record_for_a_file_since_changed_is_left_alone(self):
+        a = self.file("store", self.U + "a.txt")
+        self.corrupt("server-1", "store", self.U + "a.txt")
+        st, cfg, _ = self.agent("server-1", "store")
+        from pinakes.scrub import Scrubber
+        Scrubber(cfg, st, _OneFilesystem(), now=lambda: time.time() + 60).run()   # written, not yet sent
+        self.write("server-1", "store", self.U + "a.txt", b"edited, a new mtime")
+        os.utime(self.path("server-1", "store", self.U + "a.txt"), (time.time() + 5,) * 2)
+        Scanner(cfg, st).scan(cfg.roots[0])
+        for seq, p in outbox.pending(cfg.outbox):                    # the scrub's batch, then the scan's
+            header, recs = outbox.read(p)
+            self.ing.apply(header, recs, "server-1")
+            outbox.ack(cfg.outbox, seq)
+        self.assertEqual(self.history(a), ["new", "mismatch", "changed"])   # each as it came, the scan's last
+        p = self.path("server-1", "store", self.U + "a.txt")
+        st2 = os.stat(p)
+        bad = {"t": "mismatch", "path": self.U + "a.txt", "size": st2.st_size, "mtime_ns": st2.st_mtime_ns - 1,
+               "ino": st2.st_ino, "dev": st2.st_dev, "sha256": "00" * 32, "verified": None, "chunk_params": None}
+        self.ing.apply({"t": "batch", "format": 2, "host": "server-1", "root": "store", "seq": 900, "protocol": 2,
+                        "root_def": {"path": cfg.roots[0].path, "kind": "primary"},
+                        "scrub": {"on": queries.today().isoformat(), "days": 1, "oldest": None, "never": 0}},
+                       [bad], "server-1")                              # an older state than the catalog's
+        self.assertEqual(self.history(a), ["new", "mismatch", "changed"])
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'roots'), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.history'::regclass), "
+                "pg_get_functiondef('pinakes.mark_changes(bigint[], text)'::regprocedure), "
+                "has_function_privilege('pinakes_app', 'pinakes.mark_changes(bigint[], text)', 'EXECUTE')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("ALTER TABLE pinakes.history DROP CONSTRAINT history_kind_check, ADD CONSTRAINT "
+                      "history_kind_check CHECK (kind IN ('new', 'changed', 'moved', 'moved_changed', 'gone'))")
+            c.execute("ALTER TABLE pinakes.roots DROP COLUMN scrub_on, DROP COLUMN scrub_since, DROP COLUMN "
+                      "scrub_days, DROP COLUMN scrub_oldest, DROP COLUMN scrub_never")
+            c.execute("ALTER TABLE pinakes.files DROP COLUMN unreadable_on CASCADE, DROP COLUMN unreadable_error")
+            c.execute("CREATE OR REPLACE VIEW pinakes.present WITH (security_invoker = true) AS "
+                      "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
+            self.assertNotEqual(c.execute(defs).fetchone()[:2], fresh[:2])
+            with open(os.path.join(UPGRADES, "scrub.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertTrue(fresh[3])

@@ -118,7 +118,13 @@ CREATE TABLE roots (
     mirrors_root_id int REFERENCES roots,
     mirrors_layout text,
     mirrors_prefix text,                                    -- where in the source root the copied tree sits
-    last_complete_on date
+    last_complete_on date,
+    -- the scrub (DESIGN.md "Scrub"), as the agent's last scrub batch for the root said; counts and dates only
+    scrub_on    date,                                       -- its last scrub run
+    scrub_since date,                                       -- its first: before a full pass, files never checked
+    scrub_days  int,                                        -- a full pass every this many days
+    scrub_oldest date,                                      -- the oldest check of a file still there
+    scrub_never bigint                                      -- files never checked yet
 );
 CREATE TABLE scans (
     root_id     int REFERENCES roots,
@@ -238,7 +244,9 @@ CREATE TABLE files (
     link_root   text,                                       -- a symlink's target, when in a root of its agent: the
     link_relpath text,                                      -- root's label and the path in it ('' for the root)
     link_dangling boolean,                                  -- its target is missing; NULL: not known
-    hidden      boolean NOT NULL DEFAULT false              -- a dot in its path, or the hidden attribute (Samba)
+    hidden      boolean NOT NULL DEFAULT false,             -- a dot in its path, or the hidden attribute (Samba)
+    unreadable_on date,                                     -- the scrub couldn't read it (DESIGN.md "Scrub"): not a
+    unreadable_error text                                   -- copy until it reads again; the error's name (EIO)
 );
 CREATE UNIQUE INDEX files_present_path ON files (root_id, relpath) WHERE gone_on IS NULL;
 CREATE INDEX files_content ON files (content_id);
@@ -264,7 +272,10 @@ CREATE INDEX members_content ON members (content_id);
 CREATE TABLE history (
     history_id  bigserial PRIMARY KEY,
     file_id     bigint NOT NULL REFERENCES files ON DELETE CASCADE,
-    kind        text NOT NULL CHECK (kind IN ('new', 'changed', 'moved', 'moved_changed', 'gone')),
+    -- mismatch and unreadable: found by the scrub (DESIGN.md "Scrub"), the content changed under an unchanged
+    -- size and mtime, or couldn't be read
+    kind        text NOT NULL CHECK (kind IN ('new', 'changed', 'moved', 'moved_changed', 'gone', 'mismatch',
+                                              'unreadable')),
     old_relpath text, new_relpath text,
     old_content_id bigint REFERENCES contents, new_content_id bigint REFERENCES contents,
     old_mtime timestamptz, new_mtime timestamptz,
@@ -312,8 +323,9 @@ CREATE INDEX metadata_content ON metadata (content_id, schema);
 CREATE INDEX metadata_file ON metadata (file_id, schema);
 CREATE INDEX metadata_vals ON metadata USING gin (vals jsonb_path_ops);
 
--- A review of a change (ROADMAP 32): a gone file or a move, marked intended, or to restore. Written only through
--- mark_changes(); a later change is a new history row, unreviewed. A group token's mark is the group's (ROADMAP 38).
+-- A review of a change (ROADMAP 32): a gone file, a move, or what the scrub found (ROADMAP 41), marked intended, or
+-- to restore. Written only through mark_changes(); a later change is a new history row, unreviewed. A group token's
+-- mark is the group's (ROADMAP 38).
 CREATE TABLE review_marks (
     history_id  bigint PRIMARY KEY REFERENCES history ON DELETE CASCADE,
     mark        text NOT NULL CHECK (mark IN ('intended', 'restore')),
@@ -596,7 +608,8 @@ LANGUAGE sql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
     RETURNING true
 $$;
 
--- Mark changes reviewed: 'intended', 'restore', or NULL to clear. Only gone files and moves, only by the file's
+-- Mark changes reviewed: 'intended', 'restore', or NULL to clear. Only gone files, moves, and what the scrub found
+-- (a mismatch or an unreadable file), only by the file's
 -- owner or a co-owner, or by an administrator in a step-up, which is audited for the owners; under a token (ROADMAP
 -- 37), only with its `review` scope and only in the roots it may see. Under a group token (ROADMAP 38), only where
 -- the group is the owner or a co-owner: the mark is the group's, audited for its members with the token. Changes
@@ -628,7 +641,7 @@ BEGIN
                     ELSE EXISTS (SELECT 1 FROM acl_members am WHERE am.acl_id = f.acl_id AND am.person_id = me
                                                                AND am.role IN ('owner', 'co-owner')) END AS mine
         FROM history hi JOIN files f USING (file_id)
-        WHERE hi.history_id = ANY (ids) AND hi.kind IN ('gone', 'moved', 'moved_changed')
+        WHERE hi.history_id = ANY (ids) AND hi.kind IN ('gone', 'moved', 'moved_changed', 'mismatch', 'unreadable')
           AND (token_roots() IS NULL OR f.root_id = ANY (token_roots())))
     SELECT array_agg(history_id) FILTER (WHERE mine OR up), array_agg(DISTINCT acl_id) FILTER (WHERE NOT mine AND up),
            count(*) FILTER (WHERE NOT mine AND up)

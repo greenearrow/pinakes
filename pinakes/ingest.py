@@ -523,28 +523,10 @@ class Ingester:
                             "mirrors_prefix FROM pinakes.roots WHERE root_id = %s", (root_id,))
             root = dict(zip(("root_id", "kind", "protected", "mirrors_root_id", "mirrors_layout",
                              "last_complete_on", "mirrors_prefix"), root))
-            scan = int(header["scan"])
-            started_on = datetime.date.fromisoformat(header["started"][:10])
-            self._scan_row(root_id, scan, started_on, header["started"])
-            ctx = {"root": root, "scan": scan, "on": started_on, "after": root["last_complete_on"],
-                   "uid_map": self.cfg.hosts[host]["uid_map"], "host_id": host_id}
-            gone = []
-            for rec in records:
-                t = rec.get("t")
-                if t in ("file", "symlink"):
-                    self._file(ctx, rec)
-                elif t == "gone":
-                    gone.append(rec["path"])
-                elif t == "error":
-                    self.q("INSERT INTO pinakes.scan_errors (root_id, relpath, error, seen_on) VALUES (%s, %s, %s, %s) "
-                           "ON CONFLICT (root_id, relpath) DO UPDATE SET error = EXCLUDED.error, "
-                           "seen_on = EXCLUDED.seen_on", (root_id, rec["path"], rec["error"], started_on))
-            if header.get("complete"):
-                if header.get("full"):
-                    gone += self._unsent(ctx, host, header["root"], bool(header.get("accept_gone")))
-                self._complete(ctx, gone, host_id)
-            elif gone:
-                raise Refused("gone records in an incomplete scan")
+            if header.get("scrub") is not None:
+                self._scrub(root, header["scrub"], records)
+            else:
+                self._scan_batch(header, records, host, host_id, root)
             self.q("INSERT INTO pinakes.ingested (host_id, seq, records, header_sha256) VALUES (%s, %s, %s, %s)",
                    (host_id, seq, len(records), digest))
             self.q("UPDATE pinakes.hosts SET last_seq = %s WHERE host_id = %s", (seq, host_id))
@@ -556,6 +538,98 @@ class Ingester:
             sys.stderr.write("pinakes-ingest: host %s batch %d: metadata left out for %d file(s), first: %s %s: %s\n"
                              % ((host, seq, len(self.dropped)) + self.dropped[0]))
         return "applied"
+
+    def _scan_batch(self, header, records, host, host_id, root):
+        """A scan's batch: its files, gone paths and errors; a complete scan's moves, changes and lineage."""
+        root_id = root["root_id"]
+        scan = int(header["scan"])
+        started_on = datetime.date.fromisoformat(header["started"][:10])
+        self._scan_row(root_id, scan, started_on, header["started"])
+        ctx = {"root": root, "scan": scan, "on": started_on, "after": root["last_complete_on"],
+               "uid_map": self.cfg.hosts[host]["uid_map"], "host_id": host_id}
+        gone = []
+        for rec in records:
+            t = rec.get("t")
+            if t in ("file", "symlink"):
+                self._file(ctx, rec)
+            elif t == "gone":
+                gone.append(rec["path"])
+            elif t in ("mismatch", "unreadable", "readable"):
+                raise Refused("a %s record outside a scrub batch" % t)
+            elif t == "error":
+                self.q("INSERT INTO pinakes.scan_errors (root_id, relpath, error, seen_on) VALUES (%s, %s, %s, %s) "
+                       "ON CONFLICT (root_id, relpath) DO UPDATE SET error = EXCLUDED.error, "
+                       "seen_on = EXCLUDED.seen_on", (root_id, rec["path"], rec["error"], started_on))
+        if header.get("complete"):
+            if header.get("full"):
+                gone += self._unsent(ctx, host, header["root"], bool(header.get("accept_gone")))
+            self._complete(ctx, gone, host_id)
+        elif gone:
+            raise Refused("gone records in an incomplete scan")
+
+    def _scrub(self, root, s, records):
+        """A scrub batch (DESIGN.md "Scrub"): what the agent's scrub found in the root, and its summary. A mismatch
+        (another hash under the same size and mtime) gives the file its new content, so it stops counting as a copy
+        of the old, and is a change of its own kind; an unreadable file is marked, and isn't a copy until a later
+        read (`readable`, or a mismatch) clears it. A backup root keeps no history of its own: its files are only
+        updated and marked. A record for a path the catalog has since seen change is left alone: the scan's is newer."""
+        if not isinstance(s, dict):
+            raise Refused("a scrub header is an object")
+        try:
+            on = datetime.date.fromisoformat(s["on"])
+            oldest = datetime.date.fromisoformat(s["oldest"]) if s.get("oldest") else None
+        except (KeyError, TypeError, ValueError):
+            raise Refused("a scrub header needs its date (on) and the oldest check as dates")
+        days, never = compat.as_int(s.get("days"), None), compat.as_int(s.get("never"), None)
+        root_id, backup = root["root_id"], root["kind"] == "backup"
+        for rec in records:
+            t = rec.get("t")
+            if t not in ("mismatch", "unreadable", "readable"):
+                raise Refused("a %s record in a scrub batch" % t)
+            f = self.one("SELECT file_id, content_id, size, mtime_ns, ino, unreadable_on, relpath, mtime, ctime, btime "
+                         "FROM pinakes.files WHERE root_id = %s AND relpath = %s AND gone_on IS NULL",
+                         (root_id, rec.get("path")))
+            if f is None:
+                continue
+            file_id, content_id, size, mtime_ns, ino, unreadable_on, relpath, mtime, ctime, btime = f
+            if t == "readable":
+                self.q("UPDATE pinakes.files SET unreadable_on = NULL, unreadable_error = NULL WHERE file_id = %s",
+                       (file_id,))
+            elif t == "unreadable":
+                error = str(rec.get("error") or "error")[:200]
+                self.q("UPDATE pinakes.files SET unreadable_on = coalesce(unreadable_on, %s), unreadable_error = %s "
+                       "WHERE file_id = %s", (on, error, file_id))
+                if unreadable_on is None and not backup:
+                    self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, new_relpath, old_content_id, "
+                           "new_content_id, old_mtime, new_mtime, old_ctime, new_ctime, old_btime, new_btime, "
+                           "seen_on, evidence, confidence) VALUES (%s, 'unreadable', %s, %s, %s, %s, %s, %s, %s, %s, "
+                           "%s, %s, %s, %s, 'certain')",
+                           (file_id, relpath, relpath, content_id, content_id, mtime, mtime, ctime, ctime, btime, btime,
+                            on, "scrub: read failed (%s)" % error))
+            else:
+                sha = rec.get("sha256")
+                if not isinstance(sha, str) or len(sha) != 64:
+                    raise Refused("%s: a mismatch without its hash" % rec.get("path"))
+                if (size, mtime_ns, ino) != (rec.get("size"), rec.get("mtime_ns"), rec.get("ino")):
+                    continue
+                new = self.content(rec.get("sha256"), rec.get("size") or 0, rec.get("chunks"),
+                                   rec.get("chunk_params"))
+                self.q("UPDATE pinakes.files SET content_id = %s, unreadable_on = NULL, unreadable_error = NULL "
+                       "WHERE file_id = %s", (new, file_id))
+                if new == content_id or new is None or backup:
+                    continue
+                try:
+                    after = datetime.date.fromisoformat(rec["verified"]) if rec.get("verified") else None
+                except (TypeError, ValueError):
+                    after = None
+                self.q("INSERT INTO pinakes.history (file_id, kind, old_relpath, new_relpath, old_content_id, "
+                       "new_content_id, old_mtime, new_mtime, old_ctime, new_ctime, old_btime, new_btime, seen_after, "
+                       "seen_on, evidence, confidence) VALUES (%s, 'mismatch', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                       "%s, %s, %s, 'certain')",
+                       (file_id, relpath, relpath, content_id, new, mtime, mtime, ctime, ctime, btime, btime, after, on,
+                        "scrub: another hash, size and mtime unchanged"))
+        self.q("UPDATE pinakes.roots SET scrub_on = %s, scrub_since = coalesce(scrub_since, %s), scrub_days = %s, "
+               "scrub_oldest = %s, scrub_never = %s WHERE root_id = %s", (on, on, days, oldest, never, root_id))
 
     def _sent_again(self, host_id, seq, last_seq, digest):
         """Whether batch seq (at most last_seq) is one already applied, sent again (its acknowledgement lost): the
@@ -735,6 +809,9 @@ class Ingester:
                        (file_id, relpath, relpath, old_content, content_id, old_m, cols["mtime"], old_c, cols["ctime"],
                         old_b, cols["btime"], ctx["after"], ctx["on"]))
                 self.q("UPDATE pinakes.files SET changed_scan = %s WHERE file_id = %s", (ctx["scan"], file_id))
+            if content_id is not None and content_id != old_content:      # rewritten: what the scrub couldn't read
+                self.q("UPDATE pinakes.files SET unreadable_on = NULL, unreadable_error = NULL "  # is gone
+                       "WHERE file_id = %s AND unreadable_on IS NOT NULL", (file_id,))
             return
         backup_of = snapshot = None
         acl_root, acl_path = root["root_id"], relpath

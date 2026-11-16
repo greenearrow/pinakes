@@ -294,7 +294,7 @@ FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a fol
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases")
 MARKS = ("intended", "restore")
-REVIEWABLE = ("gone", "moved", "moved_changed")         # what a review marks (queries.REVIEWABLE)
+REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
 
 def location(api, cmd, given, host, want):
@@ -396,9 +396,9 @@ def run(api, a, cfg):
 
 
 def review(api, a, cfg):
-    """pinakes review intended|restore [PATH]: the unreviewed gone files and moves under PATH (or of that file) in
-    the last --days, shown, then marked once confirmed (or with --yes). The catalog marks only what the person owns
-    or co-owns, in the token's roots and with its review scope, and says how many."""
+    """pinakes review intended|restore [PATH]: the unreviewed gone files, moves and scrub findings under PATH (or of
+    that file) in the last --days, shown, then marked once confirmed (or with --yes). The catalog marks only what the
+    person owns or co-owns, in the token's roots and with its review scope, and says how many."""
     if a.arg not in MARKS:
         raise Failed("pinakes review needs intended or restore, then a path (none: the current folder)")
     where = location(api, "review", a.path, _this_host(a.host, cfg), "any")
@@ -407,7 +407,8 @@ def review(api, a, cfg):
         print("nothing to review under %s in the last %d days" % (where, a.days))
         return
     if not a.json:
-        print("%d unreviewed gone file(s) and move(s) under %s in the last %d days:" % (len(rows), where, a.days))
+        print("%d unreviewed change(s) (gone, moved, or found by the scrub) under %s in the last %d days:"
+              % (len(rows), where, a.days))
         _print(rows, False, ["seen_on", "root", "path", "old_relpath", "kind"])
     if not a.yes:
         if not sys.stdin.isatty():

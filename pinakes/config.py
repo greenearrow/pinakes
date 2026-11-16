@@ -5,6 +5,8 @@ try:
 except ModuleNotFoundError:  # Python 3.10: the distribution's python3-tomli
     import tomli as tomllib
 
+import os
+
 from .globs import Matcher
 
 KINDS = ("primary", "drop", "backup")
@@ -92,6 +94,14 @@ class AgentConfig:
             self.outbox = a["outbox"]
         except KeyError as e:
             raise ConfigError("[agent] needs %s" % e)
+        # the scrub file (DESIGN.md "Scrub"): written by the agent, its numbers edited by the person
+        self.scrub = a.get("scrub")
+        if self.scrub is not None and not isinstance(self.scrub, str):
+            raise ConfigError("[agent] scrub is the scrub file's path")
+        m = a.get("scrub_max_minutes")
+        if m is not None and (isinstance(m, bool) or not isinstance(m, int) or m <= 0):
+            raise ConfigError("[agent] scrub_max_minutes must be a whole number of minutes above 0")
+        self.scrub_max_minutes = m
         s = d.get("schedule", {})
         self.only_on_ac = bool(s.get("only_on_ac", False))
         self.busy_command = s.get("busy_command", "")
@@ -116,8 +126,14 @@ class AgentConfig:
 
 def load(path):
     with open(path, "rb") as f:
-        return AgentConfig(tomllib.load(f))
+        cfg = AgentConfig(tomllib.load(f))
+    if cfg.scrub is None:                       # beside agent.toml
+        cfg.scrub = os.path.join(os.path.dirname(os.path.abspath(path)), "scrub.toml")
+    return cfg
 
 
 def loads(text):
-    return AgentConfig(tomllib.loads(text))
+    cfg = AgentConfig(tomllib.loads(text))
+    if cfg.scrub is None:                       # no file to sit beside: beside the state
+        cfg.scrub = os.path.join(os.path.dirname(os.path.abspath(cfg.state)), "scrub.toml")
+    return cfg
