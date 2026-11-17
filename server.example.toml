@@ -49,6 +49,14 @@ root = "store"
 folder = "shared"
 owner = "household"
 
+# owner = "uid": each file in the folder goes to whoever its uid maps to in the uid_map of the host that reports
+# the root; a uid the map doesn't name falls to the next rule, then the default owner. Only for hosts whose files
+# are written as the people themselves, not one shared account.
+[[ownership.rule]]
+root = "pictures"
+folder = ""
+owner = "uid"
+
 [[ownership.enrollment]]
 root = "store"
 folder = "people/user-1/projects"

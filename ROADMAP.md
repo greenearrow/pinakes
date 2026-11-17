@@ -27,13 +27,7 @@ machines) or *operability* (installing and running it); "also" names a second.
 ## Next: before more machines join
 
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
-(1, 4, 5 and 28 to 31 are built and 3 dropped: REARVIEW.md):
-
-2. [Security; also correctness] **Owner rules by uid.** `uid_map` is read but no rule uses it. Either rules gain an
-   `owner = "uid"` form that maps the file's uid through the host's map, or the option goes. *Done when:* a test gives
-   two files of two uids on one host to two people through the map, and a server whose clients are all one account still
-   works by folder rules. The first deployment's shares all write as one account, so uids decide nothing there yet; they
-   will once people write as themselves (per-person Samba accounts, no `force user`). Keep `uid_map`; build this then.
+(1, 2, 4, 5 and 28 to 31 are built and 3 dropped: REARVIEW.md):
 
 ## The web UI, read-write
 

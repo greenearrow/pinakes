@@ -24,6 +24,7 @@ agents).
 - Hidden files
 - Releases and check-in
 - 1. Ingester at scale
+- 2. Owner rules by uid
 - 4. A health endpoint
 - 5. Copies only on another disk
 - 6. Protection by inode
@@ -133,6 +134,19 @@ don't ask for more.
 
 **State:** Tested on 16 (`TestLineageRounds`, `TestMovesSameAsBefore`); run on 18 on a 4+4-core ARM board
 (DECISIONS.md): 5000-record batches every 6-10 s, peak RSS 65 MB over 202 batches, none failed.
+
+## 2. Owner rules by uid
+
+**Built:** An `[[ownership.rule]]` with `owner = "uid"` gives each file under its folder to whoever the file's uid maps
+to in the `uid_map` of the host that reports the root (a person or a group). A uid the map doesn't name leaves the file
+to the next rule, then the default owner; a more specific folder rule outranks it. The rule is seeded as
+`owner_rules.by_uid` (`upgrades/owner-by-uid.sql`, in release 6); a rescan that sees a file chowned moves it, and
+`recompute_root` uses each file's uid. The config refuses a uid rule on a root no host with a `uid_map` reports, and a
+`uid_map` naming someone unknown. A server whose clients are all one account keeps working by folder rules.
+
+**State:** Tested on Python 3.12 with PostgreSQL 16.15 (x86-64 desktop; `TestOwnerByUid`: two uids to two people,
+unmapped uid, folder rule outranking, row-level visibility per person, chown, recompute, config refusals, upgrade file
+against schema.sql). Not run on a real catalog; not deployed.
 
 ## 4. A health endpoint
 

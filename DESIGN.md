@@ -144,7 +144,7 @@ on the machine:
 
 1. **A site default owner** owns everything no rule claims.
 2. **Folder rules** give a folder and everything below it to a person or a group (`people/user-2/**` to `user-2`).
-   The most specific rule wins. A rule can also use the file's uid on one host, through that host's uid map; servers
+   The most specific rule wins. A rule can also use the file's uid (`owner = "uid"`), through the uid map of the host that reports the root; servers
    that map every client to one account, as NFS exports often do, need path rules, because the uid says nothing there.
 3. **Enrollments** add people to a folder without changing its owner: as co-owners (same rights as the owner), or as
    readers or annotators. An enrollment is a standing share of a folder, inherited by everything below it, including

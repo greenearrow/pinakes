@@ -180,10 +180,12 @@ CREATE TABLE owner_rules (
     folder      text NOT NULL,
     owner_person int REFERENCES people,
     owner_group int REFERENCES groups,
+    by_uid      boolean NOT NULL DEFAULT false,             -- owner = the person the file's uid maps to (the host's uid_map)
     created_by  int REFERENCES people,
     created     timestamptz NOT NULL DEFAULT now(),
     UNIQUE (root_id, folder),
-    CHECK ((owner_person IS NULL) <> (owner_group IS NULL))
+    CONSTRAINT owner_rules_check CHECK (CASE WHEN by_uid THEN owner_person IS NULL AND owner_group IS NULL
+                                             ELSE (owner_person IS NULL) <> (owner_group IS NULL) END)
 );
 CREATE TABLE enrollments (
     enrollment_id serial PRIMARY KEY,

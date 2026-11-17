@@ -96,6 +96,7 @@ def admin_conn(db="postgres"):
 
 @unittest.skipUnless(PGHOST and psycopg, "set PINAKES_TEST_PGHOST to a throwaway PostgreSQL")
 class ServerCase(unittest.TestCase):
+    server_toml = SERVER
     @classmethod
     def setUpClass(cls):
         cls.db = "pinakes_test_%s" % cls.__name__.lower()
@@ -117,7 +118,7 @@ class ServerCase(unittest.TestCase):
             c.execute("DROP SCHEMA IF EXISTS pinakes CASCADE")
             apply_schema(c)
         self.conn = psycopg.connect(host=PGHOST, user="pinakes_ingest", dbname=self.db, autocommit=True)
-        self.scfg = server_config.loads(SERVER)
+        self.scfg = server_config.loads(self.server_toml)
         self.ing = Ingester(self.conn, self.scfg)
         self.ing.seed()
         self.agents = {}
@@ -1420,6 +1421,97 @@ class TestHiddenFiles(ServerCase):
         upgrade_files_match_the_schema(self, ["hidden"], [], ["hidden-files.sql"])
         self.assertEqual(self.hidden(), {".hidden-at-the-top": True, "people/user-1/.config/app.toml": True,
                                          "people/user-1/plain.txt": False})
+
+
+class TestOwnerByUid(ServerCase):
+    """ROADMAP 2: owner = "uid" in a rule gives a folder's files to whoever the host's uid_map names for each file."""
+    server_toml = SERVER.replace('[hosts.server-1]\nroots = ["store"]\n',
+                                 '[hosts.server-1]\nroots = ["store"]\nuid_map = { 1000 = "user-1", 1001 = "user-2" }\n'
+                                 ).replace('[[ownership.enrollment]]', '''[[ownership.rule]]
+root = "store"
+folder = "home"
+owner = "uid"
+[[ownership.rule]]
+root = "store"
+folder = "home/shared"
+owner = "household"
+[[ownership.enrollment]]''', 1)
+
+    def send(self, files, seq):
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": seq, "seq": seq,
+                  "started": "2024-01-01T00:00:00Z", "root_def": {"path": "/mnt/store", "kind": "primary"}}
+        recs = [{"t": "file", "path": p, "size": 1, "mtime_ns": 1700000000000000000, "ctime_ns": 1700000000000000000,
+                 "dev": 1, "ino": i, "nlink": 1, "uid": uid, "sha256": hashlib.sha256(p.encode()).hexdigest()}
+                for i, (p, uid) in enumerate(files, 1)]
+        self.assertEqual(self.ing.apply(header, recs, "server-1"), "applied")
+
+    def owners(self):
+        return dict(self.q("SELECT f.relpath, p.name FROM pinakes.files f JOIN pinakes.people p "
+                           "ON p.person_id = f.owner_id"))
+
+    FILES = [("home/a.txt", 1000), ("home/b.txt", 1001), ("home/c.txt", 4242), ("home/shared/d.txt", 1001),
+             ("elsewhere/e.txt", 1001)]
+
+    def test_two_uids_two_people_by_the_map(self):
+        self.send(self.FILES, 1)
+        # c: a uid the map doesn't name falls to the default owner; d: a more specific folder rule outranks the
+        # uid rule (its owner is a group, so no person owns it); e: no rule claims it
+        self.assertEqual(self.owners(), {"home/a.txt": "user-1", "home/b.txt": "user-2", "home/c.txt": "user-1",
+                                         "elsewhere/e.txt": "user-1"})
+        self.assertEqual(self.q("SELECT owner_id FROM pinakes.files WHERE relpath = 'home/shared/d.txt'"), [(None,)])
+        with self.as_person("user-2") as c:
+            seen = {r[0] for r in c.execute("SELECT relpath FROM pinakes.files")}
+        self.assertEqual(seen, {"home/b.txt", "home/shared/d.txt"})
+        with self.as_person("user-1") as c:
+            seen = {r[0] for r in c.execute("SELECT relpath FROM pinakes.files")}
+        self.assertEqual(seen, {"home/a.txt", "home/c.txt", "home/shared/d.txt", "elsewhere/e.txt"})
+
+    def test_a_chown_moves_the_file_and_a_recompute_agrees(self):
+        self.send(self.FILES, 1)
+        self.send([("home/a.txt", 1001)], 2)
+        self.assertEqual(self.owners()["home/a.txt"], "user-2")
+        before = self.q("SELECT file_id, acl_id FROM pinakes.files ORDER BY file_id")
+        root_id = self.q("SELECT root_id FROM pinakes.roots WHERE label = 'store'")[0][0]
+        self.assertEqual(self.ing.recompute_root(root_id), 0)
+        self.assertEqual(self.q("SELECT file_id, acl_id FROM pinakes.files ORDER BY file_id"), before)
+
+    def test_the_rules_are_seeded_and_a_map_change_needs_a_recompute(self):
+        self.send(self.FILES, 1)                                      # the root's first batch seeds its rules
+        self.assertEqual(self.q("SELECT folder, by_uid, owner_person, owner_group IS NOT NULL FROM pinakes.owner_rules "
+                                "ORDER BY folder"),
+                         [("home", True, None, False), ("home/shared", False, None, True),
+                          ("people/user-2", False, self.q("SELECT person_id FROM pinakes.people WHERE "
+                                                          "name = 'user-2'")[0][0], False)])
+        self.scfg.hosts["server-1"]["uid_map"][4242] = "user-2"
+        root_id = self.q("SELECT root_id FROM pinakes.roots WHERE label = 'store'")[0][0]
+        self.assertEqual(self.ing.recompute_root(root_id), 1)
+        self.assertEqual(self.owners()["home/c.txt"], "user-2")
+
+    def test_the_config_refuses_a_uid_rule_with_no_map(self):
+        with self.assertRaisesRegex(server_config.ConfigError, "needs a uid_map"):
+            server_config.loads(SERVER.replace('[[ownership.enrollment]]', '''[[ownership.rule]]
+root = "store"
+folder = "home"
+owner = "uid"
+[[ownership.enrollment]]''', 1))
+        with self.assertRaisesRegex(server_config.ConfigError, "not a person or group"):
+            server_config.loads(self.server_toml.replace('1001 = "user-2"', '1001 = "nobody"'))
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT array_agg(column_name::text || ':' || data_type || ':' || is_nullable || ':' || "
+                "coalesce(column_default, '') ORDER BY column_name) FROM information_schema.columns "
+                "WHERE table_schema = 'pinakes' AND table_name = 'owner_rules'")      # an upgrade adds at the end
+        cons = ("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'pinakes.owner_rules'::regclass "
+                "AND contype = 'c'")
+        with admin_conn(self.db) as c:
+            fresh = (c.execute(defs).fetchone(), c.execute(cons).fetchall())
+            c.execute("ALTER TABLE pinakes.owner_rules DROP COLUMN by_uid CASCADE")
+            c.execute("ALTER TABLE pinakes.owner_rules ADD CONSTRAINT owner_rules_check "
+                      "CHECK ((owner_person IS NULL) <> (owner_group IS NULL))")
+            with open(os.path.join(UPGRADES, "owner-by-uid.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual((c.execute(defs).fetchone(), c.execute(cons).fetchall()), fresh)
 
 
 class TestBackupRoots(ServerCase):

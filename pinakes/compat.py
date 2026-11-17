@@ -52,6 +52,8 @@ UPGRADE_PROBES = {
     "files-policy.sql": "EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = to_regclass('pinakes.files') "
                         "AND polname = 'files_visible' "
                         "AND pg_get_expr(polqual, polrelid) ~ 'SELECT (pinakes\\.)?visible_acls\\(\\)')",
+    "owner-by-uid.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.owner_rules') "
+                        "AND attname = 'by_uid' AND NOT attisdropped)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

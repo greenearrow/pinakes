@@ -220,6 +220,7 @@ class Ingester:
         self.registry = registry.load(getattr(cfg, "schemas_dir", None))   # what a batch's metadata is checked by
         self.dropped = []   # the last batch's metadata left out: (path, schema, why)
         self._acl_cache = {}
+        self._uid_maps = {}
         # files worked out per round of lineage: a few queries per round, not per file (1 gives the per-file order)
         self.lineage_round = 2000
         self.progress_every = 5000  # gone paths between progress lines on stderr while a scan completes
@@ -242,16 +243,33 @@ class Ingester:
         raise Refused("unknown person or group %r" % name)
 
     # ownership -------------------------------------------------------------------------------------------------
-    def acl_for(self, root_id, relpath):
-        """(acl_id, owner person or None) for a path, from the owner rules and enrollments of its root."""
-        rules = self.q("SELECT folder, owner_person, owner_group FROM pinakes.owner_rules WHERE root_id = %s",
+    def _uid_map(self, root_id):
+        """{uid: person or group name} of the host that reports a root (config: that host's uid_map)."""
+        if root_id not in self._uid_maps:
+            r = self.one("SELECT h.name FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) "
+                         "WHERE r.root_id = %s", (root_id,))
+            self._uid_maps[root_id] = self.cfg.hosts.get(r[0], {}).get("uid_map", {}) if r else {}
+        return self._uid_maps[root_id]
+
+    def acl_for(self, root_id, relpath, uid=None):
+        """(acl_id, owner person or None) for a path, from the owner rules and enrollments of its root. A rule by
+        uid claims the folder only for a file whose uid the host's map names; any other file there falls to the
+        next rule, or the default owner."""
+        rules = self.q("SELECT folder, owner_person, owner_group, by_uid FROM pinakes.owner_rules WHERE root_id = %s",
                        (root_id,)).fetchall()
         best = None
-        for folder, op, og in rules:
-            if _under(relpath, folder) and (best is None or len(folder) > len(best[0])):
-                best = (folder, op, og)
+        for folder, op, og, by_uid in rules:
+            if not _under(relpath, folder) or (best is not None and len(folder) <= len(best[0])):
+                continue
+            if by_uid:
+                who = self._uid_map(root_id).get(uid)
+                if who is None:
+                    continue
+                best = (folder, *self._principal(who))
+            else:
+                best = (folder, "p", op) if op else (folder, "g", og)
         if best:
-            owner = ("p", best[1]) if best[1] else ("g", best[2])
+            owner = best[1:]
         else:
             d = self.one("SELECT value FROM pinakes.settings WHERE key = 'default_owner'")
             if not d:
@@ -319,9 +337,10 @@ class Ingester:
         """Reassign every file of a root after its rules or enrollments change; returns how many changed."""
         n = 0
         self._acl_cache.clear()
-        for file_id, relpath, acl in self.q("SELECT file_id, relpath, acl_id FROM pinakes.files WHERE root_id = %s "
-                                            "AND backup_of IS NULL", (root_id,)).fetchall():
-            new_acl, owner = self.acl_for(root_id, relpath)
+        self._uid_maps.clear()
+        for file_id, relpath, acl, uid in self.q("SELECT file_id, relpath, acl_id, uid FROM pinakes.files "
+                                                 "WHERE root_id = %s AND backup_of IS NULL", (root_id,)).fetchall():
+            new_acl, owner = self.acl_for(root_id, relpath, uid)
             if new_acl != acl:
                 self.q("UPDATE pinakes.files SET acl_id = %s, owner_id = %s WHERE file_id = %s",
                        (new_acl, owner, file_id))
@@ -366,7 +385,10 @@ class Ingester:
     def _seed_root(self, root_id, label):
         """Owner rules and enrollments from the config, for a root seen for the first time."""
         for r in self.cfg.rules:
-            if r["root"] == label:
+            if r["root"] == label and r["owner"] == "uid":
+                self.q("INSERT INTO pinakes.owner_rules (root_id, folder, by_uid) VALUES (%s, %s, true) "
+                       "ON CONFLICT DO NOTHING", (root_id, r["folder"].strip("/")))
+            elif r["root"] == label:
                 k, i = self._principal(r["owner"])
                 self.q("INSERT INTO pinakes.owner_rules (root_id, folder, owner_person, owner_group) "
                        "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
@@ -792,10 +814,16 @@ class Ingester:
                 "link_relpath": rec.get("link_path"), "link_dangling": rec.get("dangling"),
                 # an agent from before hidden files doesn't say; a dot in the path is known here anyway
                 "hidden": bool(rec.get("hidden")) or hidden.by_name(relpath)}
-        ex = self.one("SELECT file_id, content_id, mtime, ctime, btime FROM pinakes.files "
+        ex = self.one("SELECT file_id, content_id, mtime, ctime, btime, uid, acl_id FROM pinakes.files "
                       "WHERE root_id = %s AND relpath = %s AND gone_on IS NULL", (root["root_id"], relpath))
         if ex:
-            file_id, old_content, old_m, old_c, old_b = ex
+            file_id, old_content, old_m, old_c, old_b, old_uid, old_acl = ex
+            if rec.get("uid") != old_uid and root["kind"] != "backup":      # chowned: a rule by uid may now differ
+                acl_id, owner = self.acl_for(root["root_id"], relpath, rec.get("uid"))
+                if acl_id != old_acl:
+                    cols.update(acl_id=acl_id, owner_id=owner)
+                    self.q("UPDATE pinakes.files SET acl_id = %s, owner_id = %s WHERE backup_of = %s",
+                           (acl_id, owner, file_id))
             if content_id is None and rec.get("unstable"):
                 cols["content_id"] = old_content  # keep the last known content until it settles
             sets = ", ".join("%s = %%(%s)s" % (k, k) for k in cols)
@@ -826,7 +854,7 @@ class Ingester:
         if backup_of:
             acl_id, owner = self.one("SELECT acl_id, owner_id FROM pinakes.files WHERE file_id = %s", (backup_of,))
         else:
-            acl_id, owner = self.acl_for(acl_root, acl_path)
+            acl_id, owner = self.acl_for(acl_root, acl_path, rec.get("uid"))
         cols.update(root_id=root["root_id"], relpath=relpath, acl_id=acl_id, owner_id=owner, backup_of=backup_of,
                     snapshot=snapshot, pending_scan=ctx["scan"])
         self.q("INSERT INTO pinakes.files (%s) VALUES (%s)" % (", ".join(cols), ", ".join("%%(%s)s" % k for k in cols)),

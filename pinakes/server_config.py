@@ -57,6 +57,15 @@ class ServerConfig:
                                 "expected_every": interval(h.get("expected_every", "1d")),
                                 "uid_map": {int(k): v for k, v in h.get("uid_map", {}).items()},
                                 "key": h.get("key")}
+            for who in self.hosts[name]["uid_map"].values():
+                if who not in self.people and who not in self.groups:
+                    raise ConfigError("hosts.%s.uid_map: %r is not a person or group" % (name, who))
+        for r in self.rules:
+            # owner = "uid": the file's uid, through the uid_map of the host that reports the root
+            if r["owner"] == "uid" and not any(r["root"] in h["roots"] and h["uid_map"]
+                                               for h in self.hosts.values()):
+                raise ConfigError('an ownership rule with owner = "uid" needs a uid_map on a host that reports '
+                                  "root %s" % r["root"])
         lin = d.get("lineage", {})
         self.chunk_overlap = float(lin.get("chunk_overlap", 0.6))
         self.name_patterns_file = lin.get("name_patterns")
