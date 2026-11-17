@@ -1383,6 +1383,138 @@ class TestTakeover(ServerCase):
             self.assertEqual(schema_missing(self.conn), [])
 
 
+class TestUnreportedRoots(ServerCase):
+    """A machine replaced under the same name, with fewer roots (ROADMAP 46): every batch names the agent's roots, a
+    root its host's batches leave out is reported (its files would otherwise count as copies), naming it again or
+    retiring it clears that, and the report names no root where a root may not be named."""
+    server_toml = SERVER.replace('roots = ["store"]', 'roots = ["store", "media"]').replace(
+        'roots = ["snapshots"]', 'roots = ["snapshots"]\nexpected_every = "never"')     # only server-1 reports here
+
+    def machine(self, name, labels):
+        """An agent of server-1 with these roots (one config, as a real machine has), on trees of its own."""
+        base = os.path.join(self.tmp, name)
+        text = '[agent]\nhost = "server-1"\nstate = "%s/state.sqlite"\noutbox = "%s/outbox"\n' % (base, base)
+        for label in labels:
+            top = os.path.join(base, label)
+            os.makedirs(top)
+            with open(os.path.join(top, "%s-%s.txt" % (name, label)), "wb") as f:
+                f.write(b"%s %s" % (name.encode(), label.encode()))
+            text += '[[root]]\nlabel = "%s"\npath = "%s"\n' % (label, top)
+        cfg = config.loads(text)
+        st = State(cfg.state)
+        self.addCleanup(st.close)
+        return st, cfg
+
+    def run_scan(self, st, cfg, edit=None, **kw):
+        for root in cfg.roots:
+            Scanner(cfg, st).scan(root, **kw)
+        for seq, p in outbox.pending(cfg.outbox):
+            header, recs = outbox.read(p)
+            if edit:
+                edit(header)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.ing.apply(header, recs, "server-1")
+            outbox.ack(cfg.outbox, seq)
+
+    def report(self):
+        from pinakes import web
+        code, body = web.health_report(lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db))
+        h = {x["host"]: x for x in body["hosts"]}["server-1"]
+        app = psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)
+        try:
+            versions = {a["host"]: a for a in queries.agent_versions(app)}["server-1"]
+        finally:
+            app.close()
+        self.assertNotIn("media", json.dumps(body))                     # /health: host names and counts only
+        self.assertNotIn("media", json.dumps(versions, default=str))    # pinakes releases: the same
+        return code, body["status"], h["roots_unreported"], versions["roots_unreported"]
+
+    def totals(self):
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s'
+                    % (PGHOST, self.db, self.server_toml))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ingest_main(["--config", conf, "totals"]), 0)
+        return conf, out.getvalue()
+
+    def test_a_machine_replaced_with_fewer_roots(self):
+        old = self.machine("old", ["store", "media"])
+        self.run_scan(*old)
+        self.assertEqual(self.report(), (200, "ok", 0, 0))
+        # the new machine has only store; its full scan retires the old machine's files there
+        st, cfg = self.machine("new", ["store"])
+        from pinakes import agent
+        agent.follow(cfg, self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0])
+        self.run_scan(st, cfg, full=True, accept_gone=True)
+        self.assertEqual(self.report(), (503, "roots unreported", 1, 1))
+        # media's file still counts: that is the wrong answer the report is for
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
+                                "WHERE r.label = 'media' AND f.gone_on IS NULL")[0][0], 1)
+        conf, out = self.totals()
+        self.assertIn("server-1 media: 1 files 9 bytes; NOT REPORTED by server-1 since %s: if it has no such root "
+                      "any more (a machine replaced, a root dropped), its files still count as copies until "
+                      "pinakes-ingest retire-root media" % queries.today(), out)
+        self.assertNotIn("store: 1 files 9 bytes; NOT", out)
+        since = self.q("SELECT unreported_since FROM pinakes.roots WHERE label = 'media'")[0][0]
+        # a batch from before release 6 names no roots: nothing changes; a later one keeps the first date
+        self.run_scan(st, cfg, edit=lambda h: h.pop("roots"))
+        self.run_scan(st, cfg)
+        self.assertEqual(self.q("SELECT unreported_since FROM pinakes.roots WHERE label = 'media'")[0][0], since)
+        # a batch that names it again clears it (the disk was back)
+        self.run_scan(st, cfg, edit=lambda h: h.update(roots=["store", "media"]))
+        self.assertEqual(self.report(), (200, "ok", 0, 0))
+        self.run_scan(st, cfg)
+        self.assertEqual(self.report()[1:], ("roots unreported", 1, 1))
+        # retiring it ends it, and its file is gone
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ingest_main(["--config", conf, "retire-root", "media"]), 0)
+        self.assertEqual(out.getvalue(), "root media: 1 file(s) gone\n")
+        self.assertEqual(self.report(), (200, "ok", 0, 0))
+        self.run_scan(st, cfg)                                          # still not named: still retired
+        self.assertEqual(self.report(), (200, "ok", 0, 0))
+        self.assertNotIn("NOT REPORTED", self.totals()[1])
+
+    def test_a_dry_run_retires_nothing(self):
+        self.run_scan(*self.machine("old", ["store", "media"]))
+        st, cfg = self.machine("new", ["store"])
+        from pinakes import agent
+        agent.follow(cfg, self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0])
+        self.run_scan(st, cfg)
+        conf, _ = self.totals()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ingest_main(["--config", conf, "retire-root", "media", "--dry-run"]), 0)
+        self.assertEqual(self.report()[1:], ("roots unreported", 1, 1))
+
+    def test_a_roots_list_that_leaves_out_its_own_root_is_refused(self):
+        st, cfg = self.machine("old", ["store", "media"])
+        Scanner(cfg, st).scan(cfg.roots[0])
+        (seq, p), = outbox.pending(cfg.outbox)
+        header, recs = outbox.read(p)
+        for bad in (["media"], "store", [1, "store"]):
+            with self.assertRaises(Refused) as e:
+                self.ing.apply(dict(header, roots=bad), recs, "server-1")
+            self.assertEqual(str(e.exception), "roots must be the labels of every root the agent has, this batch's "
+                                               "among them")
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files")[0][0], 0)
+
+    def test_upgrade_file_matches_the_schema(self):
+        cols = ("SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' "
+                "|| coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "WHERE table_schema = 'pinakes' AND table_name = 'roots'")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(cols).fetchone()
+            c.execute("ALTER TABLE pinakes.roots DROP COLUMN unreported_since, DROP COLUMN retired_on")
+            self.assertEqual(schema_missing(self.conn), ["unreported-roots.sql"])
+            with open(os.path.join(UPGRADES, "unreported-roots.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(cols).fetchone(), fresh)
+            self.assertEqual(schema_missing(self.conn), [])
+
+
 class TestHiddenFiles(ServerCase):
     """Hidden files in the catalog: as the agent says (a dot in the path, Samba's hidden attribute), a dot-name also
     from an agent that doesn't say, following a file that moves."""
@@ -1958,7 +2090,7 @@ class TestCheckAgainstCatalog(ServerCase):
         self.scan("server-1", "store")
         st, cfg, _ = self.agent("server-1", "store")
         c = check(cfg.roots[0], st)
-        self.assertEqual(self.ing.totals(), [("server-1", "store", c["files"], c["bytes"], 0)])
+        self.assertEqual(self.ing.totals(), [("server-1", "store", c["files"], c["bytes"], 0, None)])
         self.assertEqual((c["files"], c["bytes"]), (3, 11))
         self.assertEqual(check_verdict(c), "the disk matches the last scan")
         # the command prints the same totals, and no names
@@ -2710,13 +2842,15 @@ class TestScrub(ServerCase):
             c.execute("ALTER TABLE pinakes.history DROP CONSTRAINT history_kind_check, ADD CONSTRAINT "
                       "history_kind_check CHECK (kind IN ('new', 'changed', 'moved', 'moved_changed', 'gone'))")
             c.execute("ALTER TABLE pinakes.roots DROP COLUMN scrub_on, DROP COLUMN scrub_since, DROP COLUMN "
-                      "scrub_days, DROP COLUMN scrub_oldest, DROP COLUMN scrub_never")
+                      "scrub_days, DROP COLUMN scrub_oldest, DROP COLUMN scrub_never, "
+                      "DROP COLUMN unreported_since, DROP COLUMN retired_on")               # a later upgrade's too
             c.execute("ALTER TABLE pinakes.files DROP COLUMN unreadable_on CASCADE, DROP COLUMN unreadable_error")
             c.execute("CREATE OR REPLACE VIEW pinakes.present WITH (security_invoker = true) AS "
                       "SELECT * FROM pinakes.files WHERE gone_on IS NULL")
             self.assertNotEqual(c.execute(defs).fetchone()[:2], fresh[:2])
-            with open(os.path.join(UPGRADES, "scrub.sql")) as f:
-                c.execute(f.read())
+            for name in ("scrub.sql", "unreported-roots.sql"):
+                with open(os.path.join(UPGRADES, name)) as f:
+                    c.execute(f.read())
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertTrue(fresh[3])

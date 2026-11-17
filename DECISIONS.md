@@ -70,6 +70,13 @@ were made while building, to keep going, and are open to change.
   root it has that the scan didn't send (last seen before the scan's first batch), except under a path the scan
   reported an error for; most of a root only with `--accept-gone`, as the agent's own guard. A root the host no
   longer reports at all is retired by `pinakes-ingest retire-root LABEL`.
+- **A root the host no longer reports is noticed from its batches (ROADMAP 46).** Every batch names all the agent's
+  roots, so the server learns the root set on either transport (check-in runs only over ssh) and from a scrub as
+  from a scan; a root left out is marked, not retired, because a disk that was only unmounted for a while comes back
+  named, and retiring is a decision. Root labels stay out of `/health` (no sign-in) and `pinakes releases` (ops
+  tokens name no root): both give a count, and `pinakes-ingest totals` on the server names the roots. No machine id
+  is compared: a new machine with the same roots needs nothing that `scan --full` doesn't already do, and one with
+  fewer is caught by its roots. One agent per host name is assumed, as the sequence numbers already assume it.
 - **Chunks belong to content**, so a second link to an inode, or a copy elsewhere, doesn't resend them.
 - **Mass-gone guard:** if a completed walk finds more than half of a root's files missing (and at least 100), it
   reports nothing gone and stops: a mount that didn't come up looks exactly like that. `--accept-gone` confirms a real

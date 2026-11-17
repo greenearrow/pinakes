@@ -9,7 +9,8 @@
   pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, and redo name
                                                       lineage by the current rules (after an upgrade)
   pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
-                                                      with pinakes-agent check
+                                                      with pinakes-agent check; a root its host's batches no longer
+                                                      name is marked NOT REPORTED, with the retire-root to run
   pinakes-ingest --config server.toml retire-root LABEL [--dry-run]   every present file of a root its host no longer
                                                       reports goes (a machine taken over, a root dropped)
   pinakes-ingest --config server.toml --host NAME hello   an agent's check-in: its release and protocol as JSON on
@@ -351,6 +352,21 @@ class Ingester:
         return n
 
     # roots -----------------------------------------------------------------------------------------------------
+    def _reported(self, host_id, header):
+        """The roots the agent has (ROADMAP 46): this host's roots it leaves out are marked unreported from now, unless
+        already, and those it names are cleared (and no longer retired). A batch that names none (an agent before
+        release 6) changes nothing."""
+        labels = header.get("roots")
+        if labels is None:
+            return
+        if not (isinstance(labels, list) and all(isinstance(x, str) for x in labels) and header["root"] in labels):
+            raise Refused("roots must be the labels of every root the agent has, this batch's among them")
+        self.q("UPDATE pinakes.roots SET unreported_since = NULL, retired_on = NULL "
+               "WHERE host_id = %s AND label = ANY(%s) AND (unreported_since IS NOT NULL OR retired_on IS NOT NULL)",
+               (host_id, labels))
+        self.q("UPDATE pinakes.roots SET unreported_since = now() "
+               "WHERE host_id = %s AND NOT label = ANY(%s) AND unreported_since IS NULL", (host_id, labels))
+
     def _root(self, host_id, host, header):
         label = header["root"]
         if not self.cfg.host_allows(host, label):
@@ -491,13 +507,16 @@ class Ingester:
         return root["mirrors_root_id"], rest, snapshot
 
     def totals(self):
-        """(host, root, files, bytes, pending) per root: present files, every owner's. Pending counts files new in
-        an unfinished scan, so it should be 0 when comparing with the agent's check."""
+        """(host, root, files, bytes, pending, unreported_since) per root: present files, every owner's. Pending
+        counts files new in an unfinished scan, so it should be 0 when comparing with the agent's check;
+        unreported_since, when its host's batches stopped naming it (ROADMAP 46), None if they do or it was
+        retired."""
         return self.conn.execute(
-            "SELECT h.name, r.label, count(f.file_id), coalesce(sum(f.size), 0), count(f.pending_scan) "
+            "SELECT h.name, r.label, count(f.file_id), coalesce(sum(f.size), 0), count(f.pending_scan), "
+            "CASE WHEN r.retired_on IS NULL THEN r.unreported_since END "
             "FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) "
             "LEFT JOIN pinakes.files f ON f.root_id = r.root_id AND f.gone_on IS NULL "
-            "GROUP BY 1, 2 ORDER BY 1, 2").fetchall()
+            "GROUP BY 1, 2, 6 ORDER BY 1, 2").fetchall()
 
     # applying a batch ------------------------------------------------------------------------------------------
     def apply(self, header, records, host):
@@ -541,6 +560,7 @@ class Ingester:
                     "continues after %d by itself; otherwise run pinakes-agent renumber --after %d on the host"
                     % (seq, last_seq, seq, last_seq, last_seq))
             root_id = self._root(host_id, host, header)
+            self._reported(host_id, header)
             root = self.one("SELECT root_id, kind, protected, mirrors_root_id, mirrors_layout, last_complete_on, "
                             "mirrors_prefix FROM pinakes.roots WHERE root_id = %s", (root_id,))
             root = dict(zip(("root_id", "kind", "protected", "mirrors_root_id", "mirrors_layout",
@@ -730,6 +750,7 @@ class Ingester:
                    "WHERE file_id = ANY(%s)", (on, ids))
             n = len(ids)
         self.q("DELETE FROM pinakes.scan_errors WHERE root_id = %s", (root_id,))
+        self.q("UPDATE pinakes.roots SET retired_on = %s WHERE root_id = %s", (on, root_id))
         return n
 
     # check-in ------------------------------------------------------------------------------------------------
@@ -1444,9 +1465,12 @@ def main(argv=None):
                 print("%d file(s) reassigned" % ing.recompute_root(r[0]))
             return 0
         if args.cmd == "totals":
-            for host, label, n, size, pending in ing.totals():
-                print("%s %s: %d files %d bytes%s" % (host, label, n, size,
-                                                      "; %d pending (a scan is unfinished)" % pending if pending else ""))
+            for host, label, n, size, pending, unreported in ing.totals():
+                print("%s %s: %d files %d bytes%s%s" % (
+                    host, label, n, size, "; %d pending (a scan is unfinished)" % pending if pending else "",
+                    "; NOT REPORTED by %s since %s: if it has no such root any more (a machine replaced, a root "
+                    "dropped), its files still count as copies until pinakes-ingest retire-root %s"
+                    % (host, unreported.strftime("%Y-%m-%d"), label) if unreported else ""))
             return 0
         if args.cmd == "retire-root":
             if not args.dir:

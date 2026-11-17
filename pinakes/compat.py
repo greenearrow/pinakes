@@ -9,14 +9,14 @@ nothing and counts as protocol 0.
 RELEASE = 6                 # the newest entry in RELEASES.toml (cut or being prepared)
 PROTOCOL = 3                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
-                            # batches (DESIGN.md "Scrub")
+                            # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46)
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
 # What a batch may carry, by the protocol above: a field outside these fails the tests, so adding one raises it.
 BATCH_FIELDS = {
     "header": ("t", "format", "host", "root", "scan", "started", "root_def", "seq", "complete", "records",
-               "release", "protocol", "min_server_protocol", "full", "accept_gone", "scrub"),
+               "release", "protocol", "min_server_protocol", "full", "accept_gone", "scrub", "roots"),
     # a scrub batch (DESIGN.md "Scrub"): its header's "scrub" in place of "scan", and only these records
     "scrub": ("on", "days", "oldest", "never", "mismatches", "unreadable"),
     "mismatch": ("t", "path", "size", "mtime_ns", "dev", "ino", "sha256", "verified", "chunk_params", "chunks"),
@@ -54,6 +54,8 @@ UPGRADE_PROBES = {
                         "AND pg_get_expr(polqual, polrelid) ~ 'SELECT (pinakes\\.)?visible_acls\\(\\)')",
     "owner-by-uid.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.owner_rules') "
                         "AND attname = 'by_uid' AND NOT attisdropped)",
+    "unreported-roots.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.roots') "
+                            "AND attname = 'retired_on' AND NOT attisdropped)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

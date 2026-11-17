@@ -249,7 +249,8 @@ class Scanner:
                 "started": datetime.datetime.fromtimestamp(started, datetime.timezone.utc)
                 .strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                 "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
-                             "mirrors": root.mirrors}}
+                             "mirrors": root.mirrors},
+                "roots": [r.label for r in self.cfg.roots]}     # every root this agent has (ROADMAP 46)
 
     def _root_holding(self, path):
         """The root of this agent whose folder holds path (the innermost, for nested roots), and path's relpath in

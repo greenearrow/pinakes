@@ -46,6 +46,7 @@ agents).
 - 38. Group tokens
 - 39. Ops tokens and `pinakes releases`
 - 41. The scrub
+- 46. A machine replaced under the same name
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
 
@@ -416,6 +417,26 @@ root, chunks, the file written, appended and a changed number kept, unwritable; 
 no longer counted, review and restore, another person not seeing it, a reader not marking it, /health, the upgrade
 against the schema. The copy and hash checks checked to fail without them. Not run on a real tree or against real disks;
 not deployed.
+
+## 46. A machine replaced under the same name
+
+**Built:** Every batch, scan or scrub, names all the roots the agent has (`roots` in its header, protocol 3); the
+ingester marks the host's other roots `unreported_since` (the first batch that left them out) and clears the mark when
+a batch names a root again; `pinakes-ingest retire-root` sets `retired_on`, which ends it until the root is named
+again. `/health` gives per host `roots_unreported`, a count, and answers 503 "roots unreported" (after "refused" and
+"stale", before "scrub behind"); `pinakes releases` says the count and where to look; `pinakes-ingest totals`, on the
+server, names each such root with the date and the `retire-root` to run. A batch with no `roots` (an agent before
+release 6) changes nothing; a `roots` that isn't a list of labels holding the batch's own root is refused.
+`upgrades/unreported-roots.sql`, after `owner-by-uid.sql`. Not built: noticing a different machine id (a replaced
+machine with the same roots is already handled by `scan --full`), and the line on the operator page, which waits for
+10.
+
+**State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed, and the installed wheel
+on Python 3.12 (x86-64 desktop; `tests/test_server.py` `TestUnreportedRoots`
+on generated trees: a two-root machine replaced by a one-root one under the same name, its left-out root's file still
+counted until retired, `/health`, `pinakes releases`' query and `totals`, a batch without `roots`, a root named again,
+retire-root and its dry run, a malformed list refused, no root label in `/health` or `releases`, the upgrade against
+the schema). Not run on a real tree; not deployed.
 
 ## 48. A fast home page on a large catalog, (a) and (b)
 

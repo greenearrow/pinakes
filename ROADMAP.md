@@ -113,7 +113,7 @@ and works where you are. Agents' batches stay on their forced SSH keys, and serv
 ## Proposed (from a review of the whole project; not yet agreed)
 
 Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started
-(41, the scrub, was agreed and is built: REARVIEW.md).
+(41, the scrub, and 46, a machine replaced under the same name, were agreed and are built: REARVIEW.md).
 Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
 
 42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
@@ -143,14 +143,6 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     exactly as for a query: the export is a query, not a dump. *Done when:* a test exports one person's records and
     finds none of a second person's, sensitive fields only where `sensitive_visible()` allows, and the export in the
     audit.
-46. [Operability] **A machine replaced under the same name.** When new hardware takes over a host's name with fewer
-    roots, the old machine's files in roots the new one doesn't have stay "present" until someone retires each root
-    by hand, and until then they count as copies. `retire-root` exists (DECISIONS.md); missing is noticing: a host
-    whose agent reports a different machine id or root set gets a line on the operator page and in `/health`, with
-    the command to run. Sits next to: check-in and releases, `/health`'s staleness, `retire-root`. Value: medium
-    (a wrong "there is another copy" is the catalog's worst answer). Cost: S. Risk: none (it reports; retiring stays
-    a command). *Done when:* a test with a host whose second scan lacks a root it had shows the warning, and
-    retiring the root clears it.
 47. [Feature] **Growth by folder over time.** History is kept to the day; "what grew this month, and where" is one
     query away and listed in DESIGN.md's reports ("a root's growth") without an item here. Per root and top folder,
     bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:

@@ -124,7 +124,11 @@ CREATE TABLE roots (
     scrub_since date,                                       -- its first: before a full pass, files never checked
     scrub_days  int,                                        -- a full pass every this many days
     scrub_oldest date,                                      -- the oldest check of a file still there
-    scrub_never bigint                                      -- files never checked yet
+    scrub_never bigint,                                     -- files never checked yet
+    -- a root its host stopped reporting (ROADMAP 46): every batch names its agent's roots, and one that leaves this
+    -- root out marks it; naming it again clears the mark, retire-root ends it
+    unreported_since timestamptz,                           -- the first batch since then that left it out
+    retired_on  date                                        -- pinakes-ingest retire-root (its files gone that day)
 );
 CREATE TABLE scans (
     root_id     int REFERENCES roots,

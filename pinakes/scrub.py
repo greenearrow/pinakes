@@ -465,6 +465,7 @@ class Scrubber:
                 .strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                 "root_def": {"path": root.path, "kind": root.kind, "protected": root.protected,
                              "mirrors": root.mirrors},
+                "roots": [r.label for r in self.cfg.roots],     # every root this agent has (ROADMAP 46)
                 "scrub": summary}
 
     def _write(self, ran_roots, out, updates, stats, start):

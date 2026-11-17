@@ -125,7 +125,8 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   role has no write on the table itself. Under a token (`pinakes review`), `mark_changes()` also needs the token's
   `review` scope and skips changes outside its roots.
 - `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
-  batch, last complete scan and whether it is stale. It names hosts and nothing else (no root, person or file, no
+  batch, last complete scan, whether it is stale, its scrub's dates, and how many of its roots its batches no longer
+  name. It names hosts and nothing else (no root, person or file, no
   error text), through `pinakes_app` with no person set, so row-level security would hide any file it touched. A
   site that doesn't want host names reachable this way blocks the path at its proxy, or serves it only on
   `[web] health_listen`, an address of its choosing that serves nothing else.

@@ -282,6 +282,10 @@ def releases(api, as_json):
             print("%s: last refused %s: %s" % (a["host"], _cell(a["refused_at"]), a["refused"]))
         if a["seq_reset"]:
             print("%s: numbering went back %s: %s" % (a["host"], _cell(a["seq_reset_at"]), a["seq_reset"]))
+        if a.get("roots_unreported"):
+            print("%s: %d root(s) its batches no longer name; their files still count as copies. On the server, "
+                  "pinakes-ingest totals names them, and retire-root LABEL retires one it no longer has"
+                  % (a["host"], a["roots_unreported"]))
 
 
 def _when(iso):

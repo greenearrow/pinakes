@@ -154,12 +154,14 @@ def health_report(connect):
     finally:
         db.close()
     status = ("refused" if any(h["refused"] for h in hosts) else "stale" if any(h["stale"] for h in hosts)
+              else "roots unreported" if any(h["roots_unreported"] for h in hosts)
               else "scrub behind" if any(h["scrub_behind"] for h in hosts) else "ok")
     body = {"status": status, "database": "ok",
             "hosts": [{"host": h["host"], "newest_batch": _iso(h["newest_batch"]), "last_scan": _iso(h["last_scan"]),
                        "expected_every_s": int(h["expected_every"].total_seconds()) if h["expected_every"] else None,
                        "stale": h["stale"], "refused": h["refused"], "seq_reset": _iso(h["seq_reset_at"]),
-                       "scrub_oldest": _iso(h["scrub_oldest"]), "scrub_behind": h["scrub_behind"]}
+                       "scrub_oldest": _iso(h["scrub_oldest"]), "scrub_behind": h["scrub_behind"],
+                       "roots_unreported": h["roots_unreported"]}
                       for h in hosts]}
     return (200 if body["status"] == "ok" else 503), body
 

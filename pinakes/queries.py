@@ -531,12 +531,16 @@ _SCRUB_BEHIND = """(r.scrub_days > 0 AND (r.scrub_on < %(d)s - r.scrub_days
                     OR (r.scrub_never > 0 AND r.scrub_since < %(d)s - 2 * r.scrub_days)))""" % {"d": _UTC_TODAY}
 
 
+# A root its host's batches stopped naming (ROADMAP 46), not retired since: its files still count as copies.
+_UNREPORTED = "r.unreported_since IS NOT NULL AND r.retired_on IS NULL"
+
+
 def health(conn):
     """Per host: its newest batch, its last complete scan, how often it should report, whether it is stale, whether
     its batches are being refused (a refusal since its newest batch applied: for its protocol or its sequence), when
-    its agent's numbering last went back, and its scrub: the oldest check of a file on any of its roots (before a
-    full pass, the day the scrub began there) and whether the scrub is behind. Host names, dates and times only: no
-    root, person or file."""
+    its agent's numbering last went back, its scrub: the oldest check of a file on any of its roots (before a
+    full pass, the day the scrub began there) and whether the scrub is behind, and how many of its roots its batches
+    stopped naming (ROADMAP 46). Host names, counts, dates and times only: no root, person or file."""
     return rows(conn, """SELECT x.*, (x.refused_at IS NOT NULL AND (x.newest_batch IS NULL
                                       OR x.refused_at > x.newest_batch)) AS refused
                          FROM (SELECT h.name AS host, (SELECT max(i.at) FROM pinakes.ingested i
@@ -545,12 +549,13 @@ def health(conn):
                                       (h.expected_every IS NOT NULL AND (h.last_scan IS NULL
                                        OR h.last_scan < now() - h.expected_every)) AS stale,
                                       c.refused_at, c.seq_reset_at, s.scrub_oldest, coalesce(s.scrub_behind, false)
-                                          AS scrub_behind
+                                          AS scrub_behind, s.roots_unreported
                                FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id)
                                LEFT JOIN LATERAL (
                                    SELECT min(CASE WHEN r.scrub_never > 0 THEN r.scrub_since ELSE r.scrub_oldest END)
                                               FILTER (WHERE r.scrub_days > 0) AS scrub_oldest,
-                                          bool_or(""" + _SCRUB_BEHIND + """) AS scrub_behind
+                                          bool_or(""" + _SCRUB_BEHIND + """) AS scrub_behind,
+                                          count(*) FILTER (WHERE """ + _UNREPORTED + """) AS roots_unreported
                                    FROM pinakes.roots r WHERE r.host_id = h.host_id) s ON true) x
                          ORDER BY x.host""")
 
@@ -558,12 +563,14 @@ def health(conn):
 def agent_versions(conn):
     """Per host: its last check-in (release, protocol, the oldest server it works with, whether it is locked), its
     newest batch and the protocol that batch declared (0: none, an agent before check-in), its last batch refused
-    (for its protocol or its sequence), and when its numbering last went back and what was done. Host names,
-    numbers and times only: no root, person or file."""
+    (for its protocol or its sequence), when its numbering last went back and what was done, and how many of its
+    roots its batches stopped naming (ROADMAP 46). Host names, numbers and times only: no root, person or file."""
     return rows(conn, """SELECT h.name AS host, c.at AS checked_in, c.release, c.protocol,
                                 c.min_server_protocol AS min_server, c.locked,
                                 (SELECT max(i.at) FROM pinakes.ingested i WHERE i.host_id = h.host_id) AS newest_batch,
-                                c.batch_release, c.batch_protocol, c.refused_at, c.refused, c.seq_reset_at, c.seq_reset
+                                c.batch_release, c.batch_protocol, c.refused_at, c.refused, c.seq_reset_at, c.seq_reset,
+                                (SELECT count(*) FROM pinakes.roots r WHERE r.host_id = h.host_id AND """ + _UNREPORTED
+                      + """) AS roots_unreported
                          FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id) ORDER BY h.name""")
 
 
