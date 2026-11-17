@@ -157,9 +157,11 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
 
-## Later, or a wish
+## Soon: add-on modules
 
-24. [Feature; also security] **MCP server** over the read-only queries (DESIGN.md "Wish"), on the API and tokens of
-    34, `read` scope only. *Done when:* tests show a
+Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.
+
+24. [Feature; also security] **MCP server**, an add-on module, over the read-only queries (DESIGN.md "Wish"), on the
+    API and tokens of 34, `read` scope only; no new powers in the core, and the core runs without it. *Done when:* tests show a
     token acting as one person under row-level security, never stepping up, leaving protected roots out unless added,
     and every query logged.
