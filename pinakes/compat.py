@@ -49,6 +49,9 @@ UPGRADE_PROBES = {
     "api-tokens.sql": "to_regclass('pinakes.tokens') IS NOT NULL",
     "scrub.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
                  "AND attname = 'unreadable_on' AND NOT attisdropped)",
+    "files-policy.sql": "EXISTS (SELECT 1 FROM pg_policy WHERE polrelid = to_regclass('pinakes.files') "
+                        "AND polname = 'files_visible' "
+                        "AND pg_get_expr(polqual, polrelid) ~ 'SELECT (pinakes\\.)?visible_acls\\(\\)')",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

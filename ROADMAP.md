@@ -61,6 +61,7 @@ Platforms so far: every test on each of Python 3.10 to 3.15 and PostgreSQL 15 to
 | `pinakes` as a client of the API (35): standard library only (`urllib`), no database driver or server config; the catalog's address from `[client] url` (`~/.config/pinakes/client.toml`, `$PINAKES_CLIENT_CONFIG` or `/etc/pinakes/client.toml`) or `--url`, https or http to this machine only, `[client] ca_file` for a site's CA; the token from the first of a `.pinakes-token` in the current folder or one above it and `~/.config/pinakes/token`, a token file not the user's own, not a plain file or readable by anyone else refused, not skipped; every action a subcommand (`backups`); `--as` gone until 36; `--versions` stays on the server, from `server.toml` and the database with no person, until 39; API calls `host-roots` and `backups` for the folder commands | Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCli` and the moved CLI tests in `tests/test_server.py`, against a real HTTP server on 127.0.0.1 in the test; once with psycopg made unimportable), and from the wheel on 3.12. Not run against a real catalog or over https; not deployed |
 | Backup roots without churn (no history, gone rows deleted, link-count and ctime changes not sent); name lineage only with a second signal (a folder name only when rare; signs kept in names); `pinakes-ingest tidy` for catalogs built before them | Tested on 16 (agent part on 3.12); run for real on 18: a hard-linked snapshot root of ~100k files sent about 100k records a night before, and after it only each new snapshot's files plus one gone per pruned file (two nights: 3,688 and 14,753), matching the snapshots made and pruned |
 | The scrub (41; DESIGN.md "Scrub"): after the scans, each filesystem under the agent's roots has its least recently verified files read again and their hashes checked, up to its share (its bytes × time since its last scrub ÷ `days`, at most seven nights'; `[agent] scrub_max_minutes`); `scrub.toml` written by the agent (filesystems by UUID through `/proc/self/mountinfo` and `/dev/disk/by-uuid`, else the mount source; `days = 30`, 0 for network filesystems), new ones appended, never rewritten; a hard-linked inode read once; `verified` and `scrub_error` in the agent's state; a scrub batch per root (its summary, `mismatch`, `unreadable`, `readable`), sent only to a server of protocol 3 (release 6, not cut); the ingester gives a mismatch its new content and a history row of its own (none in a backup root), marks an unreadable file, which no copy query counts until it reads; both reviewable (`mark_changes()`, the changes page and tree, `pinakes review`, the restore list); `/health` per host the oldest check and whether the scrub is behind (503); `pinakes-agent scrub [status]`; `upgrades/scrub.sql` | Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed (x86-64 desktop, ext4; `tests/test_scrub.py` on generated trees with a mount table and by-uuid folder made by the test, `tests/test_server.py` `TestScrub`): a flipped byte under a kept mtime a mismatch and not an edit, an edit left to the scan, a read error sent once and its clearing, days 0, the budget and the cap, the time limit, a hard link, an interrupted run, a protected root, chunks, the file written, appended and a changed number kept, unwritable; in the catalog the history row, copies no longer counted, review and restore, another person not seeing it, a reader not marking it, /health, the upgrade against the schema. The copy and hash checks checked to fail without them. Not run on a real tree or against real disks; not deployed |
+| A fast home page on a large catalog (48 (a) and (b)): the `files` policy evaluates `visible_acls()` once per query, wrapped in `(SELECT ...)` as `token_roots()` was (bare, a large catalog's plan called it per row); `queries.roots()` counts every root in one grouped pass instead of two counts per root; `upgrades/files-policy.sql`, after `scrub.sql`, which check-in and `pinakes releases` list as missing until it has run | Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestGroupToken`): every root's counts equal a count per root, and the numbers stated, for two people, a person with none, a person's token, a group token and a token for one root, hidden shown and not; the upgrade against the schema, alone and after `api-tokens.sql`. Home page queries on generated catalogs (8 roots, 40 ACLs, warm cache), median: 2M files 1.3 s to 0.18 s, 10M files 79 s to 1.3 s, the counts unchanged. Not run on a real catalog; not deployed |
 | Web UI: sign-in (scrypt), TOTP enrollment, step-up with reason and code, audit of what a step-up showed, "Access to your records", browse, find, a file's page (copies, versions and the backups holding them, history, lineage), reports (only here, safe to delete, backed up, duplicates, changes with a folder tree of new, changed, moved in, moved out and gone, filtered by kind and folder), paging, sorting by column (in SQL), behind a proxy | Tested with the test client on 16; served for real behind a proxy, no sign-in yet |
 
 ## Next: before more machines join
@@ -204,34 +205,28 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
 48. [Scalability; also security] **A fast home page after sign-in.** Signing in is one scrypt check (48 ms
-    measured); the page it lands on counts every present file of every root twice, all and hidden, under row-level
+    measured); the page it lands on counts every present file of every root, all and hidden, under row-level
     security, on every visit (`queries.roots()`). Measured on 2026-11-16 (generated catalogs, 8 roots on 3 hosts,
     40 ACLs, 10% gone, 5% hidden; PostgreSQL 16.15 with default settings and fsync off, warm cache; x86-64 desktop,
     24 threads; Python 3.12; the first deployment's size and hardware not checked), home page queries, median:
-    | Files | Today | (a) policy wrapped | (a) + (b) one pass |
+    | Files | Before | (a) policy wrapped | (a) + (b) one pass, as built |
     | --- | --- | --- | --- |
     | 200k | 68 ms | not run | not run |
-    | 2M | 1.3 s | 1.2 s | not run |
+    | 2M | 1.3 s | 1.2 s | 0.18 s |
     | 10M | 79 s (user-1), 39 s (user-2) | 12.6 s | 1.3 s |
-    Up to 2M the planner counts each root from the root's own index; at 10M it switches to the `files_acl` index
-    with `visible_acls()` as its condition, reading every file the person may see, in every root, for each of the
-    16 counts. JIT made no difference. In three steps, stopping when the page is fast enough:
-    (a) The `files` policy calls `visible_acls()` bare while `token_roots()` is wrapped as `(SELECT ...)`; wrapped
-    too, it runs once per query (79 s to 12.6 s at 10M), for every page that reads files, not only this one.
-    (b) `queries.roots()` counts all roots in one grouped pass over `present` instead of two subqueries per root
-    (12.6 s to 1.3 s at 10M; the same rows as today, checked for two people, hidden shown and not).
-    (c) If the page must not grow with the catalog, keep the counts: present files and bytes per root, ACL and
-    hidden flag, rewritten for a root when its scan completes (where `last_complete_on` is set) and for the roots a
-    batch, a retire-root or an ACL change touched; under the same policy as `files`, so the home page sums the few
-    rows a person may see and gets exactly today's numbers, for a person, a group token or a token held to some
-    roots. Keyed by ACL, a change of group membership needs no rewrite. Not one total per root: totals differ by
-    person, and a shared number would tell a person how many files others have. `upgrades/root-counts.sql` fills
-    it once. Sits next to: hidden files (the count left out), the operator page (10), growth (47), which could read
-    the same table. Value: high (every sign-in). Cost: S for (a) and (b), M for (c). Risk: (a) changes the policy
-    every file read goes through, so the row-level security tests must pass on it unchanged; (c) counts going
-    stale when a write path forgets them. *Done when:* the home page's numbers equal a live count for two people, a
-    group token and a token held to some roots, hidden shown and not, after a full scan, a partial batch, a
-    retire-root and an ACL change (for (a) and (b): the same as today); and the page's time on the generated
+    At 10M the planner had switched to the `files_acl` index with `visible_acls()` as its condition, reading every
+    file the person may see, in every root, for each of the 16 counts; JIT made no difference. (a) and (b) are
+    built (above). Left, only if the page must not grow with the catalog (about 1.3 s per 10M files):
+    (c) Keep the counts: present files and bytes per root, ACL and hidden flag, rewritten for a root when its scan
+    completes (where `last_complete_on` is set) and for the roots a batch, a retire-root or an ACL change touched;
+    under the same policy as `files`, so the home page sums the few rows a person may see and gets exactly today's
+    numbers, for a person, a group token or a token held to some roots. Keyed by ACL, a change of group membership
+    needs no rewrite. Not one total per root: totals differ by person, and a shared number would tell a person how
+    many files others have. `upgrades/root-counts.sql` fills it once. Sits next to: hidden files (the count left
+    out), the operator page (10), growth (47), which could read the same table. Value: low until a catalog nears
+    10M files. Cost: M. Risk: counts going stale when a write path forgets them. *Done when:* the home page's
+    numbers equal a live count for two people, a group token and a token held to some roots, hidden shown and not,
+    after a full scan, a partial batch, a retire-root and an ACL change; and the page's time on the generated
     catalog is stated before and after.
 
 ## Later, or a wish

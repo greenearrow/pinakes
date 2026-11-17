@@ -742,8 +742,9 @@ $$;
 -- row-level security ------------------------------------------------------------------------------------------
 
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
--- under a token, only the roots it may see (ROADMAP 34); token_roots() is evaluated once per query
-CREATE POLICY files_visible ON files FOR SELECT USING (acl_id = ANY (visible_acls())
+-- under a token, only the roots it may see (ROADMAP 34). Both functions are wrapped in (SELECT ...) to be evaluated
+-- once per query: bare, a large catalog's plan can call visible_acls() per row (ROADMAP 48: 79 s to 12.6 s, 10M files)
+CREATE POLICY files_visible ON files FOR SELECT USING (acl_id = ANY ((SELECT visible_acls())::int[])
     AND ((SELECT token_roots()) IS NULL OR root_id = ANY ((SELECT token_roots())::int[])));
 
 ALTER TABLE contents ENABLE ROW LEVEL SECURITY;

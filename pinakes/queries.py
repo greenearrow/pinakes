@@ -569,13 +569,14 @@ def agent_versions(conn):
 
 def roots(conn, hidden=True):
     """Every root with the files the person can see in it (under a token, only the roots it may see); without
-    `hidden`, not counting the hidden ones, which `hidden_files` still counts."""
+    `hidden`, not counting the hidden ones, which `hidden_files` still counts. Every root's counts come from one
+    grouped pass over the files the person can see: two counts per root read them once per count (ROADMAP 48)."""
     return rows(conn, """SELECT r.label, h.name AS host, r.kind, r.protected, r.last_complete_on,
-                                (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
-                                   AND (%s OR NOT f.hidden)) AS files,
-                                (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id
-                                   AND f.hidden) AS hidden_files
+                                coalesce(c.files, 0) AS files, coalesce(c.hidden_files, 0) AS hidden_files
                          FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id)
+                         LEFT JOIN (SELECT f.root_id, count(*) FILTER (WHERE %s OR NOT f.hidden) AS files,
+                                           count(*) FILTER (WHERE f.hidden) AS hidden_files
+                                    FROM pinakes.present f GROUP BY f.root_id) c USING (root_id)
                          WHERE pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots())
                          ORDER BY h.name, r.label""", (hidden,))
 

@@ -13,7 +13,8 @@ import tempfile
 import unittest
 from unittest import mock
 
-from pinakes.ingest import Ingester
+from pinakes import queries
+from pinakes.ingest import Ingester, schema_missing
 from tests.test_server import PGHOST, SERVER, UPGRADES, ServerCase, admin_conn, psycopg
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -136,6 +137,10 @@ class ApiCase(ServerCase):
                 scrub = f.read()
             start = scrub.index("CREATE OR REPLACE FUNCTION mark_changes")
             c.execute("SET search_path = pinakes; " + scrub[start:scrub.index("END $$;", start) + len("END $$;")])
+            c.execute("RESET search_path")
+            # and the files policy as files-policy.sql, last in the order, wraps visible_acls() (ROADMAP 48)
+            with open(os.path.join(UPGRADES, "files-policy.sql")) as f:
+                c.execute(f.read())
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs, args).fetchone() + c.execute(groups).fetchone(), fresh)
         return fresh
@@ -1095,6 +1100,64 @@ as = "reader"
             self.assertEqual([r[0] for r in conn.execute(
                 "SELECT f.relpath FROM pinakes.metadata m JOIN pinakes.files f USING (content_id) WHERE m.sensitive")],
                 ["household/budget.txt"])                    # the owner's, not the reader's
+
+    def test_root_counts_are_each_callers_own(self):
+        """ROADMAP 48: every root's counts in one grouped pass give what a count per root gives, for each kind of
+        caller, hidden files shown and not; a root with none of the caller's files counts 0."""
+        self.write("server-1", "store", "household/.notes.txt", b"hidden")
+        self.write("server-1", "store", "people/user-1/.private/key.txt", b"hidden too")
+        self.scan("server-1", "store")
+        live = ("SELECT r.label, (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id "
+                "AND (%s OR NOT f.hidden)), (SELECT count(*) FROM pinakes.present f WHERE f.root_id = r.root_id "
+                "AND f.hidden) FROM pinakes.roots r WHERE pinakes.token_roots() IS NULL "
+                "OR r.root_id = ANY (pinakes.token_roots()) ORDER BY r.label")
+        callers = {"user-1 signed in": ("user-1", None), "user-2 signed in": ("user-2", None),
+                   "user-3 signed in": ("user-3", None),
+                   "user-1's token": ("user-1", self.token("user-1")),
+                   "the household's token": ("user-1", self.token("user-1", group="household", client="kitchen")),
+                   "a token for downloads": ("user-1", self.token("user-1", roots=[self.root_id("downloads")],
+                                                                    client="workstation-1"))}
+        seen = {}
+        for what, (name, secret) in callers.items():
+            for hidden in (True, False):
+                with self.app_conn() as c:
+                    if secret:
+                        c.execute("SELECT pinakes.begin_token_call(%s, 'test')",
+                                  (hashlib.sha256(secret.encode()).digest(),))
+                    else:
+                        c.execute("SELECT set_config('pinakes.person', %s, false)", (str(self.pid(name)),))
+                    got = [(r["label"], r["files"], r["hidden_files"]) for r in queries.roots(c, hidden=hidden)]
+                    self.assertEqual(sorted(got), c.execute(live, (hidden,)).fetchall(), (what, hidden))
+                    seen[what, hidden] = sorted(got)
+        # the numbers themselves, so that the two forms can't agree by both being wrong
+        # user-1: taxes, plan, the household's budget, recipe and .notes, their own .private/key; user-2: diary, plan
+        # and the household's three
+        self.assertEqual(seen["user-1 signed in", True], [("downloads", 2, 0), ("store", 6, 2)])
+        self.assertEqual(seen["user-1 signed in", False], [("downloads", 2, 0), ("store", 4, 2)])
+        self.assertEqual(seen["user-2 signed in", True], [("downloads", 0, 0), ("store", 5, 1)])
+        self.assertEqual(seen["user-3 signed in", True], [("downloads", 0, 0), ("store", 0, 0)])
+        self.assertEqual(seen["user-1's token", True], [("store", 6, 2)])
+        self.assertEqual(seen["the household's token", False], [("store", 2, 1)])
+        self.assertEqual(seen["a token for downloads", True], [("downloads", 2, 0)])
+
+    def test_files_policy_upgrade_matches_the_schema(self):
+        """files-policy.sql (ROADMAP 48) turns the policy with visible_acls() bare into schema.sql's, and the server
+        asks for it until it has run."""
+        policy = ("SELECT pg_get_expr(polqual, polrelid) FROM pg_policy "
+                  "WHERE polrelid = 'pinakes.files'::regclass AND polname = 'files_visible'")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(policy).fetchone()[0]
+            self.assertEqual(schema_missing(c), [])
+            c.execute("ALTER POLICY files_visible ON pinakes.files USING (acl_id = ANY (pinakes.visible_acls()) "
+                      "AND ((SELECT pinakes.token_roots()) IS NULL "
+                      "OR root_id = ANY ((SELECT pinakes.token_roots())::int[])))")
+            self.assertNotEqual(c.execute(policy).fetchone()[0], fresh)
+            self.assertEqual(schema_missing(c), ["files-policy.sql"])
+            with open(os.path.join(UPGRADES, "files-policy.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(policy).fetchone()[0], fresh)
+            self.assertEqual(schema_missing(c), [])
 
     def test_upgrade_fills_the_groups_of_each_acl(self):
         fresh = self.check_upgrade_matches_the_schema()
