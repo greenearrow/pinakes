@@ -29,6 +29,8 @@ machines) or *operability* (installing and running it); "also" names a second.
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (1, 2, 4, 5 and 28 to 31 are built and 3 dropped: REARVIEW.md):
 
+Nothing is left here: no known item blocks adding a machine. New ones from a deployment go in this section.
+
 ## The web UI, read-write
 
 8. [Feature; also security] **Owners and enrollments per folder:** give a folder away, enroll people as co-owners,
