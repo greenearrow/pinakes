@@ -524,10 +524,11 @@ def stale(conn):
 
 # A root's scrub is behind (DESIGN.md "Scrub") when its last run is older than a full pass, or a file still there
 # was last checked more than two full passes ago (or never, two passes after the scrub began). Off (days 0) or not
-# reported: never behind.
-_SCRUB_BEHIND = """(r.scrub_days > 0 AND (r.scrub_on < current_date - r.scrub_days
-                    OR r.scrub_oldest < current_date - 2 * r.scrub_days
-                    OR (r.scrub_never > 0 AND r.scrub_since < current_date - 2 * r.scrub_days)))"""
+# reported: never behind. Its dates are UTC dates, as the agent sends them (today()), so today is UTC's too.
+_UTC_TODAY = "(now() AT TIME ZONE 'UTC')::date"
+_SCRUB_BEHIND = """(r.scrub_days > 0 AND (r.scrub_on < %(d)s - r.scrub_days
+                    OR r.scrub_oldest < %(d)s - 2 * r.scrub_days
+                    OR (r.scrub_never > 0 AND r.scrub_since < %(d)s - 2 * r.scrub_days)))""" % {"d": _UTC_TODAY}
 
 
 def health(conn):

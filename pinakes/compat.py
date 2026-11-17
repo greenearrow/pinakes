@@ -6,9 +6,10 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 5                 # the newest entry in RELEASES.toml (cut or being prepared)
-PROTOCOL = 2                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
-                            # server at check-in, a complete full scan retires what it didn't send, scrub batches
+RELEASE = 6                 # the newest entry in RELEASES.toml (cut or being prepared)
+PROTOCOL = 3                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
+                            # server at check-in, a complete full scan retires what it didn't send; 3: scrub
+                            # batches (DESIGN.md "Scrub")
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 

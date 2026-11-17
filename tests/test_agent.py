@@ -1206,10 +1206,7 @@ print("ack %%d" %% header["seq"])
         st.close()
         rc, err, got = self.run_agent(self.server(2), PROTOCOL=3, MIN_SERVER_PROTOCOL=2, RELEASE=13)  # updated
         self.assertEqual((rc, err), (0, []))
-        # the two held, in order, then this run's scan and its scrub (which waited while the server was at 1)
-        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2, 3, 4])
-        self.assertEqual([("scrub" in b, "scan" in b) for b in self.batches(got)],
-                         [(False, True), (False, True), (False, True), (True, False)])
+        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2, 3])  # the two held, in order, then this run's
         self.assertEqual(outbox.pending(self.cfg.outbox), [])
 
     def test_ahead_but_compatible_sends(self):
@@ -1268,13 +1265,12 @@ print("ack %%d" %% header["seq"])
         rc, err, got = self.run_agent(self.server(2, last_seq=87, last_header_sha256=None))
         self.assertEqual(got[0]["hello"]["next_seq"], 1)
         self.assertEqual(rc, 0)
-        self.assertEqual([b["seq"] for b in self.batches(got)], [88, 89, 90, 91])  # the two held, this run's, its
-                                                                                   # scrub's
+        self.assertEqual([b["seq"] for b in self.batches(got)], [88, 89, 90])  # the two held, then this run's
         self.assertEqual(err, ["pinakes-agent: the server has applied this host's batches up to 87 and this agent's "
                                "numbering was behind it (a new or restored state): 2 waiting batch(es) renumbered "
                                "1-2 to 88-89; it continues after 87"])
-        rc, err, got = self.run_agent(self.server(2, last_seq=91))     # in step: nothing to say
-        self.assertEqual((rc, err, got[0]["hello"]["next_seq"]), (0, [], 92))
+        rc, err, got = self.run_agent(self.server(2, last_seq=90))     # in step: nothing to say
+        self.assertEqual((rc, err, got[0]["hello"]["next_seq"]), (0, [], 91))
 
     def test_the_last_batch_sent_again_keeps_its_number(self):
         """The first waiting batch is the server's last, its acknowledgement lost: the same header. It is sent as it
@@ -1286,14 +1282,26 @@ print("ack %%d" %% header["seq"])
         rc, err, got = self.run_agent(self.server(2, last_seq=seq, last_header_sha256=digest))
         self.assertEqual(got[0]["hello"]["next_header_sha256"], digest)
         self.assertEqual((rc, err), (0, []))
-        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2, 3])          # and this run's scan and scrub
+        self.assertEqual([b["seq"] for b in self.batches(got)], [1, 2])
         # another batch of that number is not the same: it moves
         self.write("b.txt", b"b")
         self.scan()
         (seq, path), = outbox.pending(self.cfg.outbox)
         rc, err, got = self.run_agent(self.server(2, last_seq=seq, last_header_sha256=digest))
-        self.assertEqual([b["seq"] for b in self.batches(got)], [seq + 1, seq + 2, seq + 3])
-        self.assertIn("1 waiting batch(es) renumbered 4-4 to 5-5", err[0])
+        self.assertEqual([b["seq"] for b in self.batches(got)], [seq + 1, seq + 2])
+        self.assertIn("1 waiting batch(es) renumbered 3-3 to 4-4", err[0])
+
+    def test_the_scrub_waits_for_a_server_of_protocol_3(self):
+        """Release 6's agent scrubs after its scans, but sends scrub batches only to a server that takes them: one
+        of protocol 2 (release 5) gets the scan's batch alone, one of 3 the scan's and the scrub's."""
+        self.write("a.txt", b"a")
+        rc, err, got = self.run_agent(self.server(2))
+        self.assertEqual((rc, err), (0, []))
+        self.assertEqual([("scan" in b, "scrub" in b) for b in self.batches(got)], [(True, False)])
+        self.write("b.txt", b"b")
+        rc, err, got = self.run_agent(self.server(3))
+        self.assertEqual((rc, err), (0, []))
+        self.assertEqual([("scan" in b, "scrub" in b) for b in self.batches(got)], [(True, False), (False, True)])
 
     def test_a_server_before_protocol_2_answers_no_number(self):
         self.write("a.txt", b"a")

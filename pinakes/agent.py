@@ -15,7 +15,7 @@
 The scrub (DESIGN.md "Scrub") runs after the scans, per filesystem under the roots whose scans are all complete, as
 the scrub file says (`[agent] scrub`, by default scrub.toml beside this config): the agent writes that file itself,
 one block per filesystem with days = 30 (0 for a network filesystem), and the person edits the numbers. It sends its
-findings only to a server that takes them (protocol 2 or later, known from the last check-in); until then it waits.
+findings only to a server that takes them (protocol 3 or later, known from the last check-in); until then it waits.
 
 scan --full resends every file; when a scan was full from start to end, the server retires what it has of the root
 that the scan didn't send: after a new machine takes over a host, the old one's files. Most of a root goes only with
@@ -103,7 +103,7 @@ def cmd_scan(cfg, args):
     return rc
 
 
-SCRUB_PROTOCOL = 2      # the oldest server that takes the scrub's batches (the "scrub" header, mismatch, unreadable)
+SCRUB_PROTOCOL = 3      # the oldest server that takes the scrub's batches (the "scrub" header, mismatch, unreadable)
 
 
 def scrub_waits(cfg, st):

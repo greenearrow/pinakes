@@ -2419,7 +2419,7 @@ class TestScrub(ServerCase):
         for key in self.agents:
             with open(self.agents[key][1].scrub, "w") as f:
                 f.write('[[filesystem]]\nid = "uuid:test-fs"\ndays = 1\n')
-        self.fail = set()
+        self.failing = set()
 
     def corrupt(self, host, label, rel):
         p = self.path(host, label, rel)
@@ -2434,7 +2434,7 @@ class TestScrub(ServerCase):
         st, cfg, _ = self.agent(host, label)
 
         def read(path, params=None):
-            if path in self.fail:
+            if path in self.failing:
                 raise OSError(5, "Input/output error")
             return hash_file(path, params)
         Scrubber(cfg, st, _OneFilesystem(), now=lambda: time.time() + 60 + days_later * 86400, read=read).run()
@@ -2487,7 +2487,7 @@ class TestScrub(ServerCase):
 
     def test_an_unreadable_copy_is_no_copy_until_it_reads(self):
         snap = "2026-01-01_0140/" + self.U + "a.txt"
-        self.fail.add(self.path("server-2", "snapshots", snap))
+        self.failing.add(self.path("server-2", "snapshots", snap))
         self.scrub("server-2", "snapshots")
         f = self.file("snapshots", snap)
         self.assertEqual(self.q("SELECT unreadable_on, unreadable_error FROM pinakes.files WHERE file_id = %s",
@@ -2496,14 +2496,14 @@ class TestScrub(ServerCase):
         self.assertEqual(self.history(f), [])                           # a backup root: no history
         with self.as_person("user-1") as c:
             self.assertEqual([r["backup_copies"] for r in queries.backed_up(c, "store:" + self.U + "a.txt")], [0])
-        self.fail.clear()
+        self.failing.clear()
         self.scrub("server-2", "snapshots", days_later=1)
         self.assertEqual(self.q("SELECT unreadable_on FROM pinakes.files WHERE file_id = %s", (f,)), [(None,)])
         self.assertEqual(self.not_safe(), [])
 
     def test_an_unreadable_kept_file_is_reviewed_and_its_restore_not_back_while_unreadable(self):
         a = self.file("store", self.U + "a.txt")
-        self.fail.add(self.path("server-1", "store", self.U + "a.txt"))
+        self.failing.add(self.path("server-1", "store", self.U + "a.txt"))
         self.scrub("server-1", "store")
         self.scrub("server-1", "store", days_later=1)                  # still failing: one change, not two
         self.assertEqual(self.history(a), ["new", "unreadable"])
@@ -2513,12 +2513,12 @@ class TestScrub(ServerCase):
             queries.mark_changes(c, [ch[0]["history_id"]], "restore")
             c.commit()
             self.assertEqual([r["back"] for r in queries.restores(c, back=True)], [False])
-        self.fail.clear()
+        self.failing.clear()
         self.scrub("server-1", "store", days_later=2)
         with self.as_person("user-1") as c:
             self.assertEqual([r["back"] for r in queries.restores(c, back=True)], [True])
         # a later rewrite (a scan seeing new content) clears a mark too
-        self.fail.add(self.path("server-1", "store", self.U + "b.txt"))
+        self.failing.add(self.path("server-1", "store", self.U + "b.txt"))
         self.scrub("server-1", "store", days_later=3)
         self.write("server-1", "store", self.U + "b.txt", b"rewritten")
         self.scan("server-1", "store")
@@ -2539,6 +2539,15 @@ class TestScrub(ServerCase):
                                 "FROM pinakes.roots WHERE label = 'store'"),
                          [(queries.today(), queries.today(), 1, queries.today(), 0)])
         connect = lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)  # noqa: E731
+        for tz in FAR_ZONES:            # the session's own date a day off UTC's either way: still today's scrub
+            code, body = web.health_report(lambda: psycopg.connect(
+                host=PGHOST, user="pinakes_app", dbname=self.db, options="-c timezone=%s" % tz))
+            self.assertEqual((code, body["status"]), (200, "ok"), tz)
+            self.conn.execute("UPDATE pinakes.roots SET scrub_on = scrub_on - 1 WHERE label = 'store'")
+            code, body = web.health_report(lambda: psycopg.connect(
+                host=PGHOST, user="pinakes_app", dbname=self.db, options="-c timezone=%s" % tz))
+            self.assertEqual(body["status"], "ok", tz)                  # a day late: still within a pass + 1
+            self.conn.execute("UPDATE pinakes.roots SET scrub_on = scrub_on + 1 WHERE label = 'store'")
         code, body = web.health_report(connect)
         h = {x["host"]: x for x in body["hosts"]}
         self.assertEqual((h["server-1"]["scrub_oldest"], h["server-1"]["scrub_behind"]),
@@ -2548,9 +2557,9 @@ class TestScrub(ServerCase):
         code, body = web.health_report(connect)
         self.assertEqual((code, body["status"]), (503, "scrub behind"))
         self.assertNotIn("store", json.dumps(body))                     # host names only
-        self.conn.execute("UPDATE pinakes.roots SET scrub_on = current_date, scrub_never = 3, "
-                          "scrub_since = current_date - 3 WHERE label = 'store'")       # a first pass overdue
-        self.assertTrue(web.health_report(connect)[1]["hosts"][1]["scrub_behind"])
+        self.conn.execute("UPDATE pinakes.roots SET scrub_never = 3, scrub_since = scrub_on - 3, scrub_on = scrub_on "
+                          "+ 2 WHERE label = 'store'")                              # a first pass overdue
+        self.assertTrue({x["host"]: x for x in web.health_report(connect)[1]["hosts"]}["server-1"]["scrub_behind"])
         self.conn.execute("UPDATE pinakes.roots SET scrub_days = 0 WHERE label = 'store'")          # turned off
         self.assertEqual(web.health_report(connect)[1]["status"], "ok")
 

@@ -433,7 +433,7 @@ checks the network as much as the disk, and the host that owns the disk can scru
 
 After the scans (`pinakes-agent run` and `scan`; `scan --root` only on that root's filesystems), per filesystem with
 `days` above 0 and no root on it with a scan unfinished, at the unit's idle I/O priority. Over ssh it runs only once
-the server's last check-in said protocol 2 or later, the first that takes its batches; an agent on the server itself
+the server's last check-in said protocol 3 or later (release 6), the first that takes its batches; an agent on the server itself
 always runs it:
 
 - **The budget** is the filesystem's bytes × the time since its last scrub run ÷ `days`, capped at seven nights'

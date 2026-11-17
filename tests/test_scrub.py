@@ -441,10 +441,10 @@ class TestAgentCommand(ScrubTree):
         with contextlib.redirect_stdout(out):
             agent.run_scrub(self.cfg, self.state)
         self.assertEqual(out.getvalue(), "scrub: not run: the server hasn't checked in yet; the scrub waits for one "
-                                         "of protocol 2 or later\n")
-        self.state.set_meta("server_protocol", "1")
+                                         "of protocol 3 or later\n")
+        self.state.set_meta("server_protocol", "2")                     # release 5: no scrub batches
         self.assertIsNotNone(agent.scrub_waits(self.cfg, self.state))
-        self.state.set_meta("server_protocol", "2")
+        self.state.set_meta("server_protocol", "3")
         self.assertIsNone(agent.scrub_waits(self.cfg, self.state))
         self.cfg.transport = {"kind": "directory", "path": os.path.join(self.tmp, "inbox")}
         self.state.set_meta("server_protocol", "0")

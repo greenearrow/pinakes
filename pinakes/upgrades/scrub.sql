@@ -1,5 +1,5 @@
--- Upgrade a catalog built before the scrub (ROADMAP 41, DESIGN.md "Scrub"), after api-tokens.sql. Run once as the
--- schema's owner:
+-- Upgrade a catalog built before the scrub (ROADMAP 41, DESIGN.md "Scrub"; release 6), after api-tokens.sql. Run
+-- once as the schema's owner:
 --   psql -d pinakes -v ON_ERROR_STOP=1 -1 -f scrub.sql
 -- A new catalog gets the same from schema.sql; tests/test_server.py checks the two agree.
 
