@@ -203,24 +203,36 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
-48. [Scalability; also security] **A fast home page after sign-in.** Signing in is one scrypt check (a few tenths
-    of a second, by design); the page it lands on counts every present file of every root twice, all and hidden,
-    under row-level security, on every visit (`queries.roots()`). In two steps, measuring first:
-    (a) EXPLAIN ANALYZE the home page's queries on a generated catalog the size of the first deployment's. The
-    `files` policy calls `visible_acls()` bare while `token_roots()` is wrapped as `(SELECT ...)`; if the function
-    runs per row, wrapping it too runs it once per query, for every page and not only this one. Stop here if that
-    is enough.
-    (b) Otherwise keep the counts: present files and bytes per root, ACL and hidden flag, rewritten for a root when
-    its scan completes (where `last_complete_on` is set) and for the roots a batch, a retire-root or an ACL change
-    touched; under the same policy as `files`, so the home page sums the few rows a person may see and gets exactly
-    today's numbers, for a person, a group token or a token held to some roots. Keyed by ACL, a change of group
-    membership needs no rewrite. Not one total per root: totals differ by person, and a shared number would tell a
-    person how many files others have. `upgrades/root-counts.sql` fills it once. Sits next to: hidden files (the
-    count left out), the operator page (10), growth (47), which could read the same table. Value: high (every
-    sign-in). Cost: S for (a), M for (b). Risk: counts going stale when a write path forgets them. *Done when:* the
-    home page's numbers equal a live count for two people, a group token and a token held to some roots, hidden
-    shown and not, after a full scan, a partial batch, a retire-root and an ACL change; and the page's time on the
-    generated catalog is stated before and after.
+48. [Scalability; also security] **A fast home page after sign-in.** Signing in is one scrypt check (48 ms
+    measured); the page it lands on counts every present file of every root twice, all and hidden, under row-level
+    security, on every visit (`queries.roots()`). Measured on 2026-11-16 (generated catalogs, 8 roots on 3 hosts,
+    40 ACLs, 10% gone, 5% hidden; PostgreSQL 16.15 with default settings and fsync off, warm cache; x86-64 desktop,
+    24 threads; Python 3.12; the first deployment's size and hardware not checked), home page queries, median:
+    | Files | Today | (a) policy wrapped | (a) + (b) one pass |
+    | --- | --- | --- | --- |
+    | 200k | 68 ms | not run | not run |
+    | 2M | 1.3 s | 1.2 s | not run |
+    | 10M | 79 s (user-1), 39 s (user-2) | 12.6 s | 1.3 s |
+    Up to 2M the planner counts each root from the root's own index; at 10M it switches to the `files_acl` index
+    with `visible_acls()` as its condition, reading every file the person may see, in every root, for each of the
+    16 counts. JIT made no difference. In three steps, stopping when the page is fast enough:
+    (a) The `files` policy calls `visible_acls()` bare while `token_roots()` is wrapped as `(SELECT ...)`; wrapped
+    too, it runs once per query (79 s to 12.6 s at 10M), for every page that reads files, not only this one.
+    (b) `queries.roots()` counts all roots in one grouped pass over `present` instead of two subqueries per root
+    (12.6 s to 1.3 s at 10M; the same rows as today, checked for two people, hidden shown and not).
+    (c) If the page must not grow with the catalog, keep the counts: present files and bytes per root, ACL and
+    hidden flag, rewritten for a root when its scan completes (where `last_complete_on` is set) and for the roots a
+    batch, a retire-root or an ACL change touched; under the same policy as `files`, so the home page sums the few
+    rows a person may see and gets exactly today's numbers, for a person, a group token or a token held to some
+    roots. Keyed by ACL, a change of group membership needs no rewrite. Not one total per root: totals differ by
+    person, and a shared number would tell a person how many files others have. `upgrades/root-counts.sql` fills
+    it once. Sits next to: hidden files (the count left out), the operator page (10), growth (47), which could read
+    the same table. Value: high (every sign-in). Cost: S for (a) and (b), M for (c). Risk: (a) changes the policy
+    every file read goes through, so the row-level security tests must pass on it unchanged; (c) counts going
+    stale when a write path forgets them. *Done when:* the home page's numbers equal a live count for two people, a
+    group token and a token held to some roots, hidden shown and not, after a full scan, a partial batch, a
+    retire-root and an ACL change (for (a) and (b): the same as today); and the page's time on the generated
+    catalog is stated before and after.
 
 ## Later, or a wish
 
