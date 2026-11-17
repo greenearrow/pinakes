@@ -21,6 +21,7 @@ owners only) and hidden files. Other extractors, person-entered metadata, file o
   audio tags, OPF and more), bundles of files that belong together, storage and indexes.
 - [QUERIES.md](QUERIES.md): every query in SQL.
 - [ROADMAP.md](ROADMAP.md): what is left, and what "done" means for each piece.
+- [HORIZON.md](HORIZON.md): over the horizon: not planned, kept only for the day a catalog's size asks for it.
 - [REARVIEW.md](REARVIEW.md): what is built, and how each piece was tested.
 - [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
 - [config.example.toml](config.example.toml) (an agent) and [server.example.toml](server.example.toml) (the server).

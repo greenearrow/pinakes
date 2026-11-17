@@ -2,7 +2,8 @@
 
 What is left to build, and what "done" means for each piece. What is built, and how it was tested, is in REARVIEW.md;
 item numbers are one series across both files and never reused. The design is in DESIGN.md, SECURITY.md, METADATA.md
-and QUERIES.md; choices made while building are in DECISIONS.md. Deployment belongs to each site, not to this repo.
+and QUERIES.md; choices made while building are in DECISIONS.md. Deployment belongs to each site, not to this repo. What is not planned, and only
+for a day scale asks for it, is in HORIZON.md.
 
 Each open item starts with its category in brackets: *feature* (something new to do), *security* (who sees or does
 what), *correctness* (a wrong answer without a crash), *stability* (staying up), *scalability* (bigger trees, busier
@@ -155,30 +156,6 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
-48. [Scalability; also security] **A fast home page after sign-in.** Signing in is one scrypt check (48 ms
-    measured); the page it lands on counts every present file of every root, all and hidden, under row-level
-    security, on every visit (`queries.roots()`). Measured on 2026-11-16 (generated catalogs, 8 roots on 3 hosts,
-    40 ACLs, 10% gone, 5% hidden; PostgreSQL 16.15 with default settings and fsync off, warm cache; x86-64 desktop,
-    24 threads; Python 3.12; the first deployment's size and hardware not checked), home page queries, median:
-    | Files | Before | (a) policy wrapped | (a) + (b) one pass, as built |
-    | --- | --- | --- | --- |
-    | 200k | 68 ms | not run | not run |
-    | 2M | 1.3 s | 1.2 s | 0.18 s |
-    | 10M | 79 s (user-1), 39 s (user-2) | 12.6 s | 1.3 s |
-    At 10M the planner had switched to the `files_acl` index with `visible_acls()` as its condition, reading every
-    file the person may see, in every root, for each of the 16 counts; JIT made no difference. (a) and (b) are
-    built (REARVIEW.md). Left, only if the page must not grow with the catalog (about 1.3 s per 10M files):
-    (c) Keep the counts: present files and bytes per root, ACL and hidden flag, rewritten for a root when its scan
-    completes (where `last_complete_on` is set) and for the roots a batch, a retire-root or an ACL change touched;
-    under the same policy as `files`, so the home page sums the few rows a person may see and gets exactly today's
-    numbers, for a person, a group token or a token held to some roots. Keyed by ACL, a change of group membership
-    needs no rewrite. Not one total per root: totals differ by person, and a shared number would tell a person how
-    many files others have. `upgrades/root-counts.sql` fills it once. Sits next to: hidden files (the count left
-    out), the operator page (10), growth (47), which could read the same table. Value: low until a catalog nears
-    10M files. Cost: M. Risk: counts going stale when a write path forgets them. *Done when:* the home page's
-    numbers equal a live count for two people, a group token and a token held to some roots, hidden shown and not,
-    after a full scan, a partial batch, a retire-root and an ACL change; and the page's time on the generated
-    catalog is stated before and after.
 
 ## Later, or a wish
 

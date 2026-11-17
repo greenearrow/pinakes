@@ -1,11 +1,11 @@
 # Rearview
 
-What is built, and how each piece was tested. What is left is in ROADMAP.md; the reasons are in DECISIONS.md; what a
+What is built, and how each piece was tested. What is left is in ROADMAP.md, and what is only for later, if scale ever asks for it, in HORIZON.md; the reasons are in DECISIONS.md; what a
 release changes for a site is in WHATSNEW.md.
 
 Item numbers are one series across ROADMAP.md and this file, and are never reused: "ROADMAP N" in code, tests and
-commits means item N, here once built. An item built in parts has its built part here and the rest in ROADMAP.md under
-the same number. The first pieces, built before items were numbered, come first and have no number. Each item has
+commits means item N, here once built. An item built in parts has its built part here and the rest in ROADMAP.md (or, if it
+is not planned, HORIZON.md) under the same number. The first pieces, built before items were numbered, come first and have no number. Each item has
 **Built** (what it does) and **State** (what was run, where, and what was not).
 
 Platforms so far: every test on each of Python 3.10 to 3.15 and PostgreSQL 15 to 18, each once (`tools/test --matrix`,
@@ -419,7 +419,20 @@ not deployed.
 
 ## 48. A fast home page on a large catalog, (a) and (b)
 
-Measurements and the open part (c): ROADMAP.md 48.
+The open part (c) is not planned: HORIZON.md 48.
+
+**Measured** on 2026-11-16 (generated catalogs, 8 roots on 3 hosts, 40 ACLs, 10% gone, 5% hidden; PostgreSQL 16.15
+with default settings and fsync off, warm cache; x86-64 desktop, 24 threads; Python 3.12; the first deployment's size
+and hardware not checked), home page queries, median:
+
+| Files | Before | (a) policy wrapped | (a) + (b) one pass, as built |
+| --- | --- | --- | --- |
+| 200k | 68 ms | not run | not run |
+| 2M | 1.3 s | 1.2 s | 0.18 s |
+| 10M | 79 s (user-1), 39 s (user-2) | 12.6 s | 1.3 s |
+
+At 10M the planner had switched to the `files_acl` index with `visible_acls()` as its condition, reading every file the
+person may see, in every root, for each of the 16 counts; JIT made no difference.
 
 **Built:** The `files` policy evaluates `visible_acls()` once per query, wrapped in `(SELECT ...)` as `token_roots()`
 was (bare, a large catalog's plan called it per row); `queries.roots()` counts every root in one grouped pass instead of
