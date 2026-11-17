@@ -2,6 +2,58 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 6
+
+Affects the server, the agents and the CLI. Protocol 3; agents and servers of protocol 0 to 2 still work with it, and
+either side may be updated first.
+
+### Before you update
+
+1. As the schema's owner, run in order: `upgrades/scrub.sql`, `upgrades/files-policy.sql`,
+   `upgrades/owner-by-uid.sql`, then `upgrades/unreported-roots.sql` (`tools/latest-release --upgrades-after 5` lists
+   them). Then update the server, then the agents.
+2. **The agents start scrubbing.** After their scans, they re-read every file over 30 days per local filesystem
+   (network filesystems off). Each night reads about a thirtieth of the disk. Set `days` in the `scrub.toml` the
+   agent writes, or `[agent] scrub_max_minutes`, before the first night if that is too much.
+3. **`/health` has two new reasons for 503:** `"roots unreported"` and `"scrub behind"`. A monitor that alerts on
+   any 503 will fire on them, which is the intent.
+
+### The scrub
+
+- After the scans, each filesystem's files are read again over `days` (`scrub.toml`, written by the agent; you
+  change only the numbers), least recently verified first. A changed hash under an unchanged size and mtime is
+  reported as a **mismatch**, and a read error as **unreadable**. Both are reviewable and on the restore list, and an
+  unreadable file counts as no copy until it reads again.
+- `pinakes-agent scrub` runs it alone, and `pinakes-agent scrub status` shows each filesystem's rotation.
+- `/health` says per host when the oldest check was made and whether the scrub is behind.
+- An agent scrubs only once its server answers protocol 3, so an agent updated before its server just waits.
+
+### A machine replaced under the same name
+
+- Every batch now names all of the agent's roots. A root of that host that the batches leave out (new hardware
+  with fewer disks, or a root dropped from the config) is flagged: its files would otherwise go on counting as
+  copies.
+- `/health` gives a count per host (`roots_unreported`, no labels) and answers 503 "roots unreported";
+  `pinakes releases` says the same. **On the server, `pinakes-ingest totals` names the roots**, with the
+  `pinakes-ingest retire-root LABEL` to run.
+- A batch that names the root again clears the flag, and so does retiring it. Agents before release 6 name no roots,
+  so nothing is flagged for them.
+
+### Ownership and speed
+
+- **Owner rules by uid:** `owner = "uid"` in an `[[ownership.rule]]` gives each file to whoever its uid maps to in
+  the host's `uid_map` (`server.example.toml`). A chown moves the file, and a uid the map doesn't name falls to the
+  next rule.
+- **The home page is fast on a large catalog:** the files policy is evaluated once per query, and every root is
+  counted in one pass. On generated catalogs this took 2M files from 1.3 s to 0.18 s and 10M from 79 s to 1.3 s.
+- **Token forms on the account page** can be filled by a password manager, and show their result next to the form.
+
+### Not yet
+
+Tested: 370 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15, and the installed wheel on Python 3.12
+(Linux x86-64); PostgreSQL 15, 17 and 18 not run. Not run against a real catalog or on real disks; not deployed. The
+scrub's load on a real disk, and a password manager on the token forms, not tried.
+
 ## Release 5
 
 Affects the server, the agents and the CLI. Protocol 2; agents and servers of protocol 0 and 1 still work with it.
