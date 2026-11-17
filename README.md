@@ -11,7 +11,7 @@ who wrote what, how long it was, where it was shelved. It held none of the scrol
 **Status: early.** The agent, ingester, queries, CLI, a read-only web UI with sign-in, and a JSON API with
 per-person tokens are built and tested; so are the metadata schemas, EXIF and XMP from JPEGs (sensitive fields for
 owners only) and hidden files. Other extractors, person-entered metadata, file operations and more are not
-(ROADMAP.md).
+(REARVIEW.md, ROADMAP.md).
 
 - [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
   the web UI, managing files, queries.
@@ -20,7 +20,8 @@ owners only) and hidden files. Other extractors, person-entered metadata, file o
 - [METADATA.md](METADATA.md): metadata on content and on files, enrolled standard schemas (Dublin Core, EXIF, XMP,
   audio tags, OPF and more), bundles of files that belong together, storage and indexes.
 - [QUERIES.md](QUERIES.md): every query in SQL.
-- [ROADMAP.md](ROADMAP.md): what is built, what is left, and what "done" means for each piece.
+- [ROADMAP.md](ROADMAP.md): what is left, and what "done" means for each piece.
+- [REARVIEW.md](REARVIEW.md): what is built, and how each piece was tested.
 - [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
 - [config.example.toml](config.example.toml) (an agent) and [server.example.toml](server.example.toml) (the server).
 

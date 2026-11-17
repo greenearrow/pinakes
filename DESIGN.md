@@ -1,6 +1,6 @@
 # Design
 
-Status: partly built; what is built and how it was tested is in [ROADMAP.md](ROADMAP.md). Security: [SECURITY.md](SECURITY.md). Metadata:
+Status: partly built; what is built and how it was tested is in [REARVIEW.md](REARVIEW.md). Security: [SECURITY.md](SECURITY.md). Metadata:
 [METADATA.md](METADATA.md).
 
 ## The problem
