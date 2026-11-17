@@ -163,5 +163,3 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     34, `read` scope only. *Done when:* tests show a
     token acting as one person under row-level security, never stepping up, leaving protected roots out unless added,
     and every query logged.
-25. [Scalability] **A live watcher** (fanotify) on a busy server, beside the nightly scan.
-26. [Feature] **Single-machine mode** (SQLite, no people).

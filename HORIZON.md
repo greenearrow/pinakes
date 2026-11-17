@@ -4,7 +4,11 @@ Things that are **not planned**. Nothing here is waiting to be done, and nothing
 Each is written down so that, if a catalog or a site ever grows to where it matters, the idea, its cost and its test
 are already worked out, and nobody has to rediscover them. Until then, leave them alone.
 
-An item moves to ROADMAP.md only when its *Come back when* is true, and only then. Item numbers are the same series as
+An item moves to ROADMAP.md only when its *Come back when* is true, and only then.
+
+An item flagged **Open to contributors** is outside the maintainer's own use, so it will not be built here unless a
+site needs it; it is a good place for someone who does to start. Say so in an issue or a branch first, so that the design
+below is agreed before the code. Item numbers are the same series as
 ROADMAP.md and REARVIEW.md, and are never reused. What is built is in REARVIEW.md.
 
 ## 48. (c) Counts kept per root
@@ -29,3 +33,23 @@ Cost: M. Risk: counts going stale when a write path forgets them, which is why i
 *Done when:* the home page's numbers equal a live count for two people, a group token and a token held to some roots,
 hidden shown and not, after a full scan, a partial batch, a retire-root and an ACL change; and the page's time on the
 generated catalog is stated before and after.
+
+## 25. A live watcher
+
+*Scalability.* A live watcher (fanotify) on a busy server, beside the nightly scan, so a change is seen when it
+happens and not the next night.
+
+**Come back when:** a server's files change so fast, or the nightly scan takes so long, that a night-old catalog is
+a real problem for the people using it. Not before.
+
+## 26. Single-machine mode
+
+**Open to contributors.** *Feature.* SQLite, no people: one machine, one user, no PostgreSQL and no row-level
+security, for someone who wants the catalog without a home lab.
+
+**Come back when:** a contributor wants it, or a site does. It is outside the maintainer's own use.
+
+**To settle before code:** it must be a flag or a separate mode the whole way down, never a default, and never a way
+around row-level security on a multi-person install: a single-machine catalog has one person, and a server with more
+than one must refuse to run in it. SQL in QUERIES.md is written for PostgreSQL, so how it is shared or ported is the
+main design question.
