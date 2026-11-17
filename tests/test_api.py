@@ -891,6 +891,46 @@ class TestOpsToken(ApiCase):
             with self.assertRaisesRegex(psycopg.errors.RaiseException, "the ops scope alone"):
                 self.token("user-1", scopes=scopes, roots=roots)
 
+    def test_the_token_forms_suit_a_password_manager_and_answer_by_the_form(self):
+        """ROADMAP 49: a password manager fills the text field before a password with the user name; each token form
+        has its own for that, and the others say they aren't to be filled. Its message and token come back next to
+        the form that sent them, and the form's action jumps there."""
+        c = self.login("user-1")                                        # an operator: both forms
+        page = c.get("/account").get_data(as_text=True)
+        forms = re.findall(r'<form method="post" action="/account#([\w-]+)".*?</form>', page, re.S)
+        self.assertEqual(forms, ["make-token", "make-ops-token"])
+        for action in forms:
+            form = re.search(r'<div id="%s">.*?<form [^>]*#%s".*?</form>' % (action, action), page, re.S).group(0)
+            inputs = re.findall(r"<input [^>]*>", form)
+            kinds = [re.search(r'autocomplete="([\w-]+)"', i).group(1) if "autocomplete" in i else None
+                     for i in inputs if 'type="hidden"' not in i and 'type="checkbox"' not in i
+                     and 'type="radio"' not in i]
+            self.assertEqual(kinds, ["username", "off", "off", "current-password"], action)
+            user = next(i for i in inputs if 'autocomplete="username"' in i)
+            self.assertIn('value="user-1"', user)
+            self.assertNotIn("name=", user)                             # never sent
+        # a refused form: its message by it, not at the top
+        tok = self.csrf(c, "/account")
+        bad = c.post("/account", data={"csrf": tok, "action": "make-ops-token", "client": "deploy",
+                                       "days": "user-1", "current": PASSWORDS["user-1"]}).get_data(as_text=True)
+        said = "Expires after is a number of days, or empty for until revoked."
+        self.assertEqual(bad.count(said), 1)
+        self.assertLess(bad.index('<div id="make-ops-token">'), bad.index(said))
+        self.assertLess(bad.index(said), bad.index('action="/account#make-ops-token"'))
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.tokens")[0][0], 0)
+        # a made one: the message and token by the form that made it, for each form
+        for action, extra in (("make-ops-token", {}), ("make-token", {"scope": ["read"], "roots": "all"})):
+            made = c.post("/account", data=dict(extra, csrf=tok, action=action, client="c-" + action, days="",
+                                                current=PASSWORDS["user-1"])).get_data(as_text=True)
+            at = made.index('<div id="%s">' % action)
+            self.assertLess(at, made.index("made for c-%s." % action))
+            self.assertLess(at, made.index("Your new token:"))
+            self.assertLess(made.index("Your new token:"), made.index('action="/account#%s"' % action))
+            self.assertEqual(made.count("Your new token:"), 1)
+        # other messages stay at the top
+        top = c.post("/account", data={"csrf": tok, "action": "revoke-token", "token": "0"}).get_data(as_text=True)
+        self.assertLess(top.index("No such token of yours to revoke."), top.index("<h2>Second factor</h2>"))
+
     def test_it_answers_releases_and_stale_and_nothing_else(self):
         ops = self.token("user-1", scopes=("ops",), client="deploy")
         status, got = self.get("releases", ops)

@@ -704,12 +704,13 @@ def create_app(cfg, connect=None):
     @app.route("/account", methods=["GET", "POST"])
     @signed_in
     def account():
-        msg, new_token = None, None
+        msg, new_token, msg_at = None, None, None     # msg_at: the token form whose result it is, shown by it
         pending = session.get("totp_pending")
         if request.method == "POST":
             action = request.form.get("action")
             if action in ("make-token", "make-ops-token"):
                 msg, new_token = make_token(request.form, ops=action == "make-ops-token")
+                msg_at = action if action == "make-token" or "operator" in g.roles else None   # no form: top
             elif action == "revoke-token":
                 ok = g.db.execute("SELECT pinakes.revoke_token(%s)",
                                   (_int(request.form.get("token"), 0, 0, 2 ** 31 - 1),)).fetchone()[0]
@@ -737,7 +738,8 @@ def create_app(cfg, connect=None):
                     g.db.execute("SELECT pinakes.set_my_password(%s)", (auth.hash_password(new),))
                     msg = "Password changed."
         has_totp = g.db.execute("SELECT pinakes.my_totp_secret() IS NOT NULL").fetchone()[0]
-        return render_template("account.html", msg=msg, has_totp=has_totp, pending=pending,
+        name = g.db.execute("SELECT name FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()[0]
+        return render_template("account.html", msg=msg, msg_at=msg_at, name=name, has_totp=has_totp, pending=pending,
                                uri=auth.otpauth_uri(pending, g.display or "me") if pending else None,
                                new_token=new_token, tokens=queries.rows(g.db, "SELECT * FROM pinakes.my_tokens()"),
                                root_choices=queries.root_choices(g.db), scopes=SCOPES,
@@ -757,11 +759,14 @@ def create_app(cfg, connect=None):
         if ops and "operator" not in g.roles:
             return "Only an operator makes ops tokens.", None
         try:
-            roots = None if ops or form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
             days = int(form["days"]) if form.get("days", "").strip() else None
+        except ValueError:
+            return "Expires after is a number of days, or empty for until revoked.", None
+        try:
+            roots = None if ops or form.get("roots") != "some" else sorted({int(x) for x in form.getlist("root")})
             group = None if ops or form.get("as", "me") == "me" else min(int(form["as"]), 2 ** 31 - 1)
         except ValueError:
-            return "Roots, days and the group are numbers.", None
+            return "Roots and the group are numbers.", None
         if not client:
             return "Name the client the token is for (a machine, a script).", None
         if not scopes:
