@@ -138,6 +138,17 @@ copies, found when the first deployment's backup roots turned out to share their
     step-up accepts each factor it is configured for.
 23. [Security] **Rate limits on search, audit retention, removing a person** (their records, shares and sessions go;
     audit entries about them kept for the retention period). *Done when:* tests cover each.
+49. [Correctness; also operability] **Token forms that a password manager can fill.** Found at the first deployment
+    (2026-11-16): on the account page a password manager put the person's user name into "Expires after", the text
+    field before the password, in the ops token form (39), so it was refused with "Roots, days and the group are
+    numbers." shown only at the top of the page; and a token, once made, is shown under "Tokens", mid-page, far from
+    the ops token form at the bottom. Several tries looked like nothing happening. Both token forms (34, 39): a hidden
+    `autocomplete="username"` field with the person's name before the password, and `autocomplete="off"` on the client
+    and days fields; the message and a new token shown next to the form that made it (or the page jumps there). Value:
+    high for the few who make tokens. Cost: S. Risk: none; the token is still shown once. *Done when:* a test finds
+    the username field and `autocomplete="off"` in both forms, and a refused or made token's message and token next to
+    the form that sent it; and in a browser with a saved password an ops token is made on the first try and seen
+    without scrolling.
 
 ## The command line, through an API
 
