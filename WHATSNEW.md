@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 6
 
-Affects the server, the agents and the CLI. Protocol 3; agents and servers of protocol 0 to 2 still work with it, and
+Cut 2026-11-17 (tag `release-6`). Affects the server, the agents and the CLI. Protocol 3; agents and servers of protocol 0 to 2 still work with it, and
 either side may be updated first.
 
 ### Before you update

@@ -403,7 +403,7 @@ their hashes checked, up to its share (its bytes × time since its last scrub ÷
 scrub_max_minutes`); `scrub.toml` written by the agent (filesystems by UUID through `/proc/self/mountinfo` and
 `/dev/disk/by-uuid`, else the mount source; `days = 30`, 0 for network filesystems), new ones appended, never rewritten;
 a hard-linked inode read once; `verified` and `scrub_error` in the agent's state; a scrub batch per root (its summary,
-`mismatch`, `unreadable`, `readable`), sent only to a server of protocol 3 (release 6, not cut); the ingester gives a
+`mismatch`, `unreadable`, `readable`), sent only to a server of protocol 3 (release 6); the ingester gives a
 mismatch its new content and a history row of its own (none in a backup root), marks an unreadable file, which no copy
 query counts until it reads; both reviewable (`mark_changes()`, the changes page and tree, `pinakes review`, the restore
 list); `/health` per host the oldest check and whether the scrub is behind (503); `pinakes-agent scrub [status]`;
