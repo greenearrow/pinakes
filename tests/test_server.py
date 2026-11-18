@@ -951,9 +951,11 @@ def upgrade_files_match_the_schema(case, columns, indexes, files, before=""):
         c.execute("DROP VIEW pinakes.present")
         for index in indexes:
             c.execute("DROP INDEX pinakes.%s" % index)
-        # from before the scrub too, which adds the last columns of files (upgrades/scrub.sql, run last)
-        columns = list(columns) + ["unreadable_on", "unreadable_error"]
-        files = list(files) + ["scrub.sql"]
+        # from before the scrub and checksum manifests too, which add the last columns of files (upgrades/scrub.sql,
+        # then manifests.sql, run last)
+        columns = list(columns) + ["unreadable_on", "unreadable_error", "manifest_verdict", "manifest_file_id",
+                                   "manifest_on", "manifest_counts"]
+        files = list(files) + ["scrub.sql", "manifests.sql"]
         c.execute("ALTER TABLE pinakes.roots DROP COLUMN scrub_on, DROP COLUMN scrub_since, DROP COLUMN scrub_days, "
                   "DROP COLUMN scrub_oldest, DROP COLUMN scrub_never")
         c.execute("ALTER TABLE pinakes.files %s" % ", ".join("DROP COLUMN %s" % col for col in columns))
@@ -1043,13 +1045,14 @@ class TestCheckIn(ServerCase):
     def test_an_agent_too_far_ahead_is_refused(self):
         self.write("server-1", "store", "a.txt", b"a")
         st, cfg, _ = self.agent("server-1", "store")
-        with unittest.mock.patch.multiple(compat, PROTOCOL=5, MIN_SERVER_PROTOCOL=4):
+        ahead = compat.PROTOCOL + 2
+        with unittest.mock.patch.multiple(compat, PROTOCOL=ahead, MIN_SERVER_PROTOCOL=ahead - 1):
             Scanner(cfg, st).scan(cfg.roots[0])
         (header, recs), = self.pending()
         with self.assertRaises(Incompatible) as e:
             self.ing.apply(header, recs, "server-1")
-        self.assertIn("the agent (protocol 5) needs a server of protocol 4 or later; the server is at %d; the server "
-                      "must update" % compat.PROTOCOL, str(e.exception))
+        self.assertIn("the agent (protocol %d) needs a server of protocol %d or later; the server is at %d; the server "
+                      "must update" % (ahead, ahead - 1, compat.PROTOCOL), str(e.exception))
 
     def test_ahead_but_compatible_and_before_check_in_are_applied(self):
         self.write("server-1", "store", "a.txt", b"a")
@@ -2854,3 +2857,80 @@ class TestScrub(ServerCase):
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertTrue(fresh[3])
+
+
+class TestManifests(ServerCase):
+    """ROADMAP 19: checksum manifests in the catalog. A wrong line is reported and a right one confirmed, on the
+    files, under the files policy; the catalog's hashes stay the agent's own."""
+
+    def sums(self, rel, lines):
+        self.write("server-1", "store", rel, "".join("%s  %s\n" % (hashlib.sha256(d).hexdigest(), n)
+                                                     for d, n in lines).encode())
+
+    def verdicts(self):
+        return {r[0]: (r[1], r[2]) for r in self.q(
+            "SELECT f.relpath, f.manifest_verdict, m.relpath FROM pinakes.present f "
+            "LEFT JOIN pinakes.files m ON m.file_id = f.manifest_file_id WHERE f.manifest_verdict IS NOT NULL")}
+
+    def setUp(self):
+        super().setUp()
+        self.write("server-1", "store", "people/user-1/iso/right.iso", b"right")
+        self.write("server-1", "store", "people/user-1/iso/changed.iso", b"changed since")
+        self.sums("people/user-1/iso/SHA256SUMS", [(b"right", "right.iso"), (b"as written", "changed.iso"),
+                                                   (b"lost", "lost.iso")])
+        self.assertEqual(set(self.scan("server-1", "store")), {"applied"})
+
+    def test_a_wrong_line_is_reported_and_a_right_one_confirmed(self):
+        m = "people/user-1/iso/SHA256SUMS"
+        self.assertEqual(self.verdicts(), {"people/user-1/iso/right.iso": ("confirmed", m),
+                                           "people/user-1/iso/changed.iso": ("wrong", m)})
+        counts = self.q("SELECT manifest_counts FROM pinakes.present WHERE relpath = %s", (m,))[0][0]
+        self.assertEqual(counts, {"lines": 3, "confirmed": 1, "wrong": 1, "missing": 1, "unchecked": 0, "bad": 0,
+                                  "outside": 0})
+        sha = self.q("SELECT encode(c.sha256, 'hex') FROM pinakes.present f JOIN pinakes.contents c "
+                     "USING (content_id) WHERE f.relpath = 'people/user-1/iso/changed.iso'")[0][0]
+        self.assertEqual(sha, hashlib.sha256(b"changed since").hexdigest())          # never the manifest's
+        with self.as_person("user-1") as c:
+            rows = queries.manifests(c, "store:people/user-1")
+            self.assertEqual(sorted((r["relpath"], r["problem"], r["manifest_relpath"], r["missing"]) for r in rows),
+                             [("people/user-1/iso/SHA256SUMS", "missing", m, 1),
+                              ("people/user-1/iso/changed.iso", "wrong", m, None)])
+            self.assertEqual(len(queries.manifests(c)), 2)
+            f = queries.file_by_id(c, self.file("store", "people/user-1/iso/right.iso"))
+            self.assertEqual((f["manifest_verdict"], f["manifest_relpath"]), ("confirmed", m))
+        with self.as_person("user-2") as c:                             # not theirs: nothing of it
+            self.assertEqual(queries.manifests(c), [])
+
+    def test_fixed_moved_and_gone(self):
+        self.write("server-1", "store", "people/user-1/iso/changed.iso", b"as written")
+        self.scan("server-1", "store")
+        self.assertEqual({p: v[0] for p, v in self.verdicts().items()},
+                         {"people/user-1/iso/right.iso": "confirmed", "people/user-1/iso/changed.iso": "confirmed"})
+        os.rename(self.path("server-1", "store", "people/user-1/iso"), self.path("server-1", "store",
+                                                                                "people/user-1/isos"))
+        self.scan("server-1", "store")                                  # moved together: verdicts follow
+        self.assertEqual(self.verdicts(), {
+            "people/user-1/isos/right.iso": ("confirmed", "people/user-1/isos/SHA256SUMS"),
+            "people/user-1/isos/changed.iso": ("confirmed", "people/user-1/isos/SHA256SUMS")})
+        os.remove(self.path("server-1", "store", "people/user-1/isos/SHA256SUMS"))
+        self.scan("server-1", "store")
+        self.assertEqual(self.verdicts(), {})
+
+    def test_refused_from_a_protected_root_or_outside_a_complete_batch(self):
+        st, cfg, _ = self.agent("server-1", "store")
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": 99,
+                  "started": "2026-11-17T00:00:00.000000Z",
+                  "root_def": {"path": cfg.roots[0].path, "kind": "primary", "protected": False, "mirrors": None},
+                  "seq": 1000, "roots": ["store"]}
+        hint = {"t": "hint", "path": "people/user-1/iso/right.iso", "verdict": "confirmed",
+                "manifest": "people/user-1/iso/SHA256SUMS"}
+        with self.assertRaisesRegex(Refused, "incomplete"):
+            self.ing.apply(header, [hint], "server-1")
+        with self.assertRaisesRegex(Refused, "confirmed, wrong or null"):
+            self.ing.apply(dict(header, complete=True), [dict(hint, verdict="trusted")], "server-1")
+        with self.assertRaisesRegex(Refused, "protected root"):
+            self.ing.apply(dict(header, complete=True, root_def=dict(header["root_def"], protected=True)),
+                           [hint], "server-1")
+
+    def test_upgrade_file_matches_the_schema(self):
+        upgrade_files_match_the_schema(self, [], [], [])

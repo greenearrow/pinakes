@@ -94,6 +94,12 @@ def cmd_scan(cfg, args):
                 continue
             print("%(root)s: scan %(scan)d%(r)s, %(sent)d sent, %(gone)d gone, %(errors)d errors, %(batches)d batches"
                   % dict(s, r=" (resumed)" if s["resumed"] else ""))
+            m = s.get("manifests")
+            if m and m["manifests"]:
+                print("%s: %d checksum manifest(s): %d line(s) wrong, %d listing a file not there"
+                      % (root.label, m["manifests"], m["wrong"], m["missing"]))
+            elif s.get("manifests_wait"):
+                print("%s: manifests not checked: %s" % (root.label, s["manifests_wait"]))
         if getattr(args, "check_busy", False) and busy(cfg):
             print("busy: no scrub")
             return rc

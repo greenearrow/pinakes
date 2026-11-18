@@ -478,3 +478,33 @@ no ops form, stay at the top); a days field that isn't a number is now said to b
 **State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed (x86-64 desktop;
 `tests/test_api.py` `TestOpsToken`, checked to fail without the change). Not tried in a browser with a password manager;
 not deployed.
+
+## 19. Checksum manifests
+
+Design: DESIGN.md "Checksum manifests".
+
+**Built:** `pinakes/manifests.py`: at the end of each scan, every `SHA256SUMS`, `SHA256SUMS.txt` and `*.sha256` in the
+root (sha256sum's text, binary and escaped lines, and the BSD format) is read when its content is new and only if
+the bytes read have the scan's hash, and each line is checked against the agent's own hash: confirmed, wrong,
+missing, unchecked; bad lines and names outside the root counted. The agent's state keeps the lines and what was last
+sent (`manifests`, `manifest_lines`, `hints`). `hint` and `manifest` records go with the scan's complete batch, only
+when they change (all again with `--full`), and only to a server of protocol 4 (release 7, not cut). Never on a
+protected root or link, nor with `hash = "none"`; `[[root]] manifests = false` turns it off and clears what was sent.
+The ingester applies them after the scan's moves (a move carries them), refuses them outside a complete batch, from a
+protected root or through a protected link, and keeps them on the files (`manifest_verdict`, `manifest_file_id`,
+`manifest_on`, `manifest_counts`; `upgrades/manifests.sql`). Shown on the file page, in the Manifests report,
+`/api/v1/manifests`, `pinakes manifests [PATH]`, and QUERIES.md "manifests".
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 383 tests): the
+agent's `tests/test_agent.py` `TestManifests` and `TestManifestsProtected` on generated trees (a wrong line reported
+and a right one confirmed, the hash sent the agent's own, nothing sent again when nothing changed, the formats, a file
+put back and a listed file gone, the manifest gone, two manifests disagreeing, `--full`, read once per content and
+not believed when it changed after hashing, a symlink unchecked, waiting for protocol 4, turned off, the config, a
+protected root never read, checked to fail without its guard); `tests/test_server.py` `TestManifests` (in the catalog
+the wrong line reported and the right one confirmed, the hash the agent's, the report and file page queries, another
+person seeing none of it, a folder moved with its manifest, the manifest gone, refusals outside a complete batch,
+of a bad verdict and from a protected root, the upgrade against the schema); `tests/test_queries.py` with the new
+QUERIES.md block; `tests/test_releases.py` with a manifest in its tree. One failure in the run, not from this change:
+`TestUnreportedRoots.test_a_machine_replaced_with_fewer_roots` fails the same on the commit before (`totals` prints
+`unreported_since` in the server's time zone, the test expects UTC's date, so it fails while they differ). Only this
+Python and PostgreSQL; not run on a real tree; not deployed.

@@ -1,4 +1,6 @@
-"""The agent's local state (SQLite): what it last saw of every file, and its scans."""
+"""The agent's local state (SQLite): what it last saw of every file, and its scans. Checksum manifests
+(manifests.py): each one read (its hash when read, its unreadable and outside lines, the counts last sent), the lines
+it lists, and the verdict last sent per listed file (hints)."""
 
 import sqlite3
 import time
@@ -14,6 +16,16 @@ CREATE INDEX IF NOT EXISTS files_inode ON files (dev, ino);
 CREATE TABLE IF NOT EXISTS scans (
     scan_id INTEGER PRIMARY KEY, root TEXT NOT NULL, started REAL NOT NULL, finished REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS manifests (
+    root TEXT NOT NULL, relpath TEXT NOT NULL, sha256 TEXT, bad INTEGER, outside INTEGER, sent TEXT,
+    PRIMARY KEY (root, relpath));
+CREATE TABLE IF NOT EXISTS manifest_lines (
+    root TEXT NOT NULL, manifest TEXT NOT NULL, listed TEXT NOT NULL, sha256 TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS manifest_lines_of ON manifest_lines (root, manifest);
+CREATE INDEX IF NOT EXISTS manifest_lines_listed ON manifest_lines (root, listed);
+CREATE TABLE IF NOT EXISTS hints (
+    root TEXT NOT NULL, relpath TEXT NOT NULL, verdict TEXT NOT NULL, manifest TEXT NOT NULL,
+    PRIMARY KEY (root, relpath));
 """
 
 COLUMNS = ("size", "mtime_ns", "ctime_ns", "btime_ns", "dev", "ino", "nlink", "uid", "sha256", "chunk_params",

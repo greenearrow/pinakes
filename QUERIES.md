@@ -21,7 +21,9 @@ files    (file_id, root_id, relpath text, name text,                        -- n
           owner_id, first_seen, last_seen timestamptz, gone_on date,       -- gone_on NULL while present
           backup_of bigint, snapshot date,                                  -- backup copies: source file, snapshot date
           is_symlink boolean, link_target text,                            -- a symlink: its target as written, and
-          link_root text, link_relpath text, link_dangling boolean)        -- where it leads in its agent's roots
+          link_root text, link_relpath text, link_dangling boolean,        -- where it leads in its agent's roots
+          manifest_verdict text, manifest_file_id bigint,                  -- a SHA256SUMS line's verdict on it, and
+          manifest_on date, manifest_counts jsonb)                         -- which; on a manifest, its lines' counts
 history  (history_id, file_id, kind text,                                   -- new | changed | moved | moved_changed | gone
           old_relpath, new_relpath, old_content_id, new_content_id,
           seen_after date, seen_on date, evidence text, confidence text)   -- the window: last scan before, scan that saw it
@@ -174,6 +176,29 @@ GROUP BY c.content_id
 HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1
 ORDER BY reclaimable DESC
 LIMIT 50;
+```
+
+## manifests [HOST:PATH]
+
+What checksum manifests (`SHA256SUMS`) say that the agents' own hashes don't bear out (DESIGN.md "Checksum
+manifests"): a present file listed with another hash, and a manifest listing files that aren't there. The verdicts
+are on the files, so they are under the files policy like everything else about a file.
+
+```sql
+-- pinakes manifests store:people/user-1/
+SELECT r.label || ':' || f.relpath AS file, 'another hash' AS what, m.relpath AS manifest, f.manifest_on
+FROM present f
+JOIN roots r USING (root_id)
+LEFT JOIN present m ON m.file_id = f.manifest_file_id   -- NULL: a manifest you can't see
+WHERE f.manifest_verdict = 'wrong'
+  AND r.label = 'store' AND (f.relpath LIKE 'people/user-1/%' OR f.relpath = 'people/user-1')
+UNION ALL
+SELECT r.label || ':' || f.relpath, (f.manifest_counts->>'missing') || ' not there', f.relpath, NULL
+FROM present f
+JOIN roots r USING (root_id)
+WHERE (f.manifest_counts->>'missing')::int > 0
+  AND r.label = 'store' AND (f.relpath LIKE 'people/user-1/%' OR f.relpath = 'people/user-1')
+ORDER BY 1;
 ```
 
 ## history HOST:PATH

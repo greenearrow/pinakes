@@ -487,6 +487,38 @@ RAID1 picks one), so an md array still wants its own check, and on ZFS or btrfs 
 corruption below it more cheaply; the pinakes scrub still catches rewrites that kept their mtime and errors above the
 disk. It reads only files the scan already reads, with the same rights: the agent gains no new power.
 
+## Checksum manifests (ROADMAP 19)
+
+People and programs leave lists of hashes beside files: `sha256sum * > SHA256SUMS` before a disk is retired, a
+download's `SHA256SUMS` or `name.iso.sha256`. Each says what the files it lists held when it was written. The catalog
+takes them as **hints, never trusted**: no hash is ever taken from a manifest, and a line is only checked against
+the agent's own hash of the file it names.
+
+- **Which files.** `SHA256SUMS`, `SHA256SUMS.txt` and `*.sha256`, any case, in sha256sum's format (text or binary
+  mode, its backslash escaping) or the BSD one (`SHA256 (name) = hash`). A name is relative to the manifest's folder.
+  One that leaves the root (absolute, or `..` above it) is *outside* and never looked up. A line that is neither
+  format is *bad*. Blank lines and `#` comments don't count.
+- **When.** At the end of each scan, once the walk is done, against the scan's hashes. A manifest is read only when
+  its content is new (its hash differs from the one last read), read-only like any file, and only if the bytes read
+  still have the hash the scan found. Otherwise it is left to the next scan, and what it said before stands.
+- **What a line says.** *Confirmed* (the file there has the listed hash), *wrong* (another hash: changed since the
+  list was written, damaged, or a wrong list), *missing* (no file at that path now), or *unchecked* (no hash of the
+  agent's own to compare: a symlink, a file being written, or a folder that couldn't be listed).
+- **What is sent.** With the scan's complete batch (protocol 4), and only what changed since the last scan: per
+  listed file its verdict and the manifest that gave it (wrong outranks confirmed when two manifests list it), and
+  per manifest its counts. A file no manifest lists any more has its verdict cleared. A full scan sends them all
+  again. The ingester applies them after the scan's moves, so a folder moved with its manifest keeps its verdicts.
+  An agent sends them only once its server answers protocol 4.
+- **Where.** Never on a protected root or through a protected link: its content is never read for meaning. Nor on a
+  root with `hash = "none"`. `manifests = false` on a `[[root]]` turns it off, and what was sent is cleared.
+- **Shown.** On the file page (confirmed by, or not as listed in, the manifest; a manifest's counts), and in the
+  Manifests report, `/api/v1/manifests` and `pinakes manifests [PATH]`: the files with another hash than their line,
+  and the manifests naming files that aren't there. All are columns of the files, so the files policy decides who sees
+  them.
+
+A verdict is about one moment, the scan's. A wrong line doesn't change what counts as a copy: the hash the catalog
+uses is the one the agent read.
+
 ## Running on machines that are often off
 
 - Timer with `Persistent=true`, so a missed run happens soon after boot or wake.

@@ -8,6 +8,9 @@
                                        symlinks elsewhere that lead into it
   pinakes backed-up [PATH]
   pinakes dupes
+  pinakes manifests [PATH]             what SHA256SUMS files say that the agents' hashes don't bear out: files listed
+                                       with another hash, and lists naming files not there (no path, outside every
+                                       root: everywhere you can see)
   pinakes history FILE
   pinakes versions FILE
   pinakes lineage FILE [--down]
@@ -296,7 +299,7 @@ def _when(iso):
 FILE = ("where", "history", "versions", "lineage")                  # take one file
 FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
-                                         "releases")
+                                         "releases", "manifests")
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -389,6 +392,21 @@ def run(api, a, cfg):
         if not a.json:
             print("changes %s in the last %d days%s:" % ("under " + where if where else "everywhere you can see",
                                                          a.days, ", on " + a.host if a.host else ""))
+    elif a.cmd == "manifests":
+        try:
+            where = loc("any")
+        except NotInRoot:
+            if a.arg:
+                raise
+            where = None
+        got = api.get("manifests", loc=where)
+        if not a.json:
+            print("checksum manifests %s: %s" % ("under " + where if where else "everywhere you can see",
+                                                 "%d problem(s)" % count(got) if got["rows"] else "nothing wrong"))
+            got["rows"] = [{"what": "another hash" if r["problem"] == "wrong" else "%d not there" % r["missing"],
+                            "path": "%s:%s" % (r["root"], r["relpath"]),
+                            "manifest": r["manifest_relpath"] if r["problem"] == "wrong" else ""}
+                           for r in got["rows"]]
     elif a.cmd == "meta":
         key, eq, value = need("SCHEMA.FIELD=VALUE").partition("=")
         if not eq:

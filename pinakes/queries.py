@@ -103,7 +103,12 @@ def file_by_id(conn, file_id):
                              f.link_dangling,
                              (SELECT t.file_id FROM pinakes.present t JOIN pinakes.roots tr USING (root_id)
                               WHERE f.is_symlink AND tr.label = f.link_root AND t.relpath = f.link_relpath
-                              LIMIT 1) AS link_file_id
+                              LIMIT 1) AS link_file_id,
+                             f.manifest_verdict, f.manifest_on, f.manifest_counts,
+                             (SELECT m.file_id FROM pinakes.present m WHERE m.file_id = f.manifest_file_id)
+                                 AS manifest_file_id,
+                             (SELECT m.relpath FROM pinakes.present m WHERE m.file_id = f.manifest_file_id)
+                                 AS manifest_relpath
                       FROM pinakes.files f JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                       LEFT JOIN pinakes.contents c ON c.content_id = f.content_id
                       LEFT JOIN pinakes.people p ON p.person_id = f.owner_id
@@ -192,6 +197,36 @@ def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
                          GROUP BY f.file_id, f.relpath"""
                 + order(BACKED_UP_SORT, sort, direction, "backup_copies, f.relpath, f.file_id") + PAGE,
                 (root, _prefix(path), path, limit, offset))
+
+
+MANIFEST_SORT = {"where": ("x.host", "x.root"), "path": ("x.relpath",), "what": ("x.problem",),
+                 "checked": ("x.checked_on",)}
+
+
+def manifests(conn, loc=None, limit=None, offset=0, sort=None, direction="asc"):
+    """What checksum manifests found (DESIGN.md "Checksum manifests"), under a folder or everywhere: each present file
+    a manifest lists with another hash than the agent's (problem 'wrong', with the manifest if visible), and each
+    manifest listing files that aren't there (problem 'missing', with how many). Rows are files under the files
+    policy: a manifest's counts are seen by whoever sees the manifest."""
+    root, path = split_location(loc) if loc else (None, "")
+    return rows(conn, """SELECT x.*, """ + TOTAL + """ FROM (
+                             SELECT """ + FILE_COLS + """, 'wrong' AS problem, f.manifest_on AS checked_on,
+                                    m.file_id AS manifest_id, m.relpath AS manifest_relpath, NULL::int AS missing
+                             FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                             JOIN pinakes.hosts h USING (host_id)
+                             LEFT JOIN pinakes.present m ON m.file_id = f.manifest_file_id
+                             WHERE f.manifest_verdict = 'wrong'
+                               AND (%s::text IS NULL OR (r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s)))
+                             UNION ALL
+                             SELECT """ + FILE_COLS + """, 'missing', f.last_seen::date, f.file_id, f.relpath,
+                                    (f.manifest_counts->>'missing')::int
+                             FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                             JOIN pinakes.hosts h USING (host_id)
+                             WHERE (f.manifest_counts->>'missing')::int > 0
+                               AND (%s::text IS NULL OR (r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s)))
+                         ) x"""
+                + order(MANIFEST_SORT, sort, direction, "x.host, x.root, x.relpath, x.problem, x.file_id") + PAGE,
+                (root, root, _prefix(path), path) * 2 + (limit, offset))
 
 
 def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):

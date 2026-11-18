@@ -105,6 +105,13 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   their content leaves the machine, by any path: a hard link of a protected file in another root is protected there
   too (the agent walks its protected roots for links; a folder there it can't list protects every multi-link file
   on its filesystem). A plain copy is a new file, under its own root's rules.
+- Checksum manifests (DESIGN.md "Checksum manifests") are read like any file the scan hashes, never on a
+  protected root or through a protected link. What leaves the machine is a verdict per listed file it already
+  reports (confirmed or wrong, and which manifest) and counts per manifest: no name, hash or line of a manifest. The
+  verdicts are columns of the files, under the files policy. A manifest's counts are seen by whoever sees the
+  manifest, even when some of the files it lists are someone else's: counts only, of a list its reader can open
+  where it lies. The ingester refuses manifest records from a protected root, or for a manifest behind a protected
+  link.
 - Resolving a symlink's target looks names up (`lstat`, never reading a file) only inside the agent's own roots,
   as configured: a link pointing elsewhere gets no access the scan didn't already have. On the web, a link shows its
   target's page only to someone who may see that file.

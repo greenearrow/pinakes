@@ -2,7 +2,8 @@
 {% from "_files.html" import file_table with context %}
 {% from "_pager.html" import pager, th with context %}
 {% set titles = {'only-here': 'Only here', 'safe-to-delete': 'Safe to delete?', 'backed-up': 'Backed up?',
-                 'dupes': 'Duplicates', 'changes': 'Changes', 'restore': 'To restore'} %}
+                 'dupes': 'Duplicates', 'changes': 'Changes', 'restore': 'To restore',
+                 'manifests': 'Checksum manifests'} %}
 {% block title %}{{ titles[name] }} · pinakes{% endblock %}
 {% block body %}
 <h1>{{ titles[name] }}</h1>
@@ -84,6 +85,16 @@
   <span class="muted">Marked changes keep their marks.</span></p>
 </form>{% endif %}
 <p><a href="{{ url_for('report', name='restore', loc=loc) }}">To restore</a></p>
+{% endif %}
+{% elif name == 'manifests' %}
+<form class="filters"><label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (all roots)" size="30"></label> <button>Show</button></form>
+{% if error %}<p class="error">{{ error }}</p>{% else %}
+<p class="muted">What SHA256SUMS files say that the agents' own hashes don't bear out: a file listed with another hash (changed since the list was written, damaged, or a wrong list), and lists naming files that aren't there. A list is only a hint: the catalog's hashes are the agents' own.</p>
+{{ pager(pg, "lines") }}
+<div class="scroll"><table><tr>{{ th(pg, "where", "Where") }}{{ th(pg, "what", "What") }}{{ th(pg, "path", "File") }}{{ th(pg, "checked", "Checked") }}</tr>
+{% for r in rows %}<tr><td>{{ r.host }} · {{ r.root }}</td><td>{% if r.problem == 'wrong' %}<span class="error">another hash than its line</span>{% else %}<span class="error">{{ r.missing }} listed file(s) not there</span>{% endif %}</td><td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.problem == 'wrong' %}<br><span class="muted">{% if r.manifest_id %}listed in <a href="{{ url_for('file', file_id=r.manifest_id) }}">{{ r.manifest_relpath }}</a>{% else %}listed in a manifest you can't see{% endif %}</span>{% endif %}</td><td>{{ r.checked_on }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Nothing: every line checked is borne out.</td></tr>{% endfor %}</table></div>
+{{ pager(pg, "lines") }}
 {% endif %}
 {% elif name == 'restore' %}
 <form class="filters"><label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (all roots)" size="30"></label>

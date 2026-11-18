@@ -252,7 +252,13 @@ CREATE TABLE files (
     link_dangling boolean,                                  -- its target is missing; NULL: not known
     hidden      boolean NOT NULL DEFAULT false,             -- a dot in its path, or the hidden attribute (Samba)
     unreadable_on date,                                     -- the scrub couldn't read it (DESIGN.md "Scrub"): not a
-    unreadable_error text                                   -- copy until it reads again; the error's name (EIO)
+    unreadable_error text,                                  -- copy until it reads again; the error's name (EIO)
+    -- checksum manifests (DESIGN.md "Checksum manifests"): what a SHA256SUMS listing this file says of the agent's
+    -- hash, the manifest that said it (wrong over confirmed) and when; on a manifest, its lines' counts
+    manifest_verdict text CHECK (manifest_verdict IN ('confirmed', 'wrong')),
+    manifest_file_id bigint REFERENCES files ON DELETE SET NULL,
+    manifest_on date,
+    manifest_counts jsonb
 );
 CREATE UNIQUE INDEX files_present_path ON files (root_id, relpath) WHERE gone_on IS NULL;
 CREATE INDEX files_content ON files (content_id);
@@ -263,6 +269,7 @@ CREATE INDEX files_name_trgm ON files USING gin (name public.gin_trgm_ops);
 CREATE INDEX files_relpath ON files (root_id, relpath text_pattern_ops);
 CREATE INDEX files_name_key ON files (name_key, ext);
 CREATE INDEX files_link ON files (link_root, link_relpath text_pattern_ops) WHERE is_symlink;
+CREATE INDEX files_manifest ON files (manifest_file_id) WHERE manifest_file_id IS NOT NULL;
 -- security_invoker: without it a view reads its table as the view's owner, and row-level security wouldn't apply
 CREATE VIEW present WITH (security_invoker = true) AS SELECT * FROM files WHERE gone_on IS NULL;
 

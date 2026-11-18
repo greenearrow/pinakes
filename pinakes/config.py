@@ -80,6 +80,16 @@ class Root:
             raise ConfigError("root %s: metadata is true, false or a list of schema names" % self.label)
         if self.protected:
             self.metadata = []
+        # checksum manifests (SHA256SUMS) checked against the scan's hashes (ROADMAP 19): on unless false; never
+        # read on a protected root, nor without hashes
+        self.manifests = d.get("manifests", True)
+        if not isinstance(self.manifests, bool):
+            raise ConfigError("root %s: manifests is true or false" % self.label)
+        if self.manifests and "manifests" in d and (self.protected or self.hash == "none"):
+            raise ConfigError("root %s: a %s root can't check manifests" % (
+                self.label, "protected" if self.protected else "hash = \"none\""))
+        if self.protected or self.hash == "none":
+            self.manifests = False
 
     def wants_chunks(self, size):
         return self.chunks and self.chunk_min_size <= size <= self.chunk_max_size

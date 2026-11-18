@@ -17,7 +17,7 @@ import unittest
 import unittest.mock
 import zipfile
 
-from pinakes import agent, chunker, config, fsinfo, globs, hidden, names, outbox, transport
+from pinakes import agent, chunker, config, fsinfo, globs, hidden, manifests, names, outbox, transport
 from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone, check, check_verdict
 from pinakes.state import State
 
@@ -1370,3 +1370,154 @@ class TestFullScanHeader(Tree):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestManifests(Tree):
+    """ROADMAP 19: checksum manifests (SHA256SUMS) as hints, checked against the scan's own hashes, never trusted."""
+
+    def hints(self, recs):
+        return {r["path"]: (r["verdict"], r.get("manifest")) for r in recs if r["t"] == "hint"}
+
+    def counts(self, recs):
+        return {r["path"]: {k: v for k, v in r.items() if k not in ("t", "path")} for r in recs if r["t"] == "manifest"}
+
+    def sums(self, rel, lines):
+        return self.write(rel, "".join("%s  %s\n" % (h, n) for h, n in lines).encode())
+
+    def test_a_wrong_line_is_reported_and_a_right_one_confirmed(self):
+        self.write("iso/right.iso", b"right")
+        self.write("iso/changed.iso", b"changed since")
+        self.sums("iso/SHA256SUMS", [(sha(b"right"), "right.iso"), (sha(b"as written"), "changed.iso")])
+        s = self.scan()
+        batches = []
+        for seq, path in outbox.pending(self.cfg.outbox):
+            header, recs = outbox.read(path)
+            batches.append((header.get("complete"), recs))
+            outbox.ack(self.cfg.outbox, seq)
+        recs = batches[-1][1]
+        self.assertTrue(batches[-1][0])                                 # in the complete batch
+        self.assertEqual(self.hints(recs), {"iso/right.iso": ("confirmed", "iso/SHA256SUMS"),
+                                            "iso/changed.iso": ("wrong", "iso/SHA256SUMS")})
+        self.assertEqual(self.counts(recs)["iso/SHA256SUMS"], {"lines": 2, "confirmed": 1, "wrong": 1, "missing": 0,
+                                                               "unchecked": 0, "bad": 0, "outside": 0})
+        self.assertEqual(s["manifests"], {"manifests": 1, "wrong": 1, "missing": 0})
+        # the catalog's hash is the agent's own: the manifest's never replaces it
+        files = {r["path"]: r["sha256"] for _, rs in batches for r in rs if r["t"] == "file"}
+        self.assertEqual(files["iso/changed.iso"], sha(b"changed since"))
+        self.assertEqual([r for r in self.drain() if r["t"] in ("hint", "manifest")], [])   # unchanged: not again
+        self.scan()
+        self.assertEqual([r for r in self.drain() if r["t"] in ("hint", "manifest")], [])
+
+    def test_formats(self):
+        lines, bad, outside = manifests.parse(
+            ("# made by hand\r\n\n%s  a b.txt\r\n%s *./bin.dat\nSHA256 (sub/c.txt) = %s\n"
+             "\\%s  back\\\\slash\\nline\nnot a line\n%s  /etc/x\n%s  ../../up\n%s  ../dir/d\n"
+             % (sha(b"a"), sha(b"b"), sha(b"c").upper(), sha(b"e"), sha(b"f"), sha(b"g"), sha(b"d"))).encode()
+            + b"\xff\xfe  bad\n", "dir/SHA256SUMS")
+        self.assertEqual(lines, [("dir/a b.txt", sha(b"a")), ("dir/bin.dat", sha(b"b")), ("dir/sub/c.txt", sha(b"c")),
+                                 ("dir/back\\slash\nline", sha(b"e")), ("dir/d", sha(b"d"))])
+        self.assertEqual((bad, outside), (2, 2))
+        for name in ("SHA256SUMS", "x/sha256sums.txt", "a.iso.sha256", "A.ISO.SHA256"):
+            self.assertTrue(manifests.is_manifest(name), name)
+        for name in (".sha256", "SHA256SUMS.asc", "sha1sums", "x.sha256.bak"):
+            self.assertFalse(manifests.is_manifest(name), name)
+
+    def test_changes_follow_the_tree(self):
+        self.write("a.txt", b"a")
+        self.write("b.txt", b"b")
+        self.sums("SHA256SUMS", [(sha(b"a"), "a.txt"), (sha(b"old b"), "b.txt"), (sha(b"c"), "c.txt")])
+        self.scan()
+        recs = self.drain()
+        self.assertEqual(self.counts(recs)["SHA256SUMS"]["missing"], 1)
+        self.write("b.txt", b"old b")                                   # put back as listed
+        os.remove(os.path.join(self.top, "a.txt"))                      # a listed file goes
+        self.scan()
+        recs = self.drain()
+        self.assertEqual(self.hints(recs), {"b.txt": ("confirmed", "SHA256SUMS"), "a.txt": (None, None)})
+        self.assertEqual(self.counts(recs)["SHA256SUMS"], {"lines": 3, "confirmed": 1, "wrong": 0, "missing": 2,
+                                                           "unchecked": 0, "bad": 0, "outside": 0})
+        os.remove(os.path.join(self.top, "SHA256SUMS"))                 # the manifest goes: its verdicts with it
+        self.scan()
+        recs = self.drain()
+        self.assertEqual(self.hints(recs), {"b.txt": (None, None)})
+        self.assertEqual(self.state.db.execute("SELECT count(*) FROM manifest_lines").fetchone()[0], 0)
+
+    def test_wrong_outranks_confirmed_and_a_full_scan_sends_again(self):
+        self.write("a.txt", b"a")
+        self.sums("SHA256SUMS", [(sha(b"a"), "a.txt")])
+        self.sums("a.txt.sha256", [(sha(b"not a"), "a.txt")])
+        self.scan()
+        self.assertEqual(self.hints(self.drain()), {"a.txt": ("wrong", "a.txt.sha256")})
+        self.scan(full=True)
+        recs = self.drain()
+        self.assertEqual(self.hints(recs), {"a.txt": ("wrong", "a.txt.sha256")})
+        self.assertEqual(set(self.counts(recs)), {"SHA256SUMS", "a.txt.sha256"})
+
+    def test_read_only_when_new_and_as_hashed(self):
+        self.write("a.txt", b"a")
+        self.sums("SHA256SUMS", [(sha(b"a"), "a.txt")])
+        reads = []
+        real = manifests._read
+
+        def counting(path):
+            reads.append(path)
+            return real(path)
+        with unittest.mock.patch.object(manifests, "_read", counting):
+            self.scan()
+            self.scan()
+        self.assertEqual(len(reads), 1)                                 # read once while its content is the same
+        self.drain()
+        self.sums("SHA256SUMS", [(sha(b"other"), "a.txt")])
+        with unittest.mock.patch.object(manifests, "_read", lambda p: b"not what was hashed"):
+            self.scan()                                                 # changed after hashing: not believed
+        self.assertEqual([r for r in self.drain() if r["t"] in ("hint", "manifest")], [])
+        self.scan()
+        self.assertEqual(self.hints(self.drain()), {"a.txt": ("wrong", "SHA256SUMS")})
+
+    def test_a_symlink_or_unhashed_file_is_unchecked(self):
+        self.write("a.txt", b"a")
+        os.symlink("a.txt", os.path.join(self.top, "link"))
+        self.sums("SHA256SUMS", [(sha(b"a"), "link")])
+        self.scan()
+        recs = self.drain()
+        self.assertEqual(self.hints(recs), {})
+        self.assertEqual(self.counts(recs)["SHA256SUMS"]["unchecked"], 1)
+
+    def test_off_and_waiting(self):
+        self.write("a.txt", b"a")
+        self.sums("SHA256SUMS", [(sha(b"a"), "a.txt")])
+        self.cfg.transport = {"kind": "ssh"}
+        self.state.set_meta("server_protocol", "3")                     # release 6: no manifest records
+        s = self.scan()
+        self.assertIn("protocol 4", s["manifests_wait"])
+        self.assertEqual([r for r in self.drain() if r["t"] in ("hint", "manifest")], [])
+        self.state.set_meta("server_protocol", "4")
+        self.scan()
+        self.assertEqual(self.hints(self.drain()), {"a.txt": ("confirmed", "SHA256SUMS")})
+        self.cfg.roots[0].manifests = False                             # turned off: what was sent is taken back
+        self.scan()
+        recs = self.drain()
+        self.assertEqual(self.hints(recs), {"a.txt": (None, None)})
+        self.assertEqual(self.counts(recs), {"SHA256SUMS": {}})
+
+    def test_config(self):
+        base = '[agent]\nhost = "h"\nstate = "/s"\noutbox = "/o"\n[[root]]\nlabel = "r"\npath = "/mnt/store"\n'
+        self.assertTrue(config.loads(base).roots[0].manifests)
+        self.assertFalse(config.loads(base + "manifests = false\n").roots[0].manifests)
+        self.assertFalse(config.loads(base + "protected = true\n").roots[0].manifests)
+        self.assertFalse(config.loads(base + 'hash = "none"\n').roots[0].manifests)
+        for extra in ("protected = true\nmanifests = true\n", 'hash = "none"\nmanifests = true\n',
+                      'manifests = "yes"\n'):
+            with self.assertRaises(config.ConfigError):
+                config.loads(base + extra)
+
+
+class TestManifestsProtected(Tree):
+    root_extra = "protected = true"
+
+    def test_never_read_on_a_protected_root(self):
+        self.write("a.txt", b"a")
+        self.write("SHA256SUMS", ("%s  a.txt\n" % sha(b"a")).encode())
+        with unittest.mock.patch.object(manifests, "_read", side_effect=AssertionError("read")):
+            self.scan()
+        self.assertEqual([r for r in self.drain() if r["t"] in ("hint", "manifest")], [])

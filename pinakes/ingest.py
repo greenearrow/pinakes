@@ -589,13 +589,15 @@ class Ingester:
         self._scan_row(root_id, scan, started_on, header["started"])
         ctx = {"root": root, "scan": scan, "on": started_on, "after": root["last_complete_on"],
                "uid_map": self.cfg.hosts[host]["uid_map"], "host_id": host_id}
-        gone = []
+        gone, hints = [], []
         for rec in records:
             t = rec.get("t")
             if t in ("file", "symlink"):
                 self._file(ctx, rec)
             elif t == "gone":
                 gone.append(rec["path"])
+            elif t in ("hint", "manifest"):
+                hints.append(rec)
             elif t in ("mismatch", "unreadable", "readable"):
                 raise Refused("a %s record outside a scrub batch" % t)
             elif t == "error":
@@ -606,8 +608,67 @@ class Ingester:
             if header.get("full"):
                 gone += self._unsent(ctx, host, header["root"], bool(header.get("accept_gone")))
             self._complete(ctx, gone, host_id)
+            self._manifests(ctx, hints)       # after the moves: a moved file's row is the one it lives on in
         elif gone:
             raise Refused("gone records in an incomplete scan")
+        elif hints:
+            raise Refused("manifest records in an incomplete scan")
+
+    MANIFEST_COUNTS = ("lines", "confirmed", "wrong", "missing", "unchecked", "bad", "outside")
+
+    def _manifests(self, ctx, records):
+        """Checksum manifests (DESIGN.md "Checksum manifests"): what each manifest said of the agent's hashes. A
+        hint gives a listed file its verdict (confirmed or wrong) and the manifest that gave it, or clears it; a
+        manifest record gives a manifest its counts, or clears them. Hints only: no hash is taken from a manifest.
+        The agent reads no manifest on a protected root or link, so one that says it did is refused. A record for a
+        path the catalog doesn't have present is left alone."""
+        root = ctx["root"]
+        if records and root["protected"]:
+            raise Refused("manifest records from a protected root")
+        ids = {}
+
+        def present(relpath):
+            if relpath not in ids:
+                ids[relpath] = self.one("SELECT file_id, protected_link FROM pinakes.files WHERE root_id = %s "
+                                        "AND relpath = %s AND gone_on IS NULL", (root["root_id"], relpath))
+            return ids[relpath]
+
+        for rec in records:
+            path = rec.get("path")
+            if not isinstance(path, str):
+                raise Refused("a %s record without its path" % rec["t"])
+            if rec["t"] == "manifest":
+                f = present(path)
+                if f is None:
+                    continue
+                if "lines" in rec and f[1]:
+                    raise Refused("%s: a manifest read through a protected link" % path)
+                counts = None
+                if "lines" in rec:
+                    counts = {}
+                    for k in self.MANIFEST_COUNTS:
+                        v = rec.get(k, 0)
+                        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+                            raise Refused("%s: a manifest's %s is a count" % (path, k))
+                        counts[k] = v
+                self.q("UPDATE pinakes.files SET manifest_counts = %s::jsonb WHERE file_id = %s",
+                       (json.dumps(counts) if counts is not None else None, f[0]))
+                continue
+            verdict = rec.get("verdict")
+            if verdict not in (None, "confirmed", "wrong"):
+                raise Refused("%s: a verdict is confirmed, wrong or null" % path)
+            f = present(path)
+            if f is None:
+                continue
+            if verdict is None:
+                self.q("UPDATE pinakes.files SET manifest_verdict = NULL, manifest_file_id = NULL, manifest_on = NULL "
+                       "WHERE file_id = %s", (f[0],))
+                continue
+            m = present(rec.get("manifest")) if isinstance(rec.get("manifest"), str) else None
+            if m is not None and m[1]:
+                raise Refused("%s: a manifest read through a protected link" % rec["manifest"])
+            self.q("UPDATE pinakes.files SET manifest_verdict = %s, manifest_file_id = %s, manifest_on = %s "
+                   "WHERE file_id = %s", (verdict, m[0] if m else None, ctx["on"], f[0]))
 
     def _scrub(self, root, s, records):
         """A scrub batch (DESIGN.md "Scrub"): what the agent's scrub found in the root, and its summary. A mismatch
@@ -1007,8 +1068,10 @@ class Ingester:
         """g's file_id lives on at n's path, with n's attributes; n's row goes."""
         cols = ("relpath, name, content_id, size, mtime, ctime, btime, mtime_ns, ctime_ns, btime_ns, dev, ino, nlink, "
                 "uid, is_symlink, link_target, unstable, name_key, ext, acl_id, owner_id, backup_of, snapshot, "
-                "protected_link, link_root, link_relpath, link_dangling, hidden")
+                "protected_link, link_root, link_relpath, link_dangling, hidden, manifest_verdict, manifest_file_id, "
+                "manifest_on, manifest_counts")
         row = self.one("SELECT %s FROM pinakes.files WHERE file_id = %%s" % cols, (n[0],))
+        self.q("UPDATE pinakes.files SET manifest_file_id = %s WHERE manifest_file_id = %s", (g[0], n[0]))
         self.q("DELETE FROM pinakes.files WHERE file_id = %s", (n[0],))
         sets = ", ".join("%s = %%s" % c.strip() for c in cols.split(","))
         self.q("UPDATE pinakes.files SET %s, last_seen = now(), pending_scan = NULL WHERE file_id = %%s" % sets,

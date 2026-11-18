@@ -77,8 +77,6 @@ Nothing is left here: no known item blocks adding a machine. New ones from a dep
 
 ## Sources and imports
 
-19. [Feature; also correctness] **Checksum manifests** (`SHA256SUMS` files) as hints, checked on the next scan, never
-    trusted. *Done when:* a test finds a wrong line reported and a right one confirmed.
 20. [Feature] **Another catalog's checksums** (a photo library's SHA-1s), for files the agent doesn't see. Needs SHA-1
     as an extra hash on the roots that hold the library's originals. *Done when:* a test matches by SHA-1 and reports
     the library's files that no root holds.

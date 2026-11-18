@@ -6,10 +6,11 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 6                 # the newest entry in RELEASES.toml (cut or being prepared)
-PROTOCOL = 3                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
+RELEASE = 7                 # the newest entry in RELEASES.toml (cut or being prepared)
+PROTOCOL = 4                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
-                            # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46)
+                            # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46);
+                            # 4: checksum manifests' hint and manifest records (DESIGN.md "Checksum manifests")
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
@@ -28,6 +29,10 @@ BATCH_FIELDS = {
              "resend", "target", "link_root", "link_path", "dangling"),
     "error": ("t", "path", "error"),
     "gone": ("t", "path"),
+    # checksum manifests (DESIGN.md "Checksum manifests"), in a complete scan batch only: a listed file's verdict
+    # (verdict null: none now), and a manifest's counts (none: no longer checked)
+    "hint": ("t", "path", "verdict", "manifest"),
+    "manifest": ("t", "path", "lines", "confirmed", "wrong", "missing", "unchecked", "bad", "outside"),
 }
 
 # Each upgrades/*.sql and a query that is true once it has run (readable by any role: catalog lookups only).
@@ -56,6 +61,8 @@ UPGRADE_PROBES = {
                         "AND attname = 'by_uid' AND NOT attisdropped)",
     "unreported-roots.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.roots') "
                             "AND attname = 'retired_on' AND NOT attisdropped)",
+    "manifests.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
+                     "AND attname = 'manifest_verdict' AND NOT attisdropped)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

@@ -14,7 +14,7 @@ import tarfile
 import time
 import zipfile
 
-from . import chunker, extract, fsinfo, hidden, registry
+from . import chunker, extract, fsinfo, hidden, manifests, registry
 from .outbox import BatchWriter
 
 READ_BLOCK = 1024 * 1024
@@ -603,6 +603,15 @@ class Scanner:
                                    "nothing reported gone. Rerun when it is mounted." % (root.label, top))
             # everything not seen in this scan is gone, except under unreadable folders
             w = ensure_writer()
+            # checksum manifests against this scan's hashes: their records go with the gone ones, in the complete
+            # batch, applied after its moves (manifests.py)
+            why = manifests.waits(self.cfg, self.state)
+            if why is None:
+                recs, summary["manifests"] = manifests.check(root, self.state, scan_id, unreadable, full)
+                for rec in recs:
+                    w.add(rec)
+            else:
+                summary["manifests_wait"] = why
             unseen = self.state.unseen(root.label, scan_id)
             gone = [p for p in unseen
                     if not any(d == "" or p == d or p.startswith(d + "/") for d in unreadable)]

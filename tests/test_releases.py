@@ -216,7 +216,8 @@ archives = true
 chunks = { enabled = true, min_size = "1KiB" }
 """ % {"t": tmp, "top": top})
         files = {"docs/a.txt": b"alpha", ".hidden": b"h", "photo.jpg": jpegs.jpeg(jpegs.camera()),
-                 "big.bin": os.urandom(300_000)}
+                 "big.bin": os.urandom(300_000),
+                 "docs/SHA256SUMS": ("%s  a.txt\n" % hashlib.sha256(b"alpha").hexdigest()).encode()}
         for rel, data in files.items():
             with open(os.path.join(top, rel), "wb") as f:
                 f.write(data)
@@ -240,7 +241,7 @@ chunks = { enabled = true, min_size = "1KiB" }
             seen.setdefault("root_def", set()).update(header["root_def"])
             for r in recs:
                 seen.setdefault("file" if r["t"] == "symlink" else r["t"], set()).update(r)
-        self.assertEqual(set(seen), {"header", "root_def", "file", "error", "gone"})
+        self.assertEqual(set(seen), {"header", "root_def", "file", "error", "gone", "hint", "manifest"})
         for kind, keys in seen.items():
             self.assertEqual(keys - set(compat.BATCH_FIELDS[kind]), set(), "%s fields not in compat.BATCH_FIELDS"
                              % kind)

@@ -35,6 +35,7 @@ path = "/mnt/store"
 kind = "primary"
 archives = true                        # list zip and tar members
 metadata = true                        # extract every schema that applies (the default); false, or a list: ["exif"]
+manifests = true                       # check SHA256SUMS and *.sha256 files against the scan's hashes (the default)
 exclude = ["**/lost+found", "**/.Trash-*"]
 managed = ["move", "rename", "write-sidecar", "trash"]   # what approved operations may do here; [] for none
 

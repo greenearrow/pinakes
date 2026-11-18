@@ -461,6 +461,10 @@ def create_app(cfg, connect=None):
     def api_backed_up():
         return {"rows": queries.backed_up(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
 
+    @api("manifests")
+    def api_manifests():
+        return {"rows": queries.manifests(g.db, request.args.get("loc") or None, *lim())}
+
     @api("dupes")
     def api_dupes():
         return {"rows": queries.dupes(g.db, *lim())}
@@ -630,7 +634,7 @@ def create_app(cfg, connect=None):
         rows, error, ch, links = [], None, None, []
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
                           "changes": queries.CHANGES_SORT, "restore": queries.RESTORE_SORT,
-                          "only-here": queries.COPY_SORT,
+                          "only-here": queries.COPY_SORT, "manifests": queries.MANIFEST_SORT,
                           "safe-to-delete": queries.COPY_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
         try:
@@ -660,12 +664,15 @@ def create_app(cfg, connect=None):
                                                                       loc=loc or None, review="unreviewed"))
             elif name == "restore":
                 rows = queries.restores(g.db, loc or None, bool(request.args.get("back")), *lim, **pg.order)
+            elif name == "manifests":
+                rows = queries.manifests(g.db, loc or None, *lim, **pg.order)
             elif name not in ("only-here", "safe-to-delete", "backed-up"):
                 abort(404)
         except ValueError as e:
             error = str(e)
         pg.done(rows)
-        audit_shown([r["file_id"] for r in rows + links if r.get("file_id")], "report %s %s" % (name, loc))
+        audit_shown([r["file_id"] for r in rows + links if r.get("file_id")]
+                    + [r["manifest_id"] for r in rows if r.get("manifest_id")], "report %s %s" % (name, loc))
         return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
                                kinds=queries.KINDS, links=links, links_total=queries.page_total(links))
 
