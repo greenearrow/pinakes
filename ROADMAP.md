@@ -30,7 +30,21 @@ machines) or *operability* (installing and running it); "also" names a second.
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (1, 2, 4, 5 and 28 to 31 are built and 3 dropped: REARVIEW.md):
 
-Nothing is left here: no known item blocks adding a machine. New ones from a deployment go in this section.
+No known item blocks adding a machine. New ones from a deployment go in this section. Left:
+
+51. [Operability; also stability] **The agent reports its own runs to a push monitor.** A site that watches its
+    machines with a push-style uptime monitor (a URL the job calls when it finishes) has to wrap the agent's unit
+    in a drop-in and a small script that calls it, one copy per kind of host (a system unit, a user unit). Built
+    into the agent instead: an optional `[monitor]` setting in `agent.toml` (a file holding the push URL, never the
+    URL itself in the config), the agent calling it at the end of every `run` (up with a short summary: files seen,
+    batches sent, the outbox left; down with the failure), a run started by hand reporting too, and a failed report
+    never failing the scan or reaching a log with the URL in it. Sits next to: the agent's `status` and `check`
+    commands (what it already knows at the end of a run); `/health` on the server (it sees a stale host only after
+    its `expected_every`, and never a host set to `never`). Value: medium (a failed run alerts at once, desktops
+    included). Cost: S. Risk: none beyond a new outbound call, off unless configured. *Done when:* tests with a
+    local test server show an up call after a good run and a down call with the reason after a failed one, nothing
+    sent with no setting or no file, a dead server leaving the exit status at 0, and the URL absent from the log,
+    argv and the config; and a run on a real tree (read-only) reaches a real push monitor.
 
 ## The web UI, read-write
 
