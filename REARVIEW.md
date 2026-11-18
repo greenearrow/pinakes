@@ -436,7 +436,9 @@ on Python 3.12 (x86-64 desktop; `tests/test_server.py` `TestUnreportedRoots`
 on generated trees: a two-root machine replaced by a one-root one under the same name, its left-out root's file still
 counted until retired, `/health`, `pinakes releases`' query and `totals`, a batch without `roots`, a root named again,
 retire-root and its dry run, a malformed list refused, no root label in `/health` or `releases`, the upgrade against
-the schema). Not run on a real tree; not deployed.
+the schema). Not run on a real tree; not deployed. Fixed after release 6: `totals` printed `unreported_since` as the
+session's local date, a day off from UTC's for part of every day; it prints the UTC date now, as the catalog's other
+dates are (a test with the session in New York, 02:00 UTC; Python 3.12, PostgreSQL 16.15).
 
 ## 48. A fast home page on a large catalog, (a) and (b)
 

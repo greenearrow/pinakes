@@ -1432,11 +1432,11 @@ class TestUnreportedRoots(ServerCase):
         self.assertNotIn("media", json.dumps(versions, default=str))    # pinakes releases: the same
         return code, body["status"], h["roots_unreported"], versions["roots_unreported"]
 
-    def totals(self):
+    def totals(self, dsn_extra=""):
         conf = os.path.join(self.tmp, "server.toml")
         with open(conf, "w") as f:
-            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s'
-                    % (PGHOST, self.db, self.server_toml))
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s%s"\n%s'
+                    % (PGHOST, self.db, dsn_extra, self.server_toml))
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(ingest_main(["--config", conf, "totals"]), 0)
@@ -1479,6 +1479,17 @@ class TestUnreportedRoots(ServerCase):
         self.run_scan(st, cfg)                                          # still not named: still retired
         self.assertEqual(self.report(), (200, "ok", 0, 0))
         self.assertNotIn("NOT REPORTED", self.totals()[1])
+
+    def test_totals_dates_are_utc_whatever_the_session_time_zone(self):
+        # 02:00 UTC on the 2nd is still the 1st in New York: totals says the UTC date, as queries.today() does
+        self.run_scan(*self.machine("old", ["store", "media"]))
+        st, cfg = self.machine("new", ["store"])
+        from pinakes import agent
+        agent.follow(cfg, self.q("SELECT last_seq FROM pinakes.hosts WHERE name = 'server-1'")[0][0])
+        self.run_scan(st, cfg)
+        self.conn.execute("UPDATE pinakes.roots SET unreported_since = '2026-01-02 02:00+00' WHERE label = 'media'")
+        _, out = self.totals(" options='-c timezone=America/New_York'")
+        self.assertIn("NOT REPORTED by server-1 since 2026-01-02:", out)
 
     def test_a_dry_run_retires_nothing(self):
         self.run_scan(*self.machine("old", ["store", "media"]))

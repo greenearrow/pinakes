@@ -509,11 +509,11 @@ class Ingester:
     def totals(self):
         """(host, root, files, bytes, pending, unreported_since) per root: present files, every owner's. Pending
         counts files new in an unfinished scan, so it should be 0 when comparing with the agent's check;
-        unreported_since, when its host's batches stopped naming it (ROADMAP 46), None if they do or it was
-        retired."""
+        unreported_since, the UTC date its host's batches stopped naming it (ROADMAP 46), None if they do or it
+        was retired: the catalog's dates are UTC dates (queries.today()), whatever the session's time zone."""
         return self.conn.execute(
             "SELECT h.name, r.label, count(f.file_id), coalesce(sum(f.size), 0), count(f.pending_scan), "
-            "CASE WHEN r.retired_on IS NULL THEN r.unreported_since END "
+            "CASE WHEN r.retired_on IS NULL THEN (r.unreported_since AT TIME ZONE 'UTC')::date END "
             "FROM pinakes.roots r JOIN pinakes.hosts h USING (host_id) "
             "LEFT JOIN pinakes.files f ON f.root_id = r.root_id AND f.gone_on IS NULL "
             "GROUP BY 1, 2, 6 ORDER BY 1, 2").fetchall()
