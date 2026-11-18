@@ -336,6 +336,28 @@ CREATE INDEX metadata_content ON metadata (content_id, schema);
 CREATE INDEX metadata_file ON metadata (file_id, schema);
 CREATE INDEX metadata_vals ON metadata USING gin (vals jsonb_path_ops);
 
+-- What each extractor made of a content (ROADMAP 44), as the latest agent of protocol 4 to read it said: values
+-- found, nothing found, refused (a reason code: extract.REFUSALS) or skipped there (extract.SKIPS); never an error's
+-- text. As the metadata, the content's, true of every copy. Found values that are all sensitive fields are kept as a
+-- second row, sensitive, with the first saying nothing: whoever may not see them reads "nothing", as they would of
+-- a content without any (extraction_outcomes picks the row each person sees).
+CREATE TABLE extractions (
+    content_id  bigint NOT NULL REFERENCES contents ON DELETE CASCADE,
+    schema      text NOT NULL,
+    sensitive   boolean NOT NULL DEFAULT false,
+    outcome     text NOT NULL CHECK (outcome IN ('found', 'nothing', 'refused', 'skipped')),
+    reason      text,
+    version     int NOT NULL,                            -- the schema's version the agent ran (or would have)
+    sent_by     int REFERENCES hosts ON DELETE SET NULL,
+    at          timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (content_id, schema, sensitive),
+    CHECK (CASE outcome
+           WHEN 'refused' THEN reason IN ('truncated', 'wrong_type', 'malformed', 'bad_values', 'unreadable', 'failed')
+           WHEN 'skipped' THEN reason IN ('dependency', 'broken')
+           ELSE reason IS NULL END),
+    CHECK (NOT sensitive OR outcome = 'found')
+);
+
 -- A review of a change (ROADMAP 32): a gone file, a move, or what the scrub found (ROADMAP 41), marked intended, or
 -- to restore. Written only through mark_changes(); a later change is a new history row, unreviewed. A group token's
 -- mark is the group's (ROADMAP 38).
@@ -752,6 +774,12 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pinakes AS $$
           AND ag.group_id = current_group() AND ag.role IN ('owner', 'co-owner'))
 $$;
 
+-- Each content's outcome per schema as the current person sees it: the sensitive row where they may see it, else the
+-- other (row-level security on extractions decides which they see).
+CREATE VIEW extraction_outcomes WITH (security_invoker = true) AS
+    SELECT DISTINCT ON (content_id, schema) content_id, schema, outcome, reason, version, at
+    FROM extractions ORDER BY content_id, schema, sensitive DESC;
+
 -- row-level security ------------------------------------------------------------------------------------------
 
 ALTER TABLE files ENABLE ROW LEVEL SECURITY;
@@ -792,6 +820,11 @@ CREATE POLICY metadata_visible ON metadata FOR SELECT USING (
      OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.content_id = metadata.content_id)))
     AND (NOT sensitive OR sensitive_visible(content_id, file_id)));
 
+ALTER TABLE extractions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY extractions_visible ON extractions FOR SELECT USING (
+    EXISTS (SELECT 1 FROM files f WHERE f.content_id = extractions.content_id)
+    AND (NOT sensitive OR sensitive_visible(content_id, NULL)));
+
 ALTER TABLE review_marks ENABLE ROW LEVEL SECURITY;
 CREATE POLICY review_marks_visible ON review_marks FOR SELECT USING (
     EXISTS (SELECT 1 FROM history h WHERE h.history_id = review_marks.history_id));
@@ -819,6 +852,7 @@ GRANT SELECT ON groups TO pinakes_app;
 GRANT EXECUTE ON FUNCTION current_person(), has_role(text), stepped_up(), visible_acls(), begin_step_up(text, int),
                           end_step_up(), audit_view(int[], jsonb), login_material(text), my_totp_secret(),
                           set_my_password(text), set_my_totp(text), my_roles() TO pinakes_app;
+GRANT SELECT ON extractions, extraction_outcomes TO pinakes_app;   -- under row-level security (ROADMAP 44)
 GRANT SELECT ON review_marks TO pinakes_app;              -- written only through mark_changes()
 GRANT EXECUTE ON FUNCTION mark_changes(bigint[], text) TO pinakes_app;
 GRANT EXECUTE ON FUNCTION sensitive_visible(bigint, bigint) TO pinakes_app;

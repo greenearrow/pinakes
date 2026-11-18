@@ -11,6 +11,9 @@
   pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
                                                       with pinakes-agent check; a root its host's batches no longer
                                                       name is marked NOT REPORTED, with the retire-root to run
+  pinakes-ingest --config server.toml extractions     per schema, how many contents (and their files) each extractor
+                                                      found values in, found nothing in, refused and why, or was
+                                                      skipped for, every owner's (no names: ROADMAP 44)
   pinakes-ingest --config server.toml retire-root LABEL [--dry-run]   every present file of a root its host no longer
                                                       reports goes (a machine taken over, a root dropped)
   pinakes-ingest --config server.toml --host NAME hello   an agent's check-in: its release and protocol as JSON on
@@ -460,18 +463,31 @@ class Ingester:
             why = None
             if s is None or s.extractor is None:
                 why = "no schema with an extractor"
-            elif not isinstance(e, dict) or not set(e) <= {"v", "vals", "error"}:
-                why = "not {v, vals} or {v, error}"
+            elif (not isinstance(e, dict) or "v" not in e
+                  or len(set(e) & {"vals", "error", "refused", "skipped"}) != 1 or len(e) != 2):
+                why = "not {v, vals}, {v, refused}, {v, skipped} or {v, error}"
             elif isinstance(e.get("v"), bool) or not isinstance(e.get("v"), int) or not 1 <= e["v"] <= s.version:
                 why = "version %r; the catalog has %d" % (e.get("v"), s.version)
+            elif "refused" in e and e["refused"] not in extract.REFUSALS:
+                why = "refused for %r, not one of extract.REFUSALS" % (e["refused"],)
+            elif "skipped" in e and e["skipped"] not in extract.SKIPS:
+                why = "skipped for %r, not one of extract.SKIPS" % (e["skipped"],)
             if why is None and "vals" in e:
                 vals, problems = extract.check_vals(s, e["vals"])
                 why = "; ".join(problems) or None
             if why:
                 self.dropped.append((relpath, name, why))
                 continue
+            if "refused" in e:
+                self._outcome(ctx, content_id, name, e["v"], "refused", e["refused"])
+            elif "skipped" in e:
+                self._outcome(ctx, content_id, name, e["v"], "skipped", e["skipped"])
+            elif "vals" in e:
+                self._outcome(ctx, content_id, name, e["v"], "found" if vals else "nothing", None,
+                              bool(vals) and all(s.fields[k].sensitive for k in vals))
+            # an agent before protocol 4 sends {v, error}: its text is not kept, nor taken as an outcome
             if "vals" not in e or not vals:
-                continue                            # the extractor failed or found nothing: what is known stays
+                continue                            # the extractor refused it or found nothing: what is known stays
             old = self.one("SELECT max(version) FROM pinakes.metadata WHERE content_id = %s AND schema = %s "
                            "AND source = 'embedded'", (content_id, name))[0]
             if old is not None and old >= e["v"]:
@@ -484,6 +500,34 @@ class Ingester:
                     self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source, version, sent_by, "
                            "sensitive) VALUES (%s, %s, %s, 'embedded', %s, %s, %s)",
                            (content_id, name, json.dumps(part, sort_keys=True), e["v"], ctx["host_id"], sensitive))
+
+    def _outcome(self, ctx, content_id, name, version, outcome, reason, sensitive_only=False):
+        """Keep what an extractor made of a content (ROADMAP 44): the latest report at the schema's newest version
+        reported, except that a skip never replaces a run (another agent read it). Values found that are all
+        sensitive fields: a sensitive row "found", and the other row "nothing", so whoever may not see them reads
+        what they would of a content without any."""
+        old = self.one("SELECT version, outcome FROM pinakes.extractions WHERE content_id = %s AND schema = %s "
+                       "AND NOT sensitive", (content_id, name))
+        if old is not None and (version < old[0] or (outcome == "skipped" and old[1] != "skipped")):
+            return
+        self.q("DELETE FROM pinakes.extractions WHERE content_id = %s AND schema = %s", (content_id, name))
+        rows = [(False, "nothing" if sensitive_only else outcome)] + ([(True, outcome)] if sensitive_only else [])
+        for sensitive, out in rows:
+            self.q("INSERT INTO pinakes.extractions (content_id, schema, sensitive, outcome, reason, version, "
+                   "sent_by) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                   (content_id, name, sensitive, out, reason, version, ctx["host_id"]))
+
+    def extraction_counts(self):
+        """(schema, outcome, reason, contents, files) over the whole catalog, every owner's, no names: for the
+        operator (pinakes-ingest extractions; the operator page, ROADMAP 10, when there is one). A content counts
+        once per schema, by its outcome as its owners see it; files, its present copies."""
+        return self.conn.execute(
+            "SELECT e.schema, e.outcome, e.reason, count(*), "
+            "coalesce(sum((SELECT count(*) FROM pinakes.files f WHERE f.content_id = e.content_id "
+            "AND f.gone_on IS NULL)), 0) "
+            "FROM (SELECT DISTINCT ON (content_id, schema) * FROM pinakes.extractions "
+            "      ORDER BY content_id, schema, sensitive DESC) e "
+            "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3 NULLS FIRST").fetchall()
 
     def _backup_source(self, root, relpath):
         """(source root_id, source relpath, snapshot date) of a path in a backup root, by its layout."""
@@ -881,6 +925,7 @@ class Ingester:
             self.q("DELETE FROM pinakes.members WHERE archive_content_id = %s", (content_id,))
             self.q("DELETE FROM pinakes.metadata WHERE content_id = %s AND source IN ('embedded', 'derived')",
                    (content_id,))
+            self.q("DELETE FROM pinakes.extractions WHERE content_id = %s", (content_id,))
         elif rec.get("members") and content_id and not root["protected"]:
             self._members(content_id, rec["members"])
         if rec.get("meta") is not None and content_id:
@@ -1456,7 +1501,7 @@ def main(argv=None):
     ap.add_argument("--config", required=True)
     ap.add_argument("--host", help="the host whose key this is (set by the forced command)")
     ap.add_argument("cmd", nargs="?", choices=("setup", "inbox", "passwd", "recompute", "tidy", "totals", "hello",
-                                              "retire-root"))
+                                              "retire-root", "extractions"))
     ap.add_argument("dir", nargs="?")
     ap.add_argument("--dry-run", action="store_true",
                     help="tidy, retire-root: count what would change, change nothing")
@@ -1534,6 +1579,11 @@ def main(argv=None):
                     "; NOT REPORTED by %s since %s: if it has no such root any more (a machine replaced, a root "
                     "dropped), its files still count as copies until pinakes-ingest retire-root %s"
                     % (host, unreported.strftime("%Y-%m-%d"), label) if unreported else ""))
+            return 0
+        if args.cmd == "extractions":
+            for schema, outcome, reason, contents, files in ing.extraction_counts():
+                print("%s: %s%s: %d content(s), %d file(s)" % (
+                    schema, outcome, " (%s)" % reason if reason else "", contents, files))
             return 0
         if args.cmd == "retire-root":
             if not args.dir:

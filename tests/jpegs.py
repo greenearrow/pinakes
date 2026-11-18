@@ -135,3 +135,20 @@ XMP_EXPECTED = {"title": "Title-1", "description": "Description-1", "creator": [
 def tagged(xmp=XMP_ATTRIBUTES):
     """A photo with both EXIF and XMP."""
     return jpeg(tiff([(0x010F, ASCII, "Maker-1")]), xmp=xmp)
+
+
+GPS_IFD = [(1, ASCII, "N"), (2, RATIONAL, [(47, 1), (30, 1), (0, 1)]),
+           (3, ASCII, "W"), (4, RATIONAL, [(8, 1), (15, 1), (36, 1)])]
+
+
+def bare(exif_tiff=None):
+    """A JPEG with no frame header, and no EXIF unless given: nothing for the EXIF reader but what exif_tiff holds."""
+    out = b"\xff\xd8" + segment(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0")
+    if exif_tiff is not None:
+        out += segment(0xE1, b"Exif\0\0" + exif_tiff)
+    return out + segment(0xDA, bytes([1, 1, 0, 0, 63, 0])) + b"\x00" * 16 + b"\xff\xd9"
+
+
+def gps_only():
+    """A JPEG whose only EXIF is its GPS position: every value found a sensitive one."""
+    return bare(tiff([], [], GPS_IFD))

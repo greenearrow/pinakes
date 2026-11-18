@@ -339,6 +339,26 @@ were made while building, to keep going, and are open to change.
 - **MIME types by name, from the standard library's own table** (`mimetypes.MimeTypes(filenames=())`), not the
   machine's `/etc/mime.types`, so the same files get the same extractors on every machine. An extractor checks the
   bytes itself (a `.jpg` that isn't a JPEG is an error entry).
+- **What each extractor made of a file is kept, as a reason code (ROADMAP 44).** The first real run left 717 JPEGs
+  with no EXIF row and no way to tell why: the agent sent a failure's text and the ingester dropped it. Now the
+  agent sends, to a server of protocol 4, one of four outcomes per schema (found, nothing, refused, skipped) and, for
+  the last two, a code from a fixed list (`extract.REFUSALS`, `extract.SKIPS`, checked again by the ingester and by
+  the table's CHECK), never the text: an exception's message can quote the file's bytes. The catalog keeps the
+  latest report per content and schema (`extractions`) at the newest version reported, except that a skip never
+  replaces a run (another machine without the package says nothing about the bytes); a refusal leaves the values
+  already known in place, as a failure always did. An older agent's `error` is not taken as an outcome.
+- **A JPEG that ends before its image data is refused as truncated,** where the reader used to keep what it had
+  read: a cut-short file returning its first segments' values, or nothing, looked like a photo without EXIF, which
+  is the question 44 is there to answer. Its values from an earlier reading stay, at the same version.
+- **Outcomes hide sensitive-only values as metadata does.** "Found" on a photo whose only values are its GPS would
+  tell a reader there is a position they can't see. Such an outcome is two rows, as its values are: a sensitive
+  one, "found", for those `sensitive_visible()` lets see it, and the other, "nothing"; `extraction_outcomes`
+  shows each person one, so a reader sees what they would of a photo without any. The operator's counts take the
+  true one, without names.
+- **Every photo is read once more when outcomes start.** The agent's `meta_v` takes another form once its server
+  is at protocol 4 (`[2, {"exif": 2}]`), so what was read before is read again, headers only and without rehashing,
+  and its outcomes sent; until then nothing changes, so either side may be updated first. The alternative,
+  outcomes only for files read from now on, would never answer for the 717.
 - **A requirement is checked by its installed distribution's version** (`importlib.metadata`), `>=` only; any other
   specifier counts as not met. A missing one turns that extractor off (`Extractors.off` says why), not the scan.
 - **Metadata on a file's page, and find by common fields** (ROADMAP 16, showing it). The page lists each schema's

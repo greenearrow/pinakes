@@ -31,6 +31,11 @@
 </table></div>
 {% else %}<p class="muted">None recorded.{% if f.root_protected or f.protected_link %} Nothing is read from a protected file.{% endif %}</p>
 {% endfor %}
+{% set why = {"truncated": "the file ends early", "wrong_type": "not the format its name says",
+               "malformed": "its format is broken", "bad_values": "values the schema doesn't allow",
+               "unreadable": "a read error", "failed": "the extractor failed",
+               "dependency": "a package it needs isn't installed there", "broken": "it didn't load there"} %}
+{% if extractions %}<p class="muted">Read by: {% for e in extractions %}{{ e.title }} <span class="tag">v{{ e.version }}</span> {% if e.outcome == 'found' %}values found{% elif e.outcome == 'nothing' %}nothing found{% elif e.outcome == 'refused' %}<span class="error">refused: {{ why.get(e.reason, e.reason) }}</span>{% else %}not run: {{ why.get(e.reason, e.reason) }}{% endif %} {{ e.at.date() }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
 {% if sensitive_hidden %}<p class="muted notice">Sensitive fields ({{ sensitive_hidden|join(', ') }}) are shown only to the owners and co-owners of a copy.</p>{% endif %}
 
 <h2>Every copy</h2>

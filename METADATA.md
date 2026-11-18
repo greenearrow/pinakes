@@ -104,7 +104,14 @@ fields. The agent sends them on the file's record (batch format 2):
  "meta": {"exif": {"v": 1, "vals": {"make": "Maker-1", "taken": "2019-06-01T10:30:00Z"}}}}
 ```
 
-or `{"v": 1, "error": "..."}` when it failed. A root's `metadata` (agent config) is `true` (the default: every
+or, sent to a server of protocol 4 or later (release 7), what else the extractor made of it: `{"v": 1, "vals": {}}`
+when it found nothing, `{"v": 1, "refused": "truncated"}` when it refused the file, with a reason code
+(`truncated`, `wrong_type`, `malformed`, `bad_values`, `unreadable`, `failed`), and `{"v": 1, "skipped":
+"dependency"}` (or `"broken"`) for an extractor that applies but is off on that machine. A code, never the error's
+text, which can quote the file; an older server gets `{"v": 1, "error": "..."}` as before and keeps none of it. The
+catalog keeps one outcome per content and schema (`extractions`, ROADMAP 44), so "has no EXIF" is told from "the
+reader refused it": the file's page says what each extractor made of it, and `pinakes-ingest extractions` counts
+them, every owner's, without names. A root's `metadata` (agent config) is `true` (the default: every
 extractor that applies), `false`, or a list of schema names. The agent remembers which versions it read for each
 file and reads a file again only when its content or a schema's version changes. The ingester checks every value
 against the registry and keeps it on the content, the sensitive fields in a row of their own that only the owners

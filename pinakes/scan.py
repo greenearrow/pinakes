@@ -241,6 +241,7 @@ class Scanner:
         self.progress = progress  # callable(str), e.g. print; None: quiet
         self._protected = None
         self._root_devs = {}
+        self.outcomes = True      # set by each scan: whether its server keeps extraction outcomes (protocol 4)
 
     def _header(self, root, scan_id, started):
         return {"host": self.cfg.host, "root": root.label, "scan": scan_id,
@@ -369,10 +370,18 @@ class Scanner:
 
     def _wanted(self, root, relpath, t, protected_link, sha256):
         """{schema: version} to extract from this file: none on a protected root or a protected link, none for a
-        symlink or a file not hashed (there is no content to attach them to)."""
+        symlink or a file not hashed (there is no content to attach them to). With outcomes, those off here too, as
+        version 0, so their skip is said."""
         if root.protected or protected_link or t != "file" or not sha256:
             return {}
-        return self.extractors.wanted(root.metadata, relpath)
+        return self.extractors.wanted(root.metadata, relpath, skipped=self.outcomes)
+
+    def _want(self, wanted):
+        """The state's meta_v for these: {"exif": 2} as JSON, or with outcomes [2, {"exif": 2}], so that what
+        was read before outcomes is read once more and its outcomes sent (ROADMAP 44)."""
+        if not wanted:
+            return None
+        return json.dumps([2, wanted] if self.outcomes else wanted, sort_keys=True)
 
     def _from_state(self, prev, relpath):
         """A file's record rebuilt from its state row, as last sent."""
@@ -395,7 +404,7 @@ class Scanner:
         rec, keep = self._record_file(root, relpath, abspath, prev, seen_inodes)
         if rec == "unchanged":
             wanted = self._wanted(root, relpath, prev["t"], prev["protected_link"], prev["sha256"])
-            want = json.dumps(wanted, sort_keys=True) if wanted else None
+            want = self._want(wanted)
             if prev["meta_v"] == want and not (full and wanted):
                 return None, None
             rec = keep = self._from_state(prev, relpath)   # only the metadata is new
@@ -403,14 +412,14 @@ class Scanner:
             return rec, keep
         else:
             wanted = self._wanted(root, relpath, rec["t"], rec.get("protected_link"), rec.get("sha256"))
-            want = json.dumps(wanted, sort_keys=True) if wanted else None
+            want = self._want(wanted)
         keep = dict(keep, meta_v=want)
         if not wanted:
             return rec, keep
         if not full and ((prev is not None and prev["sha256"] == rec["sha256"] and prev["meta_v"] == want)
                          or self.state.extracted(rec["sha256"], want)):
             return rec, keep             # this content's metadata, at these versions, is already sent
-        meta = self.extractors.run(abspath, wanted)
+        meta = self.extractors.run(abspath, wanted, outcomes=self.outcomes)
         self.counter["extracted"] = self.counter.get("extracted", 0) + 1
         try:
             after = fsinfo.info(abspath)
@@ -521,6 +530,10 @@ class Scanner:
         scan_id, started, resumed = self.state.open_scan(root.label, full)
         summary = {"root": root.label, "scan": scan_id, "resumed": resumed, "sent": 0, "gone": 0,
                    "errors": 0, "batches": 0}
+        why = extract.waits(self.cfg, self.state)   # extraction outcomes only to a server that keeps them
+        self.outcomes = why is None
+        if why:
+            summary["outcomes_wait"] = why
         self._protected = None  # walked when first needed: see _protecting_root
         self.hidden = hidden.Hidden(top)   # each folder's hidden attribute read once in this scan
         seen_inodes = {}

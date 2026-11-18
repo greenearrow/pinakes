@@ -2536,6 +2536,9 @@ class TestExtracted(ServerCase):
                       "WHERE f.file_id = metadata.file_id))"
                       " OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM pinakes.files f "
                       "WHERE f.content_id = metadata.content_id)))")
+            # extraction outcomes (extractions.sql, release 7) came after, and their policy calls the function
+            c.execute("DROP VIEW pinakes.extraction_outcomes")
+            c.execute("DROP TABLE pinakes.extractions")
             c.execute("DROP FUNCTION pinakes.sensitive_visible(bigint, bigint)")
             c.execute("ALTER TABLE pinakes.metadata DROP COLUMN version, DROP COLUMN sent_by, DROP COLUMN sensitive")
             for name in ("metadata-extracted.sql", "metadata-sensitive.sql"):
@@ -2548,6 +2551,153 @@ class TestExtracted(ServerCase):
             c.execute("SET search_path = pinakes")
             c.execute(later.group(0))
             c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+
+
+class TestExtractionOutcomes(ServerCase):
+    """What each extractor made of a file, kept (ROADMAP 44): found, nothing, refused with a reason code, skipped;
+    counted for the operator without names, and seen by a person only on what they may see."""
+
+    def outcomes(self, c=None):
+        """{(relpath, schema): (outcome, reason)} over the present files this connection sees."""
+        c = c or self.conn
+        return {(r[0], r[1]): (r[2], r[3]) for r in c.execute(
+            "SELECT f.relpath, e.schema, e.outcome, e.reason FROM pinakes.present f "
+            "JOIN pinakes.extraction_outcomes e ON e.content_id = f.content_id")}
+
+    def batch(self, meta, path="a.jpg", seq=1):
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": seq, "seq": seq,
+                  "started": "2024-01-01T00:00:00Z", "root_def": {"path": "/mnt/store", "kind": "primary"}}
+        rec = {"t": "file", "path": path, "size": 10, "mtime_ns": 1700000000000000000 + seq,
+               "ctime_ns": 1700000000000000000, "dev": 1, "ino": 1, "nlink": 1, "uid": 1000,
+               "sha256": hashlib.sha256(path.encode()).hexdigest(), "meta": meta}
+        return self.ing.apply(header, [rec], "server-1")
+
+    def test_a_truncated_photo_refused_one_without_metadata_nothing_and_the_counts(self):
+        photo = jpegs.camera()
+        self.write("server-1", "store", "people/user-1/good.jpg", photo)
+        self.write("server-1", "store", "people/user-1/copy.jpg", photo)
+        self.write("server-1", "store", "people/user-1/cut.jpg", photo[:300])
+        self.write("server-1", "store", "people/user-1/bare.jpg", jpegs.bare())
+        self.write("server-1", "store", "people/user-1/png.jpg", b"\x89PNG\r\n\x1a\n" + b"\0" * 40)
+        self.write("server-1", "store", "people/user-1/notes.txt", b"not an image")
+        self.scan("server-1", "store")
+        got = self.outcomes()
+        self.assertEqual({k: v for k, v in got.items() if k[1] == "exif"},
+                         {("people/user-1/good.jpg", "exif"): ("found", None),
+                          ("people/user-1/copy.jpg", "exif"): ("found", None),
+                          ("people/user-1/cut.jpg", "exif"): ("refused", "truncated"),
+                          ("people/user-1/bare.jpg", "exif"): ("nothing", None),
+                          ("people/user-1/png.jpg", "exif"): ("refused", "wrong_type")})
+        self.assertEqual(got[("people/user-1/bare.jpg", "xmp")], ("nothing", None))
+        self.assertNotIn(("people/user-1/notes.txt", "exif"), got)          # no extractor applies
+        self.assertEqual([r for r in self.ing.extraction_counts() if r[0] == "exif"],
+                         [("exif", "found", None, 1, 2),                    # one content, two files
+                          ("exif", "nothing", None, 1, 1),
+                          ("exif", "refused", "truncated", 1, 1),
+                          ("exif", "refused", "wrong_type", 1, 1)])
+        self.assertEqual(self.q("SELECT DISTINCT h.name FROM pinakes.extractions e JOIN pinakes.hosts h "
+                                "ON h.host_id = e.sent_by"), [("server-1",)])
+        conf = os.path.join(self.tmp, "server.toml")
+        with open(conf, "w") as f:
+            f.write('[database]\ndsn = "host=%s user=pinakes_ingest dbname=%s"\n%s' % (PGHOST, self.db, SERVER))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(ingest_main(["--config", conf, "extractions"]), 0)
+        self.assertIn("exif: refused (truncated): 1 content(s), 1 file(s)", out.getvalue())
+        self.assertIn("exif: found: 1 content(s), 2 file(s)", out.getvalue())
+        self.assertNotIn(".jpg", out.getvalue())                            # counts, no names
+
+    def test_seen_only_on_files_one_may_see_and_all_sensitive_values_read_as_nothing(self):
+        self.write("server-1", "store", "people/user-1/mine.jpg", jpegs.camera(make="Maker-1"))
+        self.write("server-1", "store", "people/user-1/cut.jpg", jpegs.camera()[:300])
+        self.write("server-1", "store", "people/user-1/shared-with-2/where.jpg", jpegs.gps_only())
+        self.write("server-1", "store", "people/user-1/shared-with-2/camera.jpg", jpegs.camera(make="Maker-2"))
+        self.scan("server-1", "store")
+        with self.as_person("user-1") as c:
+            mine = self.outcomes(c)
+        self.assertEqual(mine[("people/user-1/shared-with-2/where.jpg", "exif")], ("found", None))   # the owner
+        self.assertEqual(mine[("people/user-1/cut.jpg", "exif")], ("refused", "truncated"))
+        with self.as_person("user-2") as c:
+            hers = self.outcomes(c)
+            raw = c.execute("SELECT count(*) FROM pinakes.extractions WHERE sensitive").fetchone()[0]
+        self.assertEqual({k[0] for k in hers}, {"people/user-1/shared-with-2/where.jpg",
+                                                "people/user-1/shared-with-2/camera.jpg"})   # only the shared
+        self.assertEqual(hers[("people/user-1/shared-with-2/where.jpg", "exif")], ("nothing", None))  # as a reader
+        self.assertEqual(hers[("people/user-1/shared-with-2/camera.jpg", "exif")], ("found", None))
+        self.assertEqual(raw, 0)                                            # the sensitive row isn't hers to see
+        self.assertEqual([r for r in self.ing.extraction_counts() if r[0] == "exif" and r[1] == "found"],
+                         [("exif", "found", None, 3, 3)])                   # the operator's count: the truth
+
+    def test_which_report_is_kept(self):
+        self.ing.registry["exif"].version = 2
+        self.batch({"exif": {"v": 2, "vals": {"make": "m"}}})
+        self.batch({"exif": {"v": 2, "skipped": "dependency"}}, seq=2)       # another agent can't run it: still read
+        self.assertEqual(self.outcomes()[("a.jpg", "exif")], ("found", None))
+        self.batch({"exif": {"v": 1, "refused": "malformed"}}, seq=3)        # an older version: kept as it was
+        self.assertEqual(self.outcomes()[("a.jpg", "exif")], ("found", None))
+        self.batch({"exif": {"v": 2, "refused": "truncated"}}, seq=4)        # the latest at this version
+        self.assertEqual(self.outcomes()[("a.jpg", "exif")], ("refused", "truncated"))
+        self.assertEqual(self.q("SELECT vals FROM pinakes.metadata"), [({"make": "m"},)])   # what was known stays
+        self.batch({"exif": {"v": 2, "vals": {}}}, seq=5)
+        self.assertEqual(self.outcomes()[("a.jpg", "exif")], ("nothing", None))
+        self.batch({"exif": {"v": 2, "vals": {"gps": {"lat": 1.0, "lon": 2.0}}}}, seq=6)
+        self.assertEqual(self.q("SELECT sensitive, outcome FROM pinakes.extractions ORDER BY sensitive"),
+                         [(False, "nothing"), (True, "found")])
+        self.batch({"exif": {"v": 2, "error": "BadExif: some text"}}, seq=7)   # an agent before protocol 4
+        self.assertEqual(self.q("SELECT sensitive, outcome FROM pinakes.extractions ORDER BY sensitive"),
+                         [(False, "nothing"), (True, "found")])
+        self.batch({"exif": {"v": 2, "skipped": "broken"}}, path="b.jpg", seq=8)
+        self.assertEqual(self.outcomes()[("b.jpg", "exif")], ("skipped", "broken"))
+        self.assertEqual(self.ing.dropped, [])
+
+    def test_codes_outside_the_lists_and_odd_shapes_left_out(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            for seq, e in enumerate(({"v": 1, "refused": "no such reason"}, {"v": 1, "refused": "a file's text"},
+                                     {"v": 1, "skipped": "tired"}, {"v": 1, "refused": "truncated", "vals": {}},
+                                     {"v": 1, "refused": None}, {"refused": "truncated"}), 1):
+                with self.subTest(entry=e):
+                    self.assertEqual(self.batch({"exif": e}, seq=seq), "applied")
+                    self.assertEqual(len(self.ing.dropped), 1)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.extractions"), [(0,)])
+
+    def test_never_from_a_protected_root_and_a_link_into_one_takes_them(self):
+        self.batch({"exif": {"v": 1, "refused": "truncated"}})
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.extractions"), [(1,)])
+        header = {"t": "batch", "format": 2, "host": "server-1", "root": "store", "scan": 2, "seq": 2,
+                  "started": "2024-01-01T00:00:00Z", "root_def": {"path": "/mnt/store", "kind": "primary"}}
+        rec = {"t": "file", "path": "a.jpg", "size": 10, "mtime_ns": 1700000000000000009, "ctime_ns": 1, "dev": 1,
+               "ino": 1, "nlink": 2, "uid": 1000, "sha256": hashlib.sha256(b"a.jpg").hexdigest(),
+               "protected_link": True}
+        self.ing.apply(header, [rec], "server-1")
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.extractions"), [(0,)])
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name IN ('extractions', 'extraction_outcomes')), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.extractions'::regclass), "
+                "pg_get_viewdef('pinakes.extraction_outcomes'::regclass), "
+                "(SELECT reloptions FROM pg_class WHERE oid = 'pinakes.extraction_outcomes'::regclass), "
+                "(SELECT relrowsecurity FROM pg_class WHERE oid = 'pinakes.extractions'::regclass), "
+                "(SELECT array_agg(polname || ':' || pg_get_expr(polqual, polrelid)) FROM pg_policy "
+                " WHERE polrelid = 'pinakes.extractions'::regclass), "
+                "(SELECT array_agg(table_name || ':' || grantee || ':' || privilege_type "
+                "  ORDER BY table_name, grantee, privilege_type) FROM information_schema.role_table_grants "
+                " WHERE table_schema = 'pinakes' AND table_name IN ('extractions', 'extraction_outcomes')), "
+                "(SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'pinakes' "
+                " AND tablename = 'extractions')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP VIEW pinakes.extraction_outcomes")
+            c.execute("DROP TABLE pinakes.extractions")
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["extractions.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "extractions.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["extractions.sql"]).fetchone()[0])
             self.assertEqual(c.execute(defs).fetchone(), fresh)
 
 

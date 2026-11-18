@@ -30,6 +30,8 @@ history  (history_id, file_id, kind text,                                   -- n
 lineage  (from_file_id, to_file_id, kind text,                              -- copied_from | replaced_by | derived_from
           evidence text, confidence text, decision text)                   -- decision: NULL | confirmed | rejected
 metadata (content_id, file_id, schema text, vals jsonb, source text)        -- one of content_id, file_id is set
+extraction_outcomes (content_id, schema text, outcome text, reason text)  -- found | nothing | refused | skipped:
+                                                                           -- what each extractor made of a content
 
 CREATE VIEW present AS SELECT * FROM files WHERE gone_on IS NULL;
 ```
@@ -313,6 +315,24 @@ JOIN roots r USING (root_id)
 WHERE m.schema = 'exif'
   AND m.vals ->> 'model' = 'Camera-1'               -- an expression index per indexed field serves this
 ORDER BY taken;
+```
+
+## extraction outcomes HOST:PATH
+
+What the extractors made of the files under a folder (METADATA.md "Extraction"): values found, nothing found,
+refused and why, or not run there (an extractor off on that machine). Per content, so as every copy; under row-level
+security, and where the values found are all sensitive fields the person may not see, "nothing", as for a content
+without any. The operator's counts, every owner's and without names, are `pinakes-ingest extractions`.
+
+```sql
+-- extraction outcomes under store:people/user-1/
+SELECT e.schema, e.outcome, e.reason, count(*) AS files
+FROM present f
+JOIN roots r USING (root_id)
+JOIN extraction_outcomes e ON e.content_id = f.content_id
+WHERE r.label = 'store' AND (f.relpath LIKE 'people/user-1/%' OR f.relpath = 'people/user-1')
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3;
 ```
 
 ## stale

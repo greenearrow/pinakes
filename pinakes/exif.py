@@ -9,6 +9,8 @@ is refused, never guessed at.
 import datetime
 import struct
 
+from .extract import Refusal
+
 MAX_HEADER = 1024 * 1024        # bytes of markers read before the image data, at most
 MAX_ENTRIES = 1000              # entries in one IFD
 MAX_VALUE = 64 * 1024           # bytes of one tag's value
@@ -25,19 +27,29 @@ EXPOSURE, FNUMBER, ISO, TAKEN, TAKEN_OFFSET, FOCAL, LENS = 0x829A, 0x829D, 0x882
 LAT_REF, LAT, LON_REF, LON = 1, 2, 3, 4
 
 
-class BadExif(ValueError):
-    pass
+class BadExif(Refusal):
+    reason = "malformed"
+
+
+class NotJpeg(BadExif):
+    reason = "wrong_type"
+
+
+class CutShort(BadExif):
+    """The file ends inside its headers, before the image data (ROADMAP 44): refused, so it can be told from a
+    photo with no EXIF."""
+    reason = "truncated"
 
 
 def segments(f):
-    """(marker, body) of each segment before the image data."""
+    """(marker, body) of each segment before the image data. A file that ends before its image data is cut short."""
     if f.read(2) != b"\xff\xd8":
-        raise BadExif("not a JPEG")
+        raise NotJpeg("not a JPEG")
     read = 2
     while read < MAX_HEADER:
         b = f.read(1)
         if not b:
-            return
+            raise CutShort("ends at byte %d, before the image data" % read)
         if b != b"\xff":
             raise BadExif("no marker at byte %d" % read)
         m = f.read(1)
@@ -46,7 +58,7 @@ def segments(f):
             m = f.read(1)
             read += 1
         if not m:
-            return
+            raise CutShort("ends at byte %d, inside a marker" % read)
         code = m[0]
         if code in (0xD9, 0xDA):                    # end of image, start of scan: no headers after
             return
@@ -54,14 +66,14 @@ def segments(f):
             continue
         n = f.read(2)
         if len(n) < 2:
-            return
+            raise CutShort("ends at byte %d, inside a segment's length" % read)
         n = struct.unpack(">H", n)[0]
         if n < 2:
             raise BadExif("segment length %d at byte %d" % (n, read))
         body = f.read(n - 2)
         read += n
         if len(body) < n - 2:
-            return                                  # cut short: what came before still counts
+            raise CutShort("ends inside a segment of %d bytes at byte %d" % (n, read - n))
         yield code, body
 
 

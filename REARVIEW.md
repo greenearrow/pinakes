@@ -510,3 +510,33 @@ QUERIES.md block; `tests/test_releases.py` with a manifest in its tree. One fail
 `TestUnreportedRoots.test_a_machine_replaced_with_fewer_roots` fails the same on the commit before (`totals` prints
 `unreported_since` in the server's time zone, the test expects UTC's date, so it fails while they differ). Only this
 Python and PostgreSQL; not run on a real tree; not deployed.
+
+## 44. Extraction outcomes kept
+
+Design: METADATA.md "Extraction"; DECISIONS.md "What each extractor made of a file is kept".
+
+**Built:** the agent sends, per file and schema, what the extractor made of it: values (none: nothing found),
+`refused` with a reason code (`extract.REFUSALS`: `truncated`, `wrong_type`, `malformed`, `bad_values`,
+`unreadable`, `failed`), or `skipped` for one that applies and is off there (`extract.SKIPS`: `dependency`,
+`broken`); codes only, never an error's text, and only to a server of protocol 4 (release 7, not cut): to an older
+one, the text as before. The EXIF reader refuses a JPEG that ends before its image data as truncated (`CutShort`),
+where it used to return what it had read, and a file that isn't a JPEG as `wrong_type` (`NotJpeg`). Once the server
+is at protocol 4, the agent's `meta_v` takes the form `[2, {...}]`, so every file read before is read once more
+(headers, no rehash) and its outcomes sent. The ingester checks the codes, keeps the latest report per content and
+schema at the newest version (a skip never replaces a run; a refusal leaves known values), drops them with the rest
+of a protected link's, and keeps found values that are all sensitive as a sensitive row "found" and another
+"nothing" (`extractions`, `extraction_outcomes`; `upgrades/extractions.sql`). Shown on the file page ("Read by"),
+in QUERIES.md "extraction outcomes", and counted for the operator, every owner's and without names, by
+`pinakes-ingest extractions`. The operator page (10) will show the same counts when it exists.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 393 tests, all pass):
+`tests/test_extract.py` (a truncated JPEG refused wherever it ends, a non-JPEG `wrong_type`, codes and no text sent,
+the text to a protocol 3 server and every photo read once more at 4 without rehashing, an extractor missing its
+package said skipped); `tests/test_server.py` `TestExtractionOutcomes` (on real scans of generated JPEGs: truncated
+refused, one with no metadata "nothing", a non-JPEG `wrong_type`, the counts per content and per file, the command's
+output without names; another person sees only the shared files' outcomes, and a reader of a GPS-only photo
+"nothing" while its owner sees "found", checked to fail without the split; which report is kept; codes outside the
+lists left out; a protected link takes them; the upgrade against the schema); `tests/test_web.py` (the file page's
+line, a reader's identical for a GPS-only photo and one with none); `tests/test_queries.py` with the new block;
+`tests/test_releases.py` (the meta entry's fields declared in `compat.BATCH_FIELDS`). Only this Python and
+PostgreSQL; not run on a real tree; not deployed.

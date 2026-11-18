@@ -748,6 +748,25 @@ class TestMetadataPage(ServerCase):
         self.assertNotIn("are shown only to the owners", page)
         self.assertIn("None recorded.", self.page(c, "people/user-2/notes.txt"))
 
+    def test_what_each_extractor_made_of_it(self):
+        # ROADMAP 44: on the page, by reason code; a reader of a photo whose only values are its GPS reads
+        # "nothing found", as of a photo with none, and its owner "values found"
+        self.write("server-1", "store", "people/user-1/cut.jpg", jpegs.camera()[:300])
+        self.write("server-1", "store", "people/user-1/shared-with-2/where.jpg", jpegs.gps_only())
+        self.write("server-1", "store", "people/user-1/shared-with-2/bare.jpg", jpegs.bare())
+        self.scan("server-1", "store")
+        c = self.login("user-1", "correct horse battery")
+        self.assertIn("refused: the file ends early", self.page(c, "people/user-1/cut.jpg"))
+        page = self.page(c, "people/user-1/shared-with-2/where.jpg")
+        self.assertRegex(page, r"EXIF <span class=\"tag\">v2</span> values found")
+        self.assertIn("47.50000", page)
+        c = self.login("user-2", "staple pony 12345")
+        reads = [re.search(r"Read by: .*?\.</p>", self.page(c, "people/user-1/shared-with-2/" + n)).group(0)
+                 for n in ("where.jpg", "bare.jpg")]
+        self.assertRegex(reads[0], r"EXIF <span class=\"tag\">v2</span> nothing found")
+        self.assertEqual(reads[0], reads[1])                                # the same as a photo with none
+        self.assertEqual(c.get("/file/%d" % self.file("store", "people/user-1/cut.jpg")).status_code, 404)
+
     def test_an_administrator_sees_them_only_in_a_step_up_and_the_owner_is_told(self):
         c = self.login("user-1", "correct horse battery")
         hers = self.file("store", "people/user-2/hers.jpg")

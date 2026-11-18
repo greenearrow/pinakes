@@ -100,6 +100,8 @@ def cmd_scan(cfg, args):
                       % (root.label, m["manifests"], m["wrong"], m["missing"]))
             elif s.get("manifests_wait"):
                 print("%s: manifests not checked: %s" % (root.label, s["manifests_wait"]))
+            if s.get("outcomes_wait"):
+                print("%s: extraction outcomes not sent: %s" % (root.label, s["outcomes_wait"]))
         if getattr(args, "check_busy", False) and busy(cfg):
             print("busy: no scrub")
             return rc

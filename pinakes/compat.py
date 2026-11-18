@@ -10,7 +10,8 @@ RELEASE = 7                 # the newest entry in RELEASES.toml (cut or being pr
 PROTOCOL = 4                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
                             # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46);
-                            # 4: checksum manifests' hint and manifest records (DESIGN.md "Checksum manifests")
+                            # 4: checksum manifests' hint and manifest records (DESIGN.md "Checksum manifests"),
+                            # and extraction outcomes in a file's meta (METADATA.md "Extraction", ROADMAP 44)
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
@@ -29,6 +30,9 @@ BATCH_FIELDS = {
              "resend", "target", "link_root", "link_path", "dangling"),
     "error": ("t", "path", "error"),
     "gone": ("t", "path"),
+    # one schema's entry in a file record's meta (METADATA.md "Extraction"): values (none: nothing found), or a
+    # reason code refused or skipped (protocol 4, ROADMAP 44); "error", the text an agent sends a server before 4
+    "meta": ("v", "vals", "refused", "skipped", "error"),
     # checksum manifests (DESIGN.md "Checksum manifests"), in a complete scan batch only: a listed file's verdict
     # (verdict null: none now), and a manifest's counts (none: no longer checked)
     "hint": ("t", "path", "verdict", "manifest"),
@@ -63,6 +67,7 @@ UPGRADE_PROBES = {
                             "AND attname = 'retired_on' AND NOT attisdropped)",
     "manifests.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
                      "AND attname = 'manifest_verdict' AND NOT attisdropped)",
+    "extractions.sql": "to_regclass('pinakes.extractions') IS NOT NULL",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

@@ -53,8 +53,8 @@ Nothing is left here: no known item blocks adding a machine. New ones from a dep
     then XMP sidecars (with 14) and extended XMP, audio tags, OPF, PDF and office properties, video. Each optional by
     its dependency. *Done when, for each:* tests on generated files (made by the test, never real ones) extract the
     declared fields; a missing dependency turns the extractor off, not the scan; nothing runs on a protected root (a
-    test proves it). Left from the first real run: 717 JPEGs without EXIF, not looked into. They may hold none, or a
-    form the reader refuses; the catalog keeps no extraction error, so it can't tell which.
+    test proves it). Left from the first real run: 717 JPEGs without EXIF, not looked into; once release 7's
+    outcomes (44) are in, `pinakes-ingest extractions` says which of them hold none and which the reader refused.
 14. [Feature; also correctness] **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each
     sidecar form, RAW with JPEG, a book folder, and a bundle moved together counting as one move.
 15. [Correctness] **Identity fields for lineage** (PDF `/ID`, XMP `DocumentID`/`InstanceID`/`DerivedFrom`, EPUB
@@ -111,7 +111,8 @@ and works where you are. Agents' batches stay on their forced SSH keys, and serv
 ## Proposed (from a review of the whole project; not yet agreed)
 
 Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started
-(41, the scrub, and 46, a machine replaced under the same name, were agreed and are built: REARVIEW.md).
+(41, the scrub, 46, a machine replaced under the same name, and 44, extraction outcomes, were agreed and are built:
+REARVIEW.md).
 Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
 
 42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
@@ -128,12 +129,6 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     copying. Cost: M (a set comparison that must not be quadratic: compare folder digests built bottom-up). Risk: a
     slow query on a large root; compute it at scan completion, as lineage rounds are. *Done when:* tests cover equal
     folders, a subset, a folder with one edited file (reported with the difference), and empty folders ignored.
-44. [Operability; also correctness] **Extraction outcomes kept.** The first real run left several hundred images
-    with no EXIF and no way to tell "has none" from "the reader refused it" (13). Record per file and extractor:
-    ran, found nothing, refused with a reason code, or skipped for a missing dependency; counts on the operator
-    page. Sits next to: extractors (13), the schema registry (12). Value: medium. Cost: S. Risk: none; reason codes,
-    never file content. *Done when:* a test with a truncated image records a refusal, one without metadata records
-    "nothing", and the counts match.
 45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
     files (paths, hashes, history, metadata, reviews), as CSV or JSON, through the API with the token's `read`
     scope. A catalog that describes people's files should hand them their description. Sits next to: the JSON API

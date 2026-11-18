@@ -241,7 +241,9 @@ chunks = { enabled = true, min_size = "1KiB" }
             seen.setdefault("root_def", set()).update(header["root_def"])
             for r in recs:
                 seen.setdefault("file" if r["t"] == "symlink" else r["t"], set()).update(r)
-        self.assertEqual(set(seen), {"header", "root_def", "file", "error", "gone", "hint", "manifest"})
+                for e in (r.get("meta") or {}).values():
+                    seen.setdefault("meta", set()).update(e)
+        self.assertEqual(set(seen), {"header", "root_def", "file", "error", "gone", "hint", "manifest", "meta"})
         for kind, keys in seen.items():
             self.assertEqual(keys - set(compat.BATCH_FIELDS[kind]), set(), "%s fields not in compat.BATCH_FIELDS"
                              % kind)

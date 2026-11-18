@@ -16,6 +16,7 @@ import re
 import xml.parsers.expat
 
 from . import exif
+from .extract import Refusal
 
 HEADER = b"http://ns.adobe.com/xap/1.0/\0"
 MAX_DEPTH = 32
@@ -31,7 +32,7 @@ IPTC_CORE = "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
 IPTC_EXT = "http://iptc.org/std/Iptc4xmpExt/2008-02-29/"
 
 
-class BadXmp(ValueError):
+class BadXmp(Refusal):
     pass
 
 

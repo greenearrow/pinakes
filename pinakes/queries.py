@@ -482,6 +482,15 @@ def file_metadata(conn, file_id, content_id):
                          ORDER BY m.schema, m.sensitive, m.source, m.metadata_id""", (file_id, content_id))
 
 
+def file_extractions(conn, content_id):
+    """What each extractor made of a file's content (ROADMAP 44), as the person sees it (extraction_outcomes: where
+    the values found are all sensitive and hidden from them, "nothing")."""
+    if not content_id:
+        return []
+    return rows(conn, """SELECT schema, outcome, reason, version, at FROM pinakes.extraction_outcomes
+                         WHERE content_id = %s ORDER BY schema""", (content_id,))
+
+
 def sensitive_visible(conn, file_id, content_id):
     return conn.execute("SELECT pinakes.sensitive_visible(%s, %s)", (content_id, file_id)).fetchone()[0]
 

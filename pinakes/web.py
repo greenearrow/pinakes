@@ -619,6 +619,8 @@ def create_app(cfg, connect=None):
                 "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down")}
         meta = queries.file_metadata(g.db, file_id, f["content_id"])
         page["metadata"] = metadata_view(reg, meta)
+        page["extractions"] = [dict(e, title=reg.schemas[e["schema"]].title if e["schema"] in reg.schemas
+                                    else e["schema"]) for e in queries.file_extractions(g.db, f["content_id"])]
         # a note for those who can't see the sensitive fields: the same whether this file has any or not
         page["sensitive_hidden"] = [] if queries.sensitive_visible(g.db, file_id, f["content_id"]) else sorted(
             {fd.description or fd.name for s in page["metadata"] if s["schema"]
