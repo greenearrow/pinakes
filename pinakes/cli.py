@@ -8,6 +8,9 @@
                                        symlinks elsewhere that lead into it
   pinakes backed-up [PATH]
   pinakes dupes
+  pinakes folder-copies [FOLDER]       folders under it that are copies of another folder (the same files at the
+                                       same paths, all held by a bigger one, or the same bar a few edited files,
+                                       named), biggest first
   pinakes manifests [PATH]             what SHA256SUMS files say that the agents' hashes don't bear out: files listed
                                        with another hash, and lists naming files not there (no path, outside every
                                        root: everywhere you can see)
@@ -297,7 +300,7 @@ def _when(iso):
 
 # commands ----------------------------------------------------------------------------------------------------------
 FILE = ("where", "history", "versions", "lineage")                  # take one file
-FOLDER = ("only-here", "safe-to-delete", "backed-up")               # take a folder, or a file for itself
+FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests")
 MARKS = ("intended", "restore")

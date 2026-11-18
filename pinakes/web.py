@@ -14,7 +14,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   last check-in: hosts, numbers and times, never a root, person or file
   find?q=NAME-OR-GLOB
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
-  only-here|safe-to-delete|backed-up?loc=ROOT:PATH
+  only-here|safe-to-delete|backed-up|folder-copies?loc=ROOT:PATH
   changes?days=N&host=NAME&loc=ROOT:PATH&review=unreviewed|reviewed&what=KIND...
   meta?field=SCHEMA.FIELD&value=VALUE
   POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
@@ -464,6 +464,10 @@ def create_app(cfg, connect=None):
     @api("manifests")
     def api_manifests():
         return {"rows": queries.manifests(g.db, request.args.get("loc") or None, *lim())}
+
+    @api("folder-copies")
+    def api_folder_copies():
+        return {"rows": queries.folder_copies(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
 
     @api("dupes")
     def api_dupes():

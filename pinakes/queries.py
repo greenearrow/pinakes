@@ -245,6 +245,75 @@ def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
                 + order(DUPES_SORT, sort, direction, "reclaimable DESC, c.content_id") + PAGE, (limit, offset))
 
 
+FOLDER_COPIES_SORT = {"size": ("bytes",), "files": ("files",), "where": ("folder",), "relation": ("relation",)}
+NEAR_PERCENT = 10      # "nearly the same": every file of the folder is in the other, at most this share (min. 1) edited
+
+# A folder is the set of its files' (path inside it, content): the whole subtree, empty files and symlinks left out
+# (they all hash alike or hold no data), backup roots too (a backup copying a folder is its job). Entries of every
+# ancestor folder of a file, the root's own folder ('') included. %s: the scope's root, then its folder, three times.
+_FOLDER_COPIES = """
+WITH e AS (
+    SELECT f.root_id, d.dir, substr(f.relpath, CASE WHEN d.dir = '' THEN 1 ELSE length(d.dir) + 2 END) AS rel,
+           f.content_id, c.size
+    FROM pinakes.present f JOIN pinakes.roots r USING (root_id) JOIN pinakes.contents c USING (content_id)
+    CROSS JOIN LATERAL (SELECT '' AS dir
+                        UNION ALL SELECT left(f.relpath, i - 1) FROM generate_series(1, length(f.relpath)) i
+                        WHERE substr(f.relpath, i, 1) = '/') d
+    WHERE r.kind <> 'backup' AND c.size > 0 AND NOT f.is_symlink),
+fs AS (SELECT root_id, dir, count(*) AS n FROM e GROUP BY root_id, dir),
+held AS (SELECT rel, content_id, count(*) AS h FROM e GROUP BY rel, content_id),
+mine AS (SELECT fs.* FROM fs JOIN pinakes.roots r USING (root_id)
+         WHERE r.label = %s AND (%s = '' OR fs.dir = %s OR left(fs.dir, length(%s) + 1) = %s || '/')),
+-- a folder's rarest entries are where to look for what holds them: a folder that is the same, or inside another, holds
+-- all of them; one with k files edited holds at least one of its k + 1 rarest
+anchors AS (SELECT * FROM (SELECT e.root_id, e.dir, e.rel, e.content_id, m.n,
+                                  row_number() OVER (PARTITION BY e.root_id, e.dir ORDER BY held.h, e.rel) AS rk
+                           FROM e JOIN mine m USING (root_id, dir) JOIN held USING (rel, content_id)) x
+            WHERE rk <= greatest(1, x.n * %s / 100) + 1),
+cand AS (SELECT DISTINCT a.root_id AS ra, a.dir AS da, b.root_id AS rb, b.dir AS db
+         FROM anchors a JOIN e b ON b.rel = a.rel AND b.content_id = a.content_id
+         WHERE NOT (a.root_id = b.root_id AND (a.dir = b.dir OR a.dir = '' OR b.dir = ''
+                    OR left(b.dir, length(a.dir) + 1) = a.dir || '/' OR left(a.dir, length(b.dir) + 1) = b.dir || '/'))),
+pairs AS (SELECT c.ra, c.da, c.rb, c.db, count(*) FILTER (WHERE eb.content_id = ea.content_id) AS shared,
+                 array_agg(ea.rel ORDER BY ea.rel) FILTER (WHERE eb.content_id <> ea.content_id) AS differing,
+                 sum(ea.size) AS bytes
+          FROM cand c JOIN e ea ON ea.root_id = c.ra AND ea.dir = c.da
+          LEFT JOIN e eb ON eb.root_id = c.rb AND eb.dir = c.db AND eb.rel = ea.rel
+          GROUP BY c.ra, c.da, c.rb, c.db),
+res AS (SELECT ra, da, rb, db, p.bytes, na.n AS files, nb.n AS other_files, p.shared, p.differing,
+               CASE WHEN p.shared = na.n AND na.n = nb.n THEN 'same'
+                    WHEN p.shared = na.n THEN 'inside'
+                    WHEN p.shared + cardinality(p.differing) = na.n
+                         AND cardinality(p.differing) <= greatest(1, na.n * %s / 100) THEN 'nearly' END AS relation
+        FROM pairs p JOIN fs na ON na.root_id = p.ra AND na.dir = p.da JOIN fs nb ON nb.root_id = p.rb AND nb.dir = p.db),
+kept AS (SELECT p.* FROM res p
+         WHERE p.relation IS NOT NULL
+           -- two folders in scope that are the same are one row, not two
+           AND NOT (p.relation = 'same' AND (p.ra, p.da) > (p.rb, p.db)
+                    AND EXISTS (SELECT 1 FROM mine m WHERE m.root_id = p.rb AND m.dir = p.db))
+           -- a subfolder of a folder already shown with the same relation to the same other side is nothing new
+           AND NOT EXISTS (SELECT 1 FROM res q WHERE q.relation = p.relation AND q.ra = p.ra AND q.rb = p.rb
+                           AND p.da = CASE WHEN q.da = '' THEN '' ELSE q.da || '/' END || regexp_replace(p.da, '^.*/', '')
+                           AND p.db = CASE WHEN q.db = '' THEN '' ELSE q.db || '/' END || regexp_replace(p.db, '^.*/', '')))
+SELECT ra.label || ':' || k.da AS folder, rb.label || ':' || k.db AS other, k.relation, k.files, k.other_files,
+       k.files - k.shared - coalesce(cardinality(k.differing), 0) AS only_in_folder,
+       k.other_files - k.shared - coalesce(cardinality(k.differing), 0) AS only_in_other,
+       coalesce(k.differing, '{}') AS differing, k.bytes, """ + TOTAL + """
+FROM kept k JOIN pinakes.roots ra ON ra.root_id = k.ra JOIN pinakes.roots rb ON rb.root_id = k.rb"""
+
+
+def folder_copies(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
+    """Folders under loc (a root or a folder, ROOT:PATH) that are copies of another folder, anywhere you can see: the
+    same files at the same paths inside ('same'), all of them held by a bigger folder ('inside'), or all held with a
+    few edited, listed in `differing` ('nearly': at most NEAR_PERCENT of the files, at least one). A subfolder
+    whose parent is shown with the same relation to the same other folder is left out; folders of only empty files
+    are ignored. Biggest first. Counts are of the files you can see. The folders' sets are built from the catalog's
+    present files on each call: on a very large root, ask for a smaller folder."""
+    root, path = split_location(loc)
+    return rows(conn, _FOLDER_COPIES + order(FOLDER_COPIES_SORT, sort, direction, "k.bytes DESC, folder, other")
+                + PAGE, (root, path, path, path, path, NEAR_PERCENT, NEAR_PERCENT, limit, offset))
+
+
 def history(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
     return rows(conn, """SELECT h.seen_after, h.seen_on, h.kind, h.old_relpath, h.new_relpath,
                                 encode(oc.sha256, 'hex') AS old_sha256, encode(nc.sha256, 'hex') AS new_sha256,

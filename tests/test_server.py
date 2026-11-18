@@ -425,6 +425,81 @@ class TestHardLinks(ServerCase):
         self.assertEqual(same, {"a.bin": True, "a-link.bin": True, "a-copy.bin": False})
 
 
+class TestFolderCopies(ServerCase):
+    """Folders that are copies of each other (ROADMAP 43), from the content hashes stored: same, inside, nearly."""
+
+    def put(self, folder, files):
+        for name, data in files.items():
+            self.write("server-1", "store", "people/user-1/%s/%s" % (folder, name), data)
+
+    def pairs(self, conn, loc="store:people/user-1/"):
+        from pinakes import queries
+        return {(r["folder"][len("store:people/user-1/"):], r["other"][len("store:people/user-1/"):]): r
+                for r in queries.folder_copies(conn, loc)}
+
+    def test_same_inside_nearly_and_noise(self):
+        photos = {"a.jpg": b"photo a" * 50, "b.jpg": b"photo b" * 50, "sub/c.jpg": b"photo c" * 50}
+        self.put("trip", photos)
+        self.put("trip-copy", photos)                                      # the same, subfolder and all
+        self.put("keep", {"a.jpg": photos["a.jpg"], "b.jpg": photos["b.jpg"], "x.jpg": b"only in keep" * 50,
+                          "sub/c.jpg": photos["sub/c.jpg"]})              # holds all of trip, and one more
+        docs = {"d%d.txt" % i: b"doc %d" % i * 20 for i in range(5)}
+        self.put("docs", docs)
+        self.put("docs-edit", dict(docs, **{"d3.txt": b"doc 3, edited"}))  # one file of five edited
+        self.put("empty-1", {"e.txt": b""})
+        self.put("empty-2", {"e.txt": b""})                                # empty files are not copies
+        self.put("lone-1", {"z.txt": b"lone one"})
+        self.put("lone-2", {"z.txt": b"lone two"})                         # same name, other content
+        self.scan("server-1", "store")
+        got = self.pairs(self.conn)
+        same = got[("trip", "trip-copy")]
+        self.assertEqual((same["relation"], same["files"], same["other_files"]), ("same", 3, 3))
+        self.assertNotIn(("trip-copy", "trip"), got)                       # one row for a pair inside the scope
+        self.assertNotIn(("trip/sub", "trip-copy/sub"), got)               # nothing new in a subfolder of a pair
+        inside = got[("trip", "keep")]
+        self.assertEqual((inside["relation"], inside["only_in_other"], inside["only_in_folder"]), ("inside", 1, 0))
+        near = got[("docs", "docs-edit")]
+        self.assertEqual((near["relation"], near["differing"], near["only_in_folder"]), ("nearly", ["d3.txt"], 0))
+        folders = {r[0] for r in got} | {r[1] for r in got}
+        self.assertFalse(folders & {"empty-1", "empty-2", "lone-1", "lone-2"})
+        # a smaller scope: only what is under it is asked about, though its copy may be outside
+        under = self.pairs(self.conn, "store:people/user-1/keep/")
+        # keep holds trip but is inside nothing; its subfolder is the same as trip's (their parents differ, so shown)
+        self.assertEqual({(k, r["relation"]) for k, r in under.items()},
+                         {(("keep/sub", "trip/sub"), "same"), (("keep/sub", "trip-copy/sub"), "same")})
+
+    def test_cli_and_api(self):
+        import json
+        from tests.test_api import CliRun
+        files = {"a.bin": os.urandom(200), "b.bin": os.urandom(200)}
+        self.put("one", files)
+        self.put("two", files)
+        self.scan("server-1", "store")
+        cli = CliRun(self, "user-1")
+        self.addCleanup(cli.close)
+        got = json.loads(cli("folder-copies", "store:people/user-1/", "--json"))
+        (row,) = got
+        self.assertEqual((row["folder"], row["other"], row["relation"]),
+                         ("store:people/user-1/one", "store:people/user-1/two", "same"))
+        text = cli("folder-copies", self.path("server-1", "store", "people/user-1"), "--host", "server-1")
+        self.assertIn("people/user-1/two", text)
+
+    def test_row_level_security(self):
+        data = {"f1.bin": os.urandom(300), "f2.bin": os.urandom(300)}
+        self.put("mine", data)
+        for name, d in data.items():
+            self.write("server-1", "store", "people/user-2/theirs/" + name, d)
+        self.scan("server-1", "store")
+        from pinakes import queries
+        (seen,) = queries.folder_copies(self.conn, "store:people/")         # without row-level security: a pair
+        self.assertEqual(seen["relation"], "same")
+        with self.as_person("user-1") as c:
+            rows = queries.folder_copies(c, "store:people/user-1/")
+            self.assertEqual(rows, [])                      # user-2's folder is not user-1's to see: no copy to name
+        with self.as_person("user-2") as c:
+            self.assertEqual(queries.folder_copies(c, "store:people/user-2/"), [])
+
+
 class TestSameDisk(ServerCase):
     """Only-here and safe-to-delete count a copy only on another disk (another host, or another device on the same
     host); a copy on the same disk is shown apart, and a hard link is not a copy at all (ROADMAP 5)."""

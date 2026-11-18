@@ -137,6 +137,12 @@ WHERE f.is_symlink AND f.link_root = 'downloads'
 ORDER BY r.label, f.relpath;
 ```
 
+## folder-copies ROOT:PATH
+
+Not a block below: the statement is long (a CTE that builds each folder's set of (path inside it, content) from `present`,
+looks for the other folders holding a folder's rarest entries, and counts what is shared and what differs), so it lives
+in `queries.folder_copies` and runs in `tests/test_server.py` `TestFolderCopies`, under row-level security.
+
 ## backed-up HOST:PATH
 
 Backup copies are counted physically: distinct (host, device, inode). Snapshot backups made with hard links hold one

@@ -344,6 +344,7 @@ pinakes safe-to-delete [PATH]          every file has a copy in a primary or bac
 pinakes backed-up [PATH]               per file: backup copies, newest age
 pinakes backups [FOLDER]               the same, least backed up first, with how many have none
 pinakes dupes [ROOT:PATH]              duplicates, largest first
+pinakes folder-copies [PATH]           folders under PATH that are copies of another: the same, inside it, or nearly (edits named)
 pinakes history FILE                   what happened to a file
 pinakes lineage FILE                   where this file came from and what came from it, on every host
 pinakes versions FILE                  each known version (hash, dates) and which backup copies hold it

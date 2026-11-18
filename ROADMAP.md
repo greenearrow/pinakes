@@ -111,8 +111,8 @@ and works where you are. Agents' batches stay on their forced SSH keys, and serv
 ## Proposed (from a review of the whole project; not yet agreed)
 
 Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started
-(41, the scrub, 46, a machine replaced under the same name, and 44, extraction outcomes, were agreed and are built:
-REARVIEW.md).
+(41, the scrub, 46, a machine replaced under the same name, 44, extraction outcomes, and 43, folders that are copies of
+each other, were agreed and are built: REARVIEW.md).
 Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
 
 42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
@@ -122,13 +122,6 @@ Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
     safe-to-delete counting a copy only on another disk (5); the operator page (10). Value: high. Cost: S (the
     queries exist; this is aggregation). Risk: none. *Done when:* a test with two devices and one backup root gives
     the sizes at risk per device, an operator sees totals and no path, and a person sees only their own.
-43. [Feature] **Folders that are copies of each other.** `dupes` works file by file; when tidying, the question is
-    "is this folder the same as that one, or contained in it". From content hashes already stored: pairs of folders
-    whose file sets are equal, or where one holds everything the other does, with what differs. Sits next to:
-    `dupes`, lineage by identical content, linking same-disk duplicates (18). Value: high for a store that grew by
-    copying. Cost: M (a set comparison that must not be quadratic: compare folder digests built bottom-up). Risk: a
-    slow query on a large root; compute it at scan completion, as lineage rounds are. *Done when:* tests cover equal
-    folders, a subset, a folder with one edited file (reported with the difference), and empty folders ignored.
 45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
     files (paths, hashes, history, metadata, reviews), as CSV or JSON, through the API with the token's `read`
     scope. A catalog that describes people's files should hand them their description. Sits next to: the JSON API

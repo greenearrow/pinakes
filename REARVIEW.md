@@ -46,6 +46,7 @@ agents).
 - 38. Group tokens
 - 39. Ops tokens and `pinakes releases`
 - 41. The scrub
+- 43. Folders that are copies of each other
 - 46. A machine replaced under the same name
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
@@ -540,3 +541,28 @@ lists left out; a protected link takes them; the upgrade against the schema); `t
 line, a reader's identical for a GPS-only photo and one with none); `tests/test_queries.py` with the new block;
 `tests/test_releases.py` (the meta entry's fields declared in `compat.BATCH_FIELDS`). Only this Python and
 PostgreSQL; not run on a real tree; not deployed.
+
+## 43. Folders that are copies of each other
+
+Design: ROADMAP.md item 43 (built, so no longer listed); no DECISIONS.md entry.
+
+**Built:** `pinakes folder-copies [FOLDER]` and the API call `folder-copies?loc=ROOT:PATH` (`queries.folder_copies`):
+the folders under the given one (or the root) that are copies of another folder anywhere the person can see. A
+folder is the set of its files' (path inside it, content); backup roots, symlinks and empty files are left out. A
+pair is `same` (equal sets), `inside` (everything the folder holds is in the other, which holds more) or `nearly`
+(every path of the folder is in the other, at most `NEAR_PERCENT` (10) of them, at least one, with other content:
+those paths are listed in `differing`). A subfolder whose parent has the same relation to the same other folder is
+left out, and a pair of folders inside the scope is one row. Each row says how many files are only on either side.
+Biggest first.
+
+**Not as the roadmap said:** it is computed on each call, not at scan completion. A stored digest would be built from
+every file, so it could not follow row-level security; a query over `present` can. The cost is a pass over the
+catalog's present files per call, so a very large root should be asked about a folder at a time. Not measured on a
+large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tools/test`, 396 tests, all pass):
+`tests/test_server.py` `TestFolderCopies` on generated trees (same with a subfolder, inside, nearly with the edited
+file named, empty files and same-name-other-content ignored, one row per pair, no row for a subfolder of a pair, a
+smaller scope; another person's identical folder gives no row, checked against the unrestricted connection that does
+find the pair). The CLI command (given ROOT:PATH, and a path here with `--host`, `--json`) and the API call it makes are in
+`test_cli_and_api`. Not run on a real tree; not deployed.
