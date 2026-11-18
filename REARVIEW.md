@@ -558,7 +558,7 @@ Biggest first.
 **Not as the roadmap said:** it is computed on each call, not at scan completion. A stored digest would be built from
 every file, so it could not follow row-level security; a query over `present` can. The cost is a pass over the
 catalog's present files per call, so a very large root should be asked about a folder at a time. Not measured on a
-large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet.
+large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet (ROADMAP 50).
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tools/test`, 396 tests, all pass):
 `tests/test_server.py` `TestFolderCopies` on generated trees (same with a subfolder, inside, nearly with the edited
