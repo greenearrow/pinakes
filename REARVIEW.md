@@ -491,7 +491,7 @@ root (sha256sum's text, binary and escaped lines, and the BSD format) is read wh
 the bytes read have the scan's hash, and each line is checked against the agent's own hash: confirmed, wrong,
 missing, unchecked; bad lines and names outside the root counted. The agent's state keeps the lines and what was last
 sent (`manifests`, `manifest_lines`, `hints`). `hint` and `manifest` records go with the scan's complete batch, only
-when they change (all again with `--full`), and only to a server of protocol 4 (release 7, not cut). Never on a
+when they change (all again with `--full`), and only to a server of protocol 4 (release 7). Never on a
 protected root or link, nor with `hash = "none"`; `[[root]] manifests = false` turns it off and clears what was sent.
 The ingester applies them after the scan's moves (a move carries them), refuses them outside a complete batch, from a
 protected root or through a protected link, and keeps them on the files (`manifest_verdict`, `manifest_file_id`,
@@ -519,7 +519,7 @@ Design: METADATA.md "Extraction"; DECISIONS.md "What each extractor made of a fi
 **Built:** the agent sends, per file and schema, what the extractor made of it: values (none: nothing found),
 `refused` with a reason code (`extract.REFUSALS`: `truncated`, `wrong_type`, `malformed`, `bad_values`,
 `unreadable`, `failed`), or `skipped` for one that applies and is off there (`extract.SKIPS`: `dependency`,
-`broken`); codes only, never an error's text, and only to a server of protocol 4 (release 7, not cut): to an older
+`broken`); codes only, never an error's text, and only to a server of protocol 4 (release 7): to an older
 one, the text as before. The EXIF reader refuses a JPEG that ends before its image data as truncated (`CutShort`),
 where it used to return what it had read, and a file that isn't a JPEG as `wrong_type` (`NotJpeg`). Once the server
 is at protocol 4, the agent's `meta_v` takes the form `[2, {...}]`, so every file read before is read once more

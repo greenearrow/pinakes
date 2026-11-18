@@ -2,6 +2,54 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 7
+
+Cut 2026-11-17 (tag `release-7`). Affects the server, the agents and the CLI. Protocol 4; agents and servers of
+protocol 0 to 3 still work with it, and either side may be updated first.
+
+### Before you update
+
+1. As the schema's owner, run in order: `upgrades/manifests.sql`, then `upgrades/extractions.sql`
+   (`tools/latest-release --upgrades-after 6` lists them). Then update the server, then the agents.
+2. **The agents read every file with an extractor once more** after the server answers protocol 4 (headers only, no
+   rehash) to send what the extractors made of each. Expect one longer scan per root.
+3. A scan that finds `SHA256SUMS` files now reads them, once per new content. `[[root]] manifests = false` turns it
+   off for a root.
+
+### Checksum manifests
+
+- At the end of each scan the agent checks every `SHA256SUMS` (also `SHA256SUMS.txt` and `*.sha256`) in the root
+  against its own hashes, and sends per listed file whether its line is confirmed or wrong, and per manifest its
+  counts (confirmed, wrong, missing, unchecked, unreadable, outside its root).
+- A manifest is a hint: no hash is taken from it. Never on a protected root or link, nor with `hash = "none"`.
+- The verdicts are kept on the files under the files policy. The file page shows them; the Manifests report,
+  `/api/v1/manifests` and `pinakes manifests [PATH]` list the files with another hash and the manifests naming files
+  that aren't there.
+
+### Extraction outcomes
+
+- Per file and schema, the agent sends what the extractor made of it: values, nothing, **refused** with a reason
+  code (`truncated`, `wrong_type`, `malformed`, `bad_values`, `unreadable`, `failed`) or **skipped** (`dependency`,
+  `broken`). Codes only, never an error's text.
+- A JPEG that ends before its image data is now refused as truncated, where it used to read as a photo without EXIF.
+- The catalog keeps one outcome per content and schema, under row-level security. The file page shows them, and
+  `pinakes-ingest extractions` counts them without names.
+
+### Folders that are copies of each other
+
+- `pinakes folder-copies [FOLDER]` and `/api/v1/folder-copies`: folders that are the same as another, inside a
+  bigger one, or nearly the same (at most 10% other content, the paths named). Computed per call, under row-level
+  security. No web page yet (ROADMAP 50).
+
+### A fix to release 6
+
+- `pinakes-ingest totals` prints an unreported root's date as UTC's, not the session's.
+
+### Not yet
+
+Tested: 396 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64); the installed wheel, and PostgreSQL 15, 17 and 18, not run. Not run against a real catalog or on real disks; not deployed. Folder copies not measured
+on a large catalog.
+
 ## Release 6
 
 Cut 2026-11-17 (tag `release-6`). Affects the server, the agents and the CLI. Protocol 3; agents and servers of protocol 0 to 2 still work with it, and
