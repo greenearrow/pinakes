@@ -30,7 +30,7 @@ machines) or *operability* (installing and running it); "also" names a second.
 Found by the first deployment (one storage server, 445k files, two nights), and needed before a backup server joins
 (1, 2, 4, 5 and 28 to 31 are built and 3 dropped: REARVIEW.md):
 
-No known item blocks adding a machine. New ones from a deployment go in this section. Left:
+No known item blocks adding a machine; new ones from a deployment go in this section. Left, not a blocker but next:
 
 51. [Operability; also stability] **The agent reports its own runs to a push monitor.** A site that watches its
     machines with a push-style uptime monitor (a URL the job calls when it finishes) has to wrap the agent's unit
@@ -67,8 +67,9 @@ No known item blocks adding a machine. New ones from a deployment go in this sec
     then XMP sidecars (with 14) and extended XMP, audio tags, OPF, PDF and office properties, video. Each optional by
     its dependency. *Done when, for each:* tests on generated files (made by the test, never real ones) extract the
     declared fields; a missing dependency turns the extractor off, not the scan; nothing runs on a protected root (a
-    test proves it). Left from the first real run: 717 JPEGs without EXIF, not looked into; once release 7's
-    outcomes (44) are in, `pinakes-ingest extractions` says which of them hold none and which the reader refused.
+    test proves it). Left from the first real run: 717 JPEGs without EXIF, not looked into; extraction outcomes
+    (44) are built and in release 7, so once it is deployed, `pinakes-ingest extractions` says which of them hold none
+    and which the reader refused.
 14. [Feature; also correctness] **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each
     sidecar form, RAW with JPEG, a book folder, and a bundle moved together counting as one move.
 15. [Correctness] **Identity fields for lineage** (PDF `/ID`, XMP `DocumentID`/`InstanceID`/`DerivedFrom`, EPUB
@@ -107,11 +108,10 @@ No known item blocks adding a machine. New ones from a deployment go in this sec
 
 ## The command line, through an API
 
-Today `pinakes` connects to the database with the web role's password and acts as whoever `--as` names, so it runs
-only on the catalog server. The plan (DECISIONS.md "The CLI and the API"): every person-facing function goes through
-one API in `pinakes-web`, with one way to authenticate, and `pinakes` becomes a client of it that runs on any machine
-and works where you are. Agents' batches stay on their forced SSH keys, and server maintenance stays a local command
-(`pinakes-ingest`). 33 to 36, 38, 39 and 37's first part are built (REARVIEW.md). Left, in order:
+Every person-facing function goes through one API in `pinakes-web`, with one way to authenticate (DECISIONS.md "The
+CLI and the API"), and `pinakes` is a client of it that runs on any machine and works where you are. Agents' batches
+stay on their forced SSH keys, and server maintenance stays a local command (`pinakes-ingest`). 33 to 36, 38, 39 and
+37's first part are built (REARVIEW.md). Left, in order:
 
 37. [Feature; also security] **Tagging from a folder.** Reviewing from a folder is built (REARVIEW.md); left:
     `pinakes tag` and notes, once person-entered metadata exists (16), with the token's `tag` scope. *Done when:* tests

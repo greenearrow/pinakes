@@ -33,6 +33,7 @@ agents).
 - 13. Extractors, first part: EXIF and embedded XMP from JPEGs
 - 16. Sensitive metadata for owners only (first part)
 - 16. Metadata on a file's page and in find (showing it)
+- 19. Checksum manifests
 - 27. Packaging and a test matrix
 - 28, 29. Backup roots without churn; name lineage with a second signal
 - 30. A walk check for comparing the catalog with the disk
@@ -47,6 +48,7 @@ agents).
 - 39. Ops tokens and `pinakes releases`
 - 41. The scrub
 - 43. Folders that are copies of each other
+- 44. Extraction outcomes kept
 - 46. A machine replaced under the same name
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
@@ -235,6 +237,36 @@ its own index, under row-level security.
 generated JPEGs: owner, reader, step-up and its audit, find under row-level security, the indexes used, markup in a
 value; the reader tests checked to fail without the policy; deployed on the first deployment; not tried in a browser.
 
+## 19. Checksum manifests
+
+Design: DESIGN.md "Checksum manifests".
+
+**Built:** `pinakes/manifests.py`: at the end of each scan, every `SHA256SUMS`, `SHA256SUMS.txt` and `*.sha256` in the
+root (sha256sum's text, binary and escaped lines, and the BSD format) is read when its content is new and only if
+the bytes read have the scan's hash, and each line is checked against the agent's own hash: confirmed, wrong,
+missing, unchecked; bad lines and names outside the root counted. The agent's state keeps the lines and what was last
+sent (`manifests`, `manifest_lines`, `hints`). `hint` and `manifest` records go with the scan's complete batch, only
+when they change (all again with `--full`), and only to a server of protocol 4 (release 7). Never on a
+protected root or link, nor with `hash = "none"`; `[[root]] manifests = false` turns it off and clears what was sent.
+The ingester applies them after the scan's moves (a move carries them), refuses them outside a complete batch, from a
+protected root or through a protected link, and keeps them on the files (`manifest_verdict`, `manifest_file_id`,
+`manifest_on`, `manifest_counts`; `upgrades/manifests.sql`). Shown on the file page, in the Manifests report,
+`/api/v1/manifests`, `pinakes manifests [PATH]`, and QUERIES.md "manifests".
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 383 tests): the
+agent's `tests/test_agent.py` `TestManifests` and `TestManifestsProtected` on generated trees (a wrong line reported
+and a right one confirmed, the hash sent the agent's own, nothing sent again when nothing changed, the formats, a file
+put back and a listed file gone, the manifest gone, two manifests disagreeing, `--full`, read once per content and
+not believed when it changed after hashing, a symlink unchecked, waiting for protocol 4, turned off, the config, a
+protected root never read, checked to fail without its guard); `tests/test_server.py` `TestManifests` (in the catalog
+the wrong line reported and the right one confirmed, the hash the agent's, the report and file page queries, another
+person seeing none of it, a folder moved with its manifest, the manifest gone, refusals outside a complete batch,
+of a bad verdict and from a protected root, the upgrade against the schema); `tests/test_queries.py` with the new
+QUERIES.md block; `tests/test_releases.py` with a manifest in its tree. One failure in the run, not from this change:
+`TestUnreportedRoots.test_a_machine_replaced_with_fewer_roots` fails the same on the commit before (`totals` prints
+`unreported_since` in the server's time zone, the test expects UTC's date, so it fails while they differ). Only this
+Python and PostgreSQL; not run on a real tree; not deployed.
+
 ## 27. Packaging and a test matrix
 
 **Built:** `tools/test` starts and removes its own PostgreSQL and fails a run that skipped tests for want of a database
@@ -419,6 +451,61 @@ no longer counted, review and restore, another person not seeing it, a reader no
 against the schema. The copy and hash checks checked to fail without them. Not run on a real tree or against real disks;
 not deployed.
 
+## 43. Folders that are copies of each other
+
+Design: ROADMAP.md item 43 (built, so no longer listed); no DECISIONS.md entry.
+
+**Built:** `pinakes folder-copies [FOLDER]` and the API call `folder-copies?loc=ROOT:PATH` (`queries.folder_copies`):
+the folders under the given one (or the root) that are copies of another folder anywhere the person can see. A
+folder is the set of its files' (path inside it, content); backup roots, symlinks and empty files are left out. A
+pair is `same` (equal sets), `inside` (everything the folder holds is in the other, which holds more) or `nearly`
+(every path of the folder is in the other, at most `NEAR_PERCENT` (10) of them, at least one, with other content:
+those paths are listed in `differing`). A subfolder whose parent has the same relation to the same other folder is
+left out, and a pair of folders inside the scope is one row. Each row says how many files are only on either side.
+Biggest first.
+
+**Not as the roadmap said:** it is computed on each call, not at scan completion. A stored digest would be built from
+every file, so it could not follow row-level security; a query over `present` can. The cost is a pass over the
+catalog's present files per call, so a very large root should be asked about a folder at a time. Not measured on a
+large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet (ROADMAP 50).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tools/test`, 396 tests, all pass):
+`tests/test_server.py` `TestFolderCopies` on generated trees (same with a subfolder, inside, nearly with the edited
+file named, empty files and same-name-other-content ignored, one row per pair, no row for a subfolder of a pair, a
+smaller scope; another person's identical folder gives no row, checked against the unrestricted connection that does
+find the pair). The CLI command (given ROOT:PATH, and a path here with `--host`, `--json`) and the API call it makes are in
+`test_cli_and_api`. Not run on a real tree; not deployed.
+
+## 44. Extraction outcomes kept
+
+Design: METADATA.md "Extraction"; DECISIONS.md "What each extractor made of a file is kept".
+
+**Built:** the agent sends, per file and schema, what the extractor made of it: values (none: nothing found),
+`refused` with a reason code (`extract.REFUSALS`: `truncated`, `wrong_type`, `malformed`, `bad_values`,
+`unreadable`, `failed`), or `skipped` for one that applies and is off there (`extract.SKIPS`: `dependency`,
+`broken`); codes only, never an error's text, and only to a server of protocol 4 (release 7): to an older
+one, the text as before. The EXIF reader refuses a JPEG that ends before its image data as truncated (`CutShort`),
+where it used to return what it had read, and a file that isn't a JPEG as `wrong_type` (`NotJpeg`). Once the server
+is at protocol 4, the agent's `meta_v` takes the form `[2, {...}]`, so every file read before is read once more
+(headers, no rehash) and its outcomes sent. The ingester checks the codes, keeps the latest report per content and
+schema at the newest version (a skip never replaces a run; a refusal leaves known values), drops them with the rest
+of a protected link's, and keeps found values that are all sensitive as a sensitive row "found" and another
+"nothing" (`extractions`, `extraction_outcomes`; `upgrades/extractions.sql`). Shown on the file page ("Read by"),
+in QUERIES.md "extraction outcomes", and counted for the operator, every owner's and without names, by
+`pinakes-ingest extractions`. The operator page (10) will show the same counts when it exists.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 393 tests, all pass):
+`tests/test_extract.py` (a truncated JPEG refused wherever it ends, a non-JPEG `wrong_type`, codes and no text sent,
+the text to a protocol 3 server and every photo read once more at 4 without rehashing, an extractor missing its
+package said skipped); `tests/test_server.py` `TestExtractionOutcomes` (on real scans of generated JPEGs: truncated
+refused, one with no metadata "nothing", a non-JPEG `wrong_type`, the counts per content and per file, the command's
+output without names; another person sees only the shared files' outcomes, and a reader of a GPS-only photo
+"nothing" while its owner sees "found", checked to fail without the split; which report is kept; codes outside the
+lists left out; a protected link takes them; the upgrade against the schema); `tests/test_web.py` (the file page's
+line, a reader's identical for a GPS-only photo and one with none); `tests/test_queries.py` with the new block;
+`tests/test_releases.py` (the meta entry's fields declared in `compat.BATCH_FIELDS`). Only this Python and
+PostgreSQL; not run on a real tree; not deployed.
+
 ## 46. A machine replaced under the same name
 
 **Built:** Every batch, scan or scrub, names all the roots the agent has (`roots` in its header, protocol 3); the
@@ -481,88 +568,3 @@ no ops form, stay at the top); a days field that isn't a number is now said to b
 **State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed (x86-64 desktop;
 `tests/test_api.py` `TestOpsToken`, checked to fail without the change). Not tried in a browser with a password manager;
 not deployed.
-
-## 19. Checksum manifests
-
-Design: DESIGN.md "Checksum manifests".
-
-**Built:** `pinakes/manifests.py`: at the end of each scan, every `SHA256SUMS`, `SHA256SUMS.txt` and `*.sha256` in the
-root (sha256sum's text, binary and escaped lines, and the BSD format) is read when its content is new and only if
-the bytes read have the scan's hash, and each line is checked against the agent's own hash: confirmed, wrong,
-missing, unchecked; bad lines and names outside the root counted. The agent's state keeps the lines and what was last
-sent (`manifests`, `manifest_lines`, `hints`). `hint` and `manifest` records go with the scan's complete batch, only
-when they change (all again with `--full`), and only to a server of protocol 4 (release 7). Never on a
-protected root or link, nor with `hash = "none"`; `[[root]] manifests = false` turns it off and clears what was sent.
-The ingester applies them after the scan's moves (a move carries them), refuses them outside a complete batch, from a
-protected root or through a protected link, and keeps them on the files (`manifest_verdict`, `manifest_file_id`,
-`manifest_on`, `manifest_counts`; `upgrades/manifests.sql`). Shown on the file page, in the Manifests report,
-`/api/v1/manifests`, `pinakes manifests [PATH]`, and QUERIES.md "manifests".
-
-**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 383 tests): the
-agent's `tests/test_agent.py` `TestManifests` and `TestManifestsProtected` on generated trees (a wrong line reported
-and a right one confirmed, the hash sent the agent's own, nothing sent again when nothing changed, the formats, a file
-put back and a listed file gone, the manifest gone, two manifests disagreeing, `--full`, read once per content and
-not believed when it changed after hashing, a symlink unchecked, waiting for protocol 4, turned off, the config, a
-protected root never read, checked to fail without its guard); `tests/test_server.py` `TestManifests` (in the catalog
-the wrong line reported and the right one confirmed, the hash the agent's, the report and file page queries, another
-person seeing none of it, a folder moved with its manifest, the manifest gone, refusals outside a complete batch,
-of a bad verdict and from a protected root, the upgrade against the schema); `tests/test_queries.py` with the new
-QUERIES.md block; `tests/test_releases.py` with a manifest in its tree. One failure in the run, not from this change:
-`TestUnreportedRoots.test_a_machine_replaced_with_fewer_roots` fails the same on the commit before (`totals` prints
-`unreported_since` in the server's time zone, the test expects UTC's date, so it fails while they differ). Only this
-Python and PostgreSQL; not run on a real tree; not deployed.
-
-## 44. Extraction outcomes kept
-
-Design: METADATA.md "Extraction"; DECISIONS.md "What each extractor made of a file is kept".
-
-**Built:** the agent sends, per file and schema, what the extractor made of it: values (none: nothing found),
-`refused` with a reason code (`extract.REFUSALS`: `truncated`, `wrong_type`, `malformed`, `bad_values`,
-`unreadable`, `failed`), or `skipped` for one that applies and is off there (`extract.SKIPS`: `dependency`,
-`broken`); codes only, never an error's text, and only to a server of protocol 4 (release 7): to an older
-one, the text as before. The EXIF reader refuses a JPEG that ends before its image data as truncated (`CutShort`),
-where it used to return what it had read, and a file that isn't a JPEG as `wrong_type` (`NotJpeg`). Once the server
-is at protocol 4, the agent's `meta_v` takes the form `[2, {...}]`, so every file read before is read once more
-(headers, no rehash) and its outcomes sent. The ingester checks the codes, keeps the latest report per content and
-schema at the newest version (a skip never replaces a run; a refusal leaves known values), drops them with the rest
-of a protected link's, and keeps found values that are all sensitive as a sensitive row "found" and another
-"nothing" (`extractions`, `extraction_outcomes`; `upgrades/extractions.sql`). Shown on the file page ("Read by"),
-in QUERIES.md "extraction outcomes", and counted for the operator, every owner's and without names, by
-`pinakes-ingest extractions`. The operator page (10) will show the same counts when it exists.
-
-**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, ext4; `tools/test`, 393 tests, all pass):
-`tests/test_extract.py` (a truncated JPEG refused wherever it ends, a non-JPEG `wrong_type`, codes and no text sent,
-the text to a protocol 3 server and every photo read once more at 4 without rehashing, an extractor missing its
-package said skipped); `tests/test_server.py` `TestExtractionOutcomes` (on real scans of generated JPEGs: truncated
-refused, one with no metadata "nothing", a non-JPEG `wrong_type`, the counts per content and per file, the command's
-output without names; another person sees only the shared files' outcomes, and a reader of a GPS-only photo
-"nothing" while its owner sees "found", checked to fail without the split; which report is kept; codes outside the
-lists left out; a protected link takes them; the upgrade against the schema); `tests/test_web.py` (the file page's
-line, a reader's identical for a GPS-only photo and one with none); `tests/test_queries.py` with the new block;
-`tests/test_releases.py` (the meta entry's fields declared in `compat.BATCH_FIELDS`). Only this Python and
-PostgreSQL; not run on a real tree; not deployed.
-
-## 43. Folders that are copies of each other
-
-Design: ROADMAP.md item 43 (built, so no longer listed); no DECISIONS.md entry.
-
-**Built:** `pinakes folder-copies [FOLDER]` and the API call `folder-copies?loc=ROOT:PATH` (`queries.folder_copies`):
-the folders under the given one (or the root) that are copies of another folder anywhere the person can see. A
-folder is the set of its files' (path inside it, content); backup roots, symlinks and empty files are left out. A
-pair is `same` (equal sets), `inside` (everything the folder holds is in the other, which holds more) or `nearly`
-(every path of the folder is in the other, at most `NEAR_PERCENT` (10) of them, at least one, with other content:
-those paths are listed in `differing`). A subfolder whose parent has the same relation to the same other folder is
-left out, and a pair of folders inside the scope is one row. Each row says how many files are only on either side.
-Biggest first.
-
-**Not as the roadmap said:** it is computed on each call, not at scan completion. A stored digest would be built from
-every file, so it could not follow row-level security; a query over `present` can. The cost is a pass over the
-catalog's present files per call, so a very large root should be asked about a folder at a time. Not measured on a
-large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet (ROADMAP 50).
-
-**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tools/test`, 396 tests, all pass):
-`tests/test_server.py` `TestFolderCopies` on generated trees (same with a subfolder, inside, nearly with the edited
-file named, empty files and same-name-other-content ignored, one row per pair, no row for a subfolder of a pair, a
-smaller scope; another person's identical folder gives no row, checked against the unrestricted connection that does
-find the pair). The CLI command (given ROOT:PATH, and a path here with `--host`, `--json`) and the API call it makes are in
-`test_cli_and_api`. Not run on a real tree; not deployed.
