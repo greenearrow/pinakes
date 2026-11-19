@@ -24,6 +24,7 @@
     <a href="{{ url_for('report', name='only-here') }}">Only here</a>
     <a href="{{ url_for('report', name='folder-copies') }}">Folder copies</a>
     <a href="{{ url_for('at_risk') }}">If a disk failed</a>
+    <a href="{{ url_for('growth') }}">Growth</a>
     <a href="{{ url_for('report', name='manifests') }}">Manifests</a>
     <a href="{{ url_for('access') }}">Access to your records</a>
     {% if 'operator' in roles %}<a href="{{ url_for('operator') }}">Operator</a>{% endif %}

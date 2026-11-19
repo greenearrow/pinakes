@@ -516,6 +516,55 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
                  _review(review), base, base + depth, TREE_LIMIT + 1))
 
 
+GROWTH_LIMIT = 2000
+
+
+def growth(conn, weeks=8, loc=None):
+    """Growth by folder over time (ROADMAP 47): per root and folder one level under `loc` (ROOT:PATH; None: each
+    root's top folders), per week (from its Monday, UTC dates), the files and bytes that came and went, from history,
+    in the last `weeks` weeks counting this one. Per change, what it did to a folder: a new file adds, a gone one takes
+    away, a change of content adds or takes away the difference in size, a move between folders takes from one and adds
+    to the other (a move inside one, nothing). `folder` '' is files directly under `loc`. A root's first scan is the
+    catalog starting, not growth: left out. A file's size counts once per path (a hard link again). `owners` is the
+    owners of the files counted, for the step-up audit. At most GROWTH_LIMIT rows, in tree order and by week."""
+    since = today() - datetime.timedelta(days=today().weekday() + 7 * (max(weeks, 1) - 1))
+    root, pre, base = None, "%", 0
+    if loc:
+        root, path = split_location(loc)
+        pre = _prefix(path)
+        base = len([p for p in path.split("/") if p])
+    return rows(conn, """WITH ev AS (
+                             SELECT hi.history_id, h.name AS host, r.label AS root, f.owner_id,
+                                    date_trunc('week', hi.seen_on)::date AS week, x.path, x.files, x.bytes
+                             FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
+                             JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                             LEFT JOIN pinakes.contents oc ON oc.content_id = hi.old_content_id
+                             LEFT JOIN pinakes.contents nc ON nc.content_id = hi.new_content_id
+                             CROSS JOIN LATERAL (VALUES
+                                 (CASE WHEN hi.kind <> 'new' THEN coalesce(hi.old_relpath, hi.new_relpath) END,
+                                  -1, -coalesce(oc.size, 0)),
+                                 (CASE WHEN hi.kind <> 'gone' THEN coalesce(hi.new_relpath, hi.old_relpath) END,
+                                  1, coalesce(nc.size, 0))) AS x (path, files, bytes)
+                             WHERE hi.seen_on >= %s AND hi.kind <> 'unreadable'
+                               AND NOT (hi.kind = 'new' AND hi.seen_after IS NULL)
+                               AND x.path IS NOT NULL AND x.path LIKE %s AND (%s::text IS NULL OR r.label = %s)),
+                         net AS (
+                             SELECT history_id, host, root, owner_id, week,
+                                    CASE WHEN array_length(string_to_array(path, '/'), 1) > %s + 1
+                                         THEN (string_to_array(path, '/'))[%s + 1] ELSE '' END AS folder,
+                                    sum(files) AS files, sum(bytes) AS bytes
+                             FROM ev GROUP BY 1, 2, 3, 4, 5, 6)
+                         SELECT host, root, folder, week,
+                                count(*) FILTER (WHERE files > 0) AS files_added,
+                                count(*) FILTER (WHERE files < 0) AS files_gone,
+                                coalesce(sum(bytes) FILTER (WHERE bytes > 0), 0) AS bytes_added,
+                                coalesce(-sum(bytes) FILTER (WHERE bytes < 0), 0) AS bytes_gone,
+                                array_agg(DISTINCT owner_id) FILTER (WHERE owner_id IS NOT NULL) AS owners
+                         FROM net WHERE files <> 0 OR bytes <> 0
+                         GROUP BY host, root, folder, week ORDER BY host, root, folder, week LIMIT %s""",
+                (since, pre, root, root, base, base, GROWTH_LIMIT + 1))
+
+
 def versions(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
     return rows(conn, """WITH v AS (SELECT new_content_id AS content_id, min(seen_on) AS first_seen_on
                                     FROM pinakes.history WHERE file_id = %s AND new_content_id IS NOT NULL

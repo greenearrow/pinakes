@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Growth · pinakes{% endblock %}
+{% block body %}
+<h1>Growth</h1>
+<form class="filters">
+  <label>Last <input name="weeks" value="{{ weeks }}" size="3" inputmode="numeric"> weeks</label>
+  <label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (all roots)" size="30"></label>
+  <button>Show</button>
+</form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<p class="muted">Per week (from its Monday), the files and bytes that came to and went from each folder {% if loc %}under {{ loc }}{% else %}at the top of each root{% endif %}, of the files you can see. A changed file counts the difference in size; a move between folders leaves one and comes to the other. A root's first scan is the catalog starting, not growth, and isn't counted. A hard link counts again.</p>
+{% if cut %}<p class="error">Only the first {{ rows|length }} rows: choose a folder or fewer weeks.</p>{% endif %}
+<div class="scroll"><table>
+  <tr><th>Folder</th><th>Week of</th><th class="num">Files added</th><th class="num">Files gone</th><th class="num">Added</th><th class="num">Gone</th><th class="num">Net</th></tr>
+  {% for r in rows %}{% set sub = (loc.split(':', 1)[1].strip('/') ~ '/' if loc and loc.split(':', 1)[1].strip('/') else '') ~ (r.folder ~ '/' if r.folder else '') %}
+  <tr><td>{{ r.host }} · <a href="{{ url_for('growth', loc=r.root ~ ':' ~ sub, weeks=weeks) }}">{{ r.root }}:{{ sub }}</a>{% if not r.folder %} <span class="muted">(files here)</span>{% endif %}</td>
+    <td>{{ r.week }}</td><td class="num">{{ r.files_added }}</td><td class="num">{{ r.files_gone }}</td>
+    <td class="num">{{ fmt_size(r.bytes_added) }}</td><td class="num">{{ fmt_size(r.bytes_gone) }}</td>
+    <td class="num">{% if r.bytes_added >= r.bytes_gone %}+{{ fmt_size(r.bytes_added - r.bytes_gone) }}{% else %}−{{ fmt_size(r.bytes_gone - r.bytes_added) }}{% endif %}</td></tr>
+  {% else %}<tr><td colspan="7" class="muted">Nothing came or went in these weeks.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

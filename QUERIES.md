@@ -276,6 +276,31 @@ FROM (SELECT x.role, (string_to_array(x.path, '/'))[1:i] AS folder
 GROUP BY folder ORDER BY folder;
 ```
 
+## growth by folder (web UI)
+
+What grew, and where (ROADMAP 47): per root and top folder (or the folders under a chosen one), per week, the files
+and bytes that came and went. Each history row takes its old size from its old path and gives its new size to its
+new path; per folder the two are added up, so a change counts its difference in size, a move between folders leaves
+one and comes to the other, and a move inside one counts nothing. A root's first scan (`seen_after` NULL) is the
+catalog starting, not growth. `queries.growth`, on the Growth page.
+
+```sql
+-- bytes in and out of each root's top folders, per week, in the last 8 weeks
+SELECT r.label AS root, split_part(x.path, '/', 1) AS folder, date_trunc('week', hi.seen_on)::date AS week,
+       sum(x.bytes) FILTER (WHERE x.bytes > 0) AS bytes_in, -sum(x.bytes) FILTER (WHERE x.bytes < 0) AS bytes_out
+FROM history hi
+JOIN files f USING (file_id)
+JOIN roots r USING (root_id)
+LEFT JOIN contents oc ON oc.content_id = hi.old_content_id
+LEFT JOIN contents nc ON nc.content_id = hi.new_content_id
+CROSS JOIN LATERAL (VALUES
+    (CASE WHEN hi.kind <> 'new' THEN coalesce(hi.old_relpath, hi.new_relpath) END, -coalesce(oc.size, 0)),
+    (CASE WHEN hi.kind <> 'gone' THEN coalesce(hi.new_relpath, hi.old_relpath) END, coalesce(nc.size, 0))) x (path, bytes)
+WHERE hi.seen_on >= current_date - 56 AND hi.kind <> 'unreadable' AND x.path IS NOT NULL
+  AND NOT (hi.kind = 'new' AND hi.seen_after IS NULL)
+GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+```
+
 ## versions HOST:PATH
 
 Each version the catalog has seen at that file, and which backup copies hold it: the "which backup do I restore

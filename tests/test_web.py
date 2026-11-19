@@ -285,6 +285,68 @@ class TestWeb(ServerCase):
         access = c2.get("/access").get_data(as_text=True)
         self.assertIn("report at-risk", access)
 
+    def test_growth_by_folder_per_week_under_row_level_security(self):
+        """ROADMAP 47: three dated scans after the first (which is the catalog starting, not growth)."""
+        monday = queries.today() - datetime.timedelta(days=queries.today().weekday())
+        two_ago, last = monday - datetime.timedelta(days=12), monday - datetime.timedelta(days=4)
+
+        def dated(on):
+            with admin_conn(self.db) as c:
+                c.execute("UPDATE pinakes.history SET seen_on = %s WHERE history_id > %s", (on, mark))
+        u1 = "people/user-1/"
+        mark = self.q("SELECT max(history_id) FROM pinakes.history")[0][0]
+        self.write("server-1", "store", u1 + "inbox/a.bin", b"a" * 100)
+        self.write("server-1", "store", u1 + "inbox/b.bin", b"b" * 20)
+        self.write("server-1", "store", "people/user-2/c.bin", b"c" * 50)
+        self.scan("server-1", "store")
+        dated(two_ago)
+        mark = self.q("SELECT max(history_id) FROM pinakes.history")[0][0]
+        self.write("server-1", "store", u1 + "taxes.txt", b"his, more")              # 3 B to 9 B: changed
+        os.makedirs(self.path("server-1", "store", u1 + "sorted"))
+        os.rename(self.path("server-1", "store", u1 + "inbox/a.bin"), self.path("server-1", "store", u1 + "sorted/a.bin"))
+        os.remove(self.path("server-1", "store", u1 + "inbox/b.bin"))
+        self.scan("server-1", "store")
+        dated(last)
+        self.write("server-1", "store", u1 + "sorted/d.bin", b"d" * 30)
+        os.remove(self.path("server-1", "store", "people/user-2/c.bin"))
+        self.scan("server-1", "store")                                               # this week, as seen
+        self.assertIn("moved", self.history(self.file("store", u1 + "sorted/a.bin")))
+
+        def weekly(c, weeks=8, loc=None):
+            return {(r["folder"], r["week"]): (r["files_added"], r["files_gone"], r["bytes_added"], r["bytes_gone"])
+                    for r in queries.growth(c, weeks, loc)}
+        wk2, wk1 = monday - datetime.timedelta(days=14), monday - datetime.timedelta(days=7)
+        with self.as_person("user-1", "s-growth-1") as c:
+            self.assertEqual(weekly(c, loc="store:" + u1), {
+                ("", wk1): (0, 0, 6, 0),                  # taxes.txt grew; the first scan's files aren't growth
+                ("inbox", wk2): (2, 0, 120, 0),
+                ("inbox", wk1): (0, 2, 0, 120),           # one moved out, one deleted
+                ("sorted", wk1): (1, 0, 100, 0),          # moved in
+                ("sorted", monday): (1, 0, 30, 0)})
+            self.assertEqual(weekly(c), {                 # each root's top folders: user-2's c.bin not counted
+                ("people", wk2): (2, 0, 120, 0), ("people", wk1): (0, 1, 6, 20), ("people", monday): (1, 0, 30, 0)})
+            self.assertEqual(set(weekly(c, 2)), {("people", wk1), ("people", monday)})
+            with self.assertRaises(ValueError):
+                queries.growth(c, 8, "nocolon")
+        with self.as_person("user-2", "s-growth-2") as c:
+            self.assertEqual(weekly(c), {("people", wk2): (1, 0, 50, 0), ("people", monday): (0, 1, 0, 50)})
+            self.assertEqual(weekly(c, loc="store:" + u1), {})
+        # the page, and an administrator's step-up view of it audited for the owner
+        c2, _ = self.login("user-2", "staple pony 12345")
+        page = c2.get("/reports/growth?loc=store:people/").get_data(as_text=True)
+        self.assertIn('store:people/user-2/</a>', page)
+        self.assertNotIn("user-1/", page)
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/reports/growth?loc=store:people/user-1/").get_data(as_text=True)
+        self.assertIn('href="/reports/growth?loc=store:people/user-1/inbox/&amp;weeks=8"', page)
+        self.assertIn("+100 B", page)                                                 # sorted/, moved in
+        self.assertIn("−120 B", page)                                            # inbox/, emptied
+        self.assertNotIn("report growth", c2.get("/access").get_data(as_text=True))
+        tok = self.csrf(c1, "/step-up")
+        c1.post("/step-up", data={"csrf": tok, "reason": "where the space went", "code": auth.totp(self.secret)})
+        self.assertIn("store:people/user-2/", c1.get("/reports/growth?loc=store:people/").get_data(as_text=True))
+        self.assertIn("report growth store:people/", c2.get("/access").get_data(as_text=True))
+
     def test_person_without_role_cannot_step_up(self):
         c2, _ = self.login("user-2", "staple pony 12345")
         self.assertEqual(c2.get("/step-up").status_code, 403)

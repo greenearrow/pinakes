@@ -52,6 +52,7 @@ agents).
 - 43. Folders that are copies of each other
 - 44. Extraction outcomes kept
 - 46. A machine replaced under the same name
+- 47. Growth by folder over time
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
 - 50. A web page for folder copies
@@ -563,6 +564,29 @@ retire-root and its dry run, a malformed list refused, no root label in `/health
 the schema). Not run on a real tree; not deployed. Fixed after release 6: `totals` printed `unreported_since` as the
 session's local date, a day off from UTC's for part of every day; it prints the UTC date now, as the catalog's other
 dates are (a test with the session in New York, 02:00 UTC; Python 3.12, PostgreSQL 16.15).
+
+## 47. Growth by folder over time
+
+Design: ROADMAP.md item 47 (built, so no longer listed); no DECISIONS.md entry.
+
+**Built:** `/reports/growth?loc=ROOT:PATH&weeks=N`, with "Growth" in the header (`queries.growth`, QUERIES.md
+"growth by folder"): per root and folder one level under the chosen one (no folder: each root's top folders), per week
+from its Monday, the files and bytes that came and went in the last N weeks (8 by default), from history, under
+row-level security. Each change takes its old size from its old path and gives its new size to its new path, added up
+per folder: a change of content counts its difference in size, a move between folders leaves one and comes to the
+other, a move inside one counts nothing. A root's first scan is the catalog starting and isn't counted; an unreadable
+file isn't a change of size. Each folder links to its own growth. In a step-up it is audited for the owners of the
+files counted. At most 2000 rows, said on the page when cut.
+
+**Not as the roadmap said:** "per root and top folder" is the default; a folder can be chosen, as on the changes page.
+Bytes are per path, so a new hard link counts again (history has no inode). No API call or CLI command yet.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_web.py` `TestWeb`): the first
+scan, then three scans dated two weeks ago, last week and this week (new files, a change, a move between folders, a
+delete), with the exact weekly rows for two people under a folder and at the root's top, the other person's files
+absent, a shorter window, the page, and a step-up view in the other person's access list (checked to fail without the
+first-scan rule and without the audit); all 410 tests pass. Other Pythons and PostgreSQL versions not run; not tried in
+a browser; not run on a real catalog; not deployed.
 
 ## 48. A fast home page on a large catalog, (a) and (b)
 

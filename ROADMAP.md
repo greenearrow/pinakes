@@ -123,7 +123,7 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
 ## Reports and exports
 
 Things a catalog's users would expect, from a review of the whole project; agreed 2026-11-19, none started. The rest of
-that review (41, 42, 43, 44, 46, 50) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
+that review (41, 42, 43, 44, 46, 47, 50) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
 two, L more).
 
 45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
@@ -133,11 +133,6 @@ two, L more).
     exactly as for a query: the export is a query, not a dump. *Done when:* a test exports one person's records and
     finds none of a second person's, sensitive fields only where `sensitive_visible()` allows, and the export in the
     audit.
-47. [Feature] **Growth by folder over time.** History is kept to the day; "what grew this month, and where" is one
-    query away and listed in DESIGN.md's reports ("a root's growth") without an item here. Per root and top folder,
-    bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
-    medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
-    person under row-level security.
 
 ## Soon: add-on modules
 

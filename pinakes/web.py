@@ -642,6 +642,23 @@ def create_app(cfg, connect=None):
         audit_people(r["owners"], "report at-risk", r["folders_total"])
         return render_template("at_risk.html", r=r, shown=queries.AT_RISK_FOLDERS)
 
+    @app.route("/reports/growth")
+    @signed_in
+    def growth():
+        """Growth by folder over time (ROADMAP 47): per root and folder under a chosen one, per week, the files and
+        bytes that came and went, of the files the person can see."""
+        loc = request.args.get("loc", "").strip()
+        weeks = _int_arg("weeks", 8, 1, 520)
+        rows, error = [], None
+        try:
+            rows = queries.growth(g.db, weeks, loc or None)
+        except ValueError as e:
+            error = str(e)
+        cut = len(rows) > queries.GROWTH_LIMIT
+        rows = rows[:queries.GROWTH_LIMIT]
+        audit_people({o for r in rows for o in r["owners"] or ()}, "report growth %s" % loc, len(rows))
+        return render_template("growth.html", rows=rows, loc=loc, weeks=weeks, error=error, cut=cut)
+
     @app.route("/operator")
     @signed_in
     def operator():
