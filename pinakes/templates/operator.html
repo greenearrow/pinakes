@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Operator · pinakes{% endblock %}
+{% macro disk(d) %}{{ d.host }} · {% if d.dev is none %}a device not known{% else %}device {{ d.dev }}{% endif %}{% endmacro %}
+{% block body %}
+<h1>Operator</h1>
+<p class="muted">Every person's files, as totals: no path, file name or person. Each file stored once on its disk counts once.</p>
+<h2>Roots</h2>
+<div class="scroll"><table>
+  <tr><th>Root</th><th>Host</th><th>Kind</th><th class="num">Files</th><th class="num">Size</th><th>Last complete scan</th><th>Oldest scrub check</th><th>Reporting</th><th class="num">Scan errors</th><th>Newest error</th></tr>
+  {% for r in roots %}<tr><td>{{ r.root }}{% if r.protected %} <span class="tag">protected</span>{% endif %}</td><td>{{ r.host }}</td><td>{{ r.kind }}</td>
+    <td class="num">{{ r.files }}</td><td class="num">{{ fmt_size(r.bytes) }}</td><td>{{ r.last_complete_on or 'never' }}</td>
+    <td>{{ r.scrub_oldest or '—' }}</td>
+    <td>{% if r.retired_on %}retired {{ r.retired_on }}{% elif r.unreported_since %}<span class="error">not reported since {{ r.unreported_since.date() }}</span>{% else %}yes{% endif %}</td>
+    <td class="num">{{ r.errors }}</td><td>{{ r.newest_error or '—' }}</td></tr>
+  {% else %}<tr><td colspan="10" class="muted">No roots yet.</td></tr>{% endfor %}
+</table></div>
+<h2>If a disk failed</h2>
+<p class="muted">Files with no copy on another disk (another machine, or another device of the same one). A hard link is not a copy, and a file the scrub couldn't read is none until it reads again.</p>
+<div class="scroll"><table>
+  <tr><th>Disk</th><th>Roots</th><th class="num">Files lost</th><th class="num">Size</th></tr>
+  {% for d in risk.disks %}<tr><td>{{ disk(d) }}</td><td>{{ d.roots|join(', ') }}</td><td class="num">{{ d.files }}</td><td class="num">{{ fmt_size(d.bytes) }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">None: every file has a copy on another disk.</td></tr>{% endfor %}
+</table></div>
+<h2>If a machine were lost</h2>
+<div class="scroll"><table>
+  <tr><th>Machine</th><th>Roots</th><th class="num">Files lost</th><th class="num">Size</th></tr>
+  {% for h in risk.hosts %}<tr><td>{{ h.host }}</td><td>{{ h.roots|join(', ') }}</td><td class="num">{{ h.files }}</td><td class="num">{{ fmt_size(h.bytes) }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">None: every file has a copy on another machine.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}

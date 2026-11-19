@@ -469,3 +469,11 @@ were made while building, to keep going, and are open to change.
   group's (`review_marks.marked_by_group`), only where the group is the owner or a co-owner; the audit entry names
   the token and its maker and goes to every member, as do its calls. Its sensitive metadata follows the owner's rule,
   by the group's role. Tagging waits for 37.
+- **The operator page and a disk's loss (ROADMAP 10, 42).** A disk is a device of a host as the agent saw it
+  (`st_dev`): a root never crosses a filesystem, so a disk is one or more roots. Losing it loses the files with no
+  readable copy on another host or another device of that host, counted as only-here counts them; the same per host is
+  "if this machine burned". The operator gets totals per disk and per host only, not per owner or top folder, which
+  the roadmap left open: a folder's name is a path, and per-owner sizes are more than SECURITY.md's "per root" grants.
+  Both are database functions an operator may call only from the web (a token, ops or not, is refused), so the web
+  role's row-level security stays as it is. A person's report runs the same function under row-level security: copies
+  only someone else can see don't count, so it errs toward "at risk". No API call or CLI yet.

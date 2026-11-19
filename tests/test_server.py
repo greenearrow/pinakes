@@ -3170,3 +3170,132 @@ class TestManifests(ServerCase):
 
     def test_upgrade_file_matches_the_schema(self):
         upgrade_files_match_the_schema(self, [], [], [])
+
+
+class TestAtRisk(ServerCase):
+    """What a disk's loss would cost (ROADMAP 42) and the operator's root totals (ROADMAP 10): two devices of one
+    host and a backup root on another; the operator's totals, with no path; each person's own, under row-level
+    security, a copy only someone else can see not counting."""
+
+    def setUp(self):
+        super().setUp()
+        put = lambda rel, data: self.write("server-1", "store", rel, data)
+        put("people/user-1/alone.bin", b"a" * 100)                    # one copy: lost with disk A
+        os.link(self.path("server-1", "store", "people/user-1/alone.bin"),
+                self.path("server-1", "store", "people/user-1/alone-link.bin"))   # the same inode, counted once
+        os.symlink("alone.bin", self.path("server-1", "store", "people/user-1/to-alone"))   # holds no data
+        put("people/user-1/usb/on-usb.bin", b"u" * 200)               # one copy, on disk B
+        put("people/user-1/both/a.bin", b"b" * 50)                    # disk A and disk B: lost only with the host
+        put("people/user-1/usb/a.bin", b"b" * 50)
+        put("people/user-1/backed/kept.bin", b"k" * 300)              # a copy on server-2: never lost
+        put("people/user-2/hers.bin", b"h" * 400)                     # user-2's, one copy: lost with disk A
+        put("people/user-1/x.bin", b"x" * 60)                         # disk A; user-2's copy on disk B, which
+        put("people/user-2/usb/y.bin", b"x" * 60)                     # only the operator and user-2 count
+        self.scan("server-1", "store")
+        self.conn.execute("UPDATE pinakes.files SET dev = dev + 1 WHERE relpath LIKE 'people/%/usb/%'")
+        self.dev_a = self.q("SELECT dev FROM pinakes.files WHERE relpath = 'people/user-1/alone.bin'")[0][0]
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0100/people/user-1/backed/kept.bin", b"k" * 300)
+        self.write("server-2", "snapshots", "2026-01-01_0100/people/user-1/old.bin", b"o" * 70)   # only in a backup
+        self.scan("server-2", "snapshots")
+        self.dev_s2 = self.q("SELECT dev FROM pinakes.files WHERE name = 'old.bin'")[0][0]
+
+    def sums(self, rows, key):
+        return {key(r): (r["files"], int(r["bytes"])) for r in rows}
+
+    def test_operator_totals_per_disk_and_host_without_names(self):
+        with self.as_person("user-1") as c:              # an operator
+            risk = queries.operator_at_risk(c)
+            out = c.execute("SELECT * FROM pinakes.operator_at_risk()")
+            self.assertEqual([d.name for d in out.description], ["scope", "host", "dev", "roots", "files", "bytes"])
+        a, b = self.dev_a, self.dev_a + 1
+        self.assertEqual(self.sums(risk["disks"], lambda r: (r["host"], r["dev"])),
+                         {("server-1", a): (2, 500), ("server-1", b): (1, 200), ("server-2", self.dev_s2): (1, 70)})
+        self.assertEqual(self.sums(risk["hosts"], lambda r: r["host"]),
+                         {"server-1": (7, 920), "server-2": (1, 70)})
+        self.assertEqual({r["host"]: r["roots"] for r in risk["hosts"]}, {"server-1": ["store"], "server-2": ["snapshots"]})
+        self.assertNotIn("people", json.dumps(risk, default=str))
+
+    def test_each_person_sees_only_their_own(self):
+        a, b = self.dev_a, self.dev_a + 1
+        with self.as_person("user-1") as c:
+            r = queries.at_risk(c)
+        # x.bin has a copy on disk B, but user-2's: user-1 can't count it, so it is at risk for them
+        self.assertEqual(self.sums(r["disks"], lambda d: (d["host"], d["dev"])),
+                         {("server-1", a): (2, 160), ("server-1", b): (1, 200), ("server-2", self.dev_s2): (1, 70)})
+        self.assertEqual(self.sums(r["hosts"], lambda d: d["host"]), {"server-1": (5, 460), "server-2": (1, 70)})
+        self.assertEqual({(f["root"], f["folder"], f["owner"]) for f in r["folders"]},
+                         {("store", "people", "User One"), ("snapshots", "2026-01-01_0100", "User One")})
+        self.assertEqual(r["folders"][0]["bytes"], 200)                   # the largest first: disk B's
+        with self.as_person("user-2") as c:
+            r = queries.at_risk(c)
+        self.assertEqual(self.sums(r["disks"], lambda d: (d["host"], d["dev"])),
+                         {("server-1", a): (1, 400), ("server-1", b): (1, 60)})
+        self.assertEqual({f["owner"] for f in r["folders"]}, {"User Two"})
+
+    def test_unreadable_and_unknown_device_are_no_copy(self):
+        a, b = self.dev_a, self.dev_a + 1
+        self.conn.execute("UPDATE pinakes.files SET unreadable_on = current_date "
+                          "WHERE relpath = 'people/user-1/usb/a.bin'")
+        with self.as_person("user-1") as c:
+            disks = self.sums(queries.at_risk(c)["disks"], lambda d: (d["host"], d["dev"]))
+        self.assertEqual(disks[("server-1", a)], (3, 210))                 # both/a.bin, its only readable copy
+        self.assertEqual(disks[("server-1", b)], (1, 200))                 # the unreadable one's content is on A
+        self.conn.execute("UPDATE pinakes.files SET unreadable_on = NULL")
+        self.conn.execute("UPDATE pinakes.files SET dev = NULL WHERE relpath = 'people/user-1/usb/a.bin'")
+        with self.as_person("user-1") as c:
+            disks = self.sums(queries.at_risk(c)["disks"], lambda d: (d["host"], d["dev"]))
+        self.assertEqual(disks[("server-1", a)], (3, 210))                 # a device not known is no other disk
+        self.assertEqual(disks[("server-1", None)], (1, 50))
+
+    def test_operator_roots(self):
+        self.conn.execute("INSERT INTO pinakes.scan_errors (root_id, relpath, error, seen_on) SELECT root_id, "
+                          "'people/user-2/locked', 'EACCES', current_date FROM pinakes.roots WHERE label = 'store'")
+        with self.as_person("user-1") as c:
+            roots = {r["root"]: r for r in queries.operator_roots(c)}
+        store = roots["store"]
+        # ten paths with the link and the symlink; alone.bin's inode once: 100 + 200 + 50 + 50 + 300 + 400 + 60 + 60
+        self.assertEqual((store["files"], int(store["bytes"]) - store_symlink_bytes(self)), (10, 1220))
+        self.assertEqual((store["errors"], store["newest_error"]), (1, self.q("SELECT current_date")[0][0]))
+        self.assertEqual((roots["snapshots"]["files"], int(roots["snapshots"]["bytes"])), (2, 370))
+        self.assertNotIn("people", json.dumps(list(roots.values()), default=str))
+
+    def test_refused_to_anyone_but_an_operator_on_the_web(self):
+        for fn in ("operator_roots", "operator_at_risk"):
+            with self.as_person("user-2") as c:
+                with self.assertRaisesRegex(psycopg.errors.RaiseException, "only an operator"):
+                    c.execute("SELECT * FROM pinakes.%s()" % fn)
+            with self.as_person("user-1") as c:          # an operator, but under a token
+                c.execute("SELECT set_config('pinakes.token', '1', false)")
+                with self.assertRaisesRegex(psycopg.errors.RaiseException, "only an operator"):
+                    c.execute("SELECT * FROM pinakes.%s()" % fn)
+            c = psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)    # no person
+            try:
+                with self.assertRaisesRegex(psycopg.errors.RaiseException, "only an operator"):
+                    c.execute("SELECT * FROM pinakes.%s()" % fn)
+            finally:
+                c.close()
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT array_agg(p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ') ' || "
+                "pg_get_function_result(p.oid) || ' ' || p.prosecdef || ' ' || md5(p.prosrc) || ' ' || "
+                "coalesce(array_to_string(p.proconfig, ','), '') || ' ' || "
+                "coalesce(array_to_string(p.proacl, ','), '') ORDER BY p.proname) "
+                "FROM pg_proc p WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname IN "
+                "('at_risk', 'require_operator', 'operator_roots', 'operator_at_risk')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()[0]
+            self.assertEqual(len(fresh), 4)
+            c.execute("DROP FUNCTION pinakes.operator_at_risk(), pinakes.operator_roots(), "
+                      "pinakes.require_operator(), pinakes.at_risk()")
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["operator.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "operator.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["operator.sql"]).fetchone()[0])
+            self.assertEqual(c.execute(defs).fetchone()[0], fresh)
+
+
+def store_symlink_bytes(case):
+    """The size the agent recorded for the store's symlink (its target's length, as lstat says)."""
+    return case.q("SELECT coalesce(sum(size), 0) FROM pinakes.files WHERE is_symlink")[0][0]

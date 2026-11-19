@@ -55,8 +55,6 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
 9. [Feature; also correctness] **Lineage decisions:** confirm or reject a likely or possible relative; a decision
    outranks every heuristic. *Done when:* a rejected edge disappears from walks and is never re-added by a later scan,
    and a confirmed one survives a recompute.
-10. [Operability] **Operator page:** counts, sizes, ages and errors per root, no file names. *Done when:* a test shows
-    an operator sees totals for another person's root and no path from it.
 11. [Security] **Notifications** when an administrator saw someone's records: a pluggable command (an e-mail, a push
     service), off by default. *Done when:* a test with a stand-in command gets one message per step-up per person, with
     the reason and no file names.
@@ -125,16 +123,9 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
 ## Reports and exports
 
 Things a catalog's users would expect, from a review of the whole project; agreed 2026-11-19, none started. The rest of
-that review (41, 43, 44, 46) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
+that review (41, 42, 43, 44, 46) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
 two, L more).
 
-42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
-    folder by folder before a disk fails. One report per device: how much has no copy on another disk, by owner and
-    by top folder, with the largest folders first, and the same per host ("if this machine burned"). On the operator
-    page as totals without names (10), and for a person, their own files with names. Sits next to: only-here and
-    safe-to-delete counting a copy only on another disk (5); the operator page (10). Value: high. Cost: S (the
-    queries exist; this is aggregation). Risk: none. *Done when:* a test with two devices and one backup root gives
-    the sizes at risk per device, an operator sees totals and no path, and a person sees only their own.
 45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
     files (paths, hashes, history, metadata, reviews), as CSV or JSON, through the API with the token's `read`
     scope. A catalog that describes people's files should hand them their description. Sits next to: the JSON API

@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}If a disk failed · pinakes{% endblock %}
+{% macro disk(d) %}{{ d.host }} · {% if d.dev is none %}a device not known{% else %}device {{ d.dev }}{% endif %}{% endmacro %}
+{% block body %}
+<h1>If a disk failed</h1>
+<p class="muted">Files you can see with no copy you can see on another disk: another machine, or another device of the same one. A hard link is not a copy, a file the scrub couldn't read is none until it reads again, and copies only someone else can see don't count. Each file stored once on its disk counts once.</p>
+<h2>Per disk</h2>
+<div class="scroll"><table>
+  <tr><th>Disk</th><th>Roots</th><th class="num">Files lost</th><th class="num">Size</th></tr>
+  {% for d in r.disks %}<tr><td>{{ disk(d) }}</td><td>{{ d.roots|join(', ') }}</td><td class="num">{{ d.files }}</td><td class="num">{{ fmt_size(d.bytes) }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">None: everything you can see has a copy on another disk.</td></tr>{% endfor %}
+</table></div>
+<h2>If a machine were lost</h2>
+<div class="scroll"><table>
+  <tr><th>Machine</th><th>Roots</th><th class="num">Files lost</th><th class="num">Size</th></tr>
+  {% for h in r.hosts %}<tr><td>{{ h.host }}</td><td>{{ h.roots|join(', ') }}</td><td class="num">{{ h.files }}</td><td class="num">{{ fmt_size(h.bytes) }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">None: everything you can see has a copy on another machine.</td></tr>{% endfor %}
+</table></div>
+{% if r.folders %}
+<h2>By folder</h2>
+<p class="muted">The top folders of each root holding files that a disk's loss would take, the largest first{% if r.folders_total > r.folders|length %} (the first {{ r.folders|length }} of {{ r.folders_total }}){% endif %}. Each opens Only here for that folder.</p>
+<div class="scroll"><table>
+  <tr><th>Disk</th><th>Folder</th><th>Owner</th><th class="num">Files</th><th class="num">Size</th></tr>
+  {% for f in r.folders %}<tr><td>{{ disk(f) }}</td>
+    <td><a href="{{ url_for('report', name='only-here', loc=f.root ~ ':' ~ f.folder ~ ('/' if f.folder else '')) }}">{{ f.root }}:{{ f.folder ~ '/' if f.folder else '' }}</a>{% if not f.folder %} <span class="muted">(files at the top)</span>{% endif %}</td>
+    <td>{{ f.owner or 'a group' }}</td><td class="num">{{ f.files }}</td><td class="num">{{ fmt_size(f.bytes) }}</td></tr>{% endfor %}
+</table></div>
+{% endif %}
+{% endblock %}

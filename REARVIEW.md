@@ -29,6 +29,7 @@ agents).
 - 5. Copies only on another disk
 - 6. Protection by inode
 - 7. Symlinks tied to their targets
+- 10. The operator page
 - 12. The metadata schema registry
 - 13. Extractors, first part: EXIF and embedded XMP from JPEGs
 - 16. Sensitive metadata for owners only (first part)
@@ -47,6 +48,7 @@ agents).
 - 38. Group tokens
 - 39. Ops tokens and `pinakes releases`
 - 41. The scrub
+- 42. What a disk's loss would cost
 - 43. Folders that are copies of each other
 - 44. Extraction outcomes kept
 - 46. A machine replaced under the same name
@@ -184,6 +186,20 @@ safe-to-delete lists the links elsewhere that lead into the folder; a link's pag
 may see it; `upgrades/symlink-targets.sql`.
 
 **State:** Tested (agent on 3.12; ingester, row-level security, upgrade, CLI query and web on 16).
+
+## 10. The operator page
+
+**Built:** `/operator`, linked for operators only: per root its host, kind, every person's present files and bytes
+(an inode once), last complete scan, oldest scrub check, whether its host stopped reporting it or it was retired, and
+its scan errors' count and newest date; then 42's totals. From `operator_roots()`, a database function that refuses
+anyone but an operator signed in on the web (a token, ops or not, too): counts, sizes and dates, never a path, a file's
+name or a person. `upgrades/operator.sql` (release 8, protocol 5, not cut).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, `tools/test`, 406 tests, all pass):
+`tests/test_server.py` `TestAtRisk` (another person's root counted, an inode once, scan errors counted without their
+path, refused to a person, an operator under a token and no person; the upgrade against the schema) and
+`tests/test_web.py` `TestWeb` (the page and its link for an operator only, no path, file or other person on it). Not
+run against a real catalog or in a browser; not deployed.
 
 ## 12. The metadata schema registry
 
@@ -450,6 +466,25 @@ root, chunks, the file written, appended and a changed number kept, unwritable; 
 no longer counted, review and restore, another person not seeing it, a reader not marking it, /health, the upgrade
 against the schema. The copy and hash checks checked to fail without them. Not run on a real tree or against real disks;
 not deployed.
+
+## 42. What a disk's loss would cost
+
+**Built:** `at_risk()`: every present file but a symlink with no readable copy on another host, and whether it has none
+on another device of its host either, copies counted as only-here counts them (a hard link no copy, an unreadable file
+none, a device not known never another disk), under the caller's row-level security. "If a disk failed"
+(`/reports/at-risk`) shows a person, of the files they can see, the files and bytes lost per disk (a device of a host,
+named by its roots) and per machine, and by disk, root, top folder and owner, the largest first (200 shown, each
+opening Only here for its folder); in a step-up it is audited for the owners shown. The operator page has every
+person's totals per disk and per host, without names (`operator_at_risk()`). Not per owner for the operator, no API
+call or CLI (DECISIONS.md).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, `tools/test`, 406 tests, all pass):
+`tests/test_server.py` `TestAtRisk` on generated trees, two devices of one host (made by changing a device number in
+the catalog) and a backup root on another: the sizes per disk and per host for the operator, without a path; each
+person's own, a copy only another person can see not counted; an unreadable copy and an unknown device;
+`tests/test_web.py` `TestWeb`: the page for two people, and a step-up's view on the other person's access page,
+checked to fail without the audit; the QUERIES.md block in `tests/test_queries.py`. Not measured on a large catalog
+(it groups every file by content per call); not run on a real catalog or in a browser; not deployed.
 
 ## 43. Folders that are copies of each other
 

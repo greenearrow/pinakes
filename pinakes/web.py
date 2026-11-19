@@ -633,6 +633,25 @@ def create_app(cfg, connect=None):
         audit_shown([file_id] + [c["file_id"] for c in copies], shown)
         return render_template("file.html", **page)
 
+    @app.route("/reports/at-risk")
+    @signed_in
+    def at_risk():
+        """What losing a disk or a machine would cost the person (ROADMAP 42): their files with no copy they can see
+        on another disk, per disk and per host, and by top folder with names."""
+        r = queries.at_risk(g.db)
+        audit_people(r["owners"], "report at-risk", r["folders_total"])
+        return render_template("at_risk.html", r=r, shown=queries.AT_RISK_FOLDERS)
+
+    @app.route("/operator")
+    @signed_in
+    def operator():
+        """The operator page (ROADMAP 10): every root's totals and what a disk's loss would cost, without a path or
+        a person (the database refuses anyone but an operator)."""
+        if "operator" not in g.roles:
+            abort(403, "The operator page is for operators.")
+        return render_template("operator.html", roots=queries.operator_roots(g.db),
+                               risk=queries.operator_at_risk(g.db))
+
     @app.route("/reports/<name>")
     @signed_in
     def report(name):

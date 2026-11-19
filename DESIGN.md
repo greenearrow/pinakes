@@ -474,7 +474,7 @@ checked.
   many were never verified, and the counts of mismatches and unreadable files. `/health` shows per host the oldest
   check (before a first pass is done, the day the scrub began there) and whether the scrub is behind: its last run
   older than `days`, a file's last check older than twice `days`, or a first pass not done in twice `days`; behind
-  answers 503, as a stale host does. An operator page (ROADMAP 10) is to show the same per root, totals only. The
+  answers 503, as a stale host does. The operator page (ROADMAP 10) shows the oldest check per root, with its totals. The
   scrub file's ids, mount points and comments stay on the machine.
 
 `pinakes-agent scrub status` prints per filesystem: the id, mount point, `days`, bytes, a night's share, the oldest

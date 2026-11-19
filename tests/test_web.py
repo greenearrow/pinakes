@@ -173,6 +173,35 @@ class TestWeb(ServerCase):
         c1.post("/step-up", data={"csrf": tok, "action": "end"})
         self.assertEqual(c1.get("/file/%d" % hers).status_code, 404)
 
+    def test_operator_page_totals_without_paths(self):
+        c1, _ = self.login("user-1", "correct horse battery")              # an operator
+        self.assertIn('href="/operator"', c1.get("/").get_data(as_text=True))
+        r = c1.get("/operator")
+        self.assertEqual(r.status_code, 200)
+        page = r.get_data(as_text=True)
+        self.assertRegex(page, r'<td>store</td><td>server-1</td><td>primary</td>\s*<td class="num">3</td>')
+        self.assertIn("If a disk failed", page)
+        for name in ("people", "diary", "taxes", "plan", "User Two"):          # no path, file or other person
+            self.assertNotIn(name, page)
+        c2, _ = self.login("user-2", "staple pony 12345")
+        self.assertNotIn('href="/operator"', c2.get("/").get_data(as_text=True))
+        self.assertEqual(c2.get("/operator").status_code, 403)
+
+    def test_at_risk_shows_a_person_their_own_and_a_step_up_is_audited(self):
+        c2, _ = self.login("user-2", "staple pony 12345")
+        page = c2.get("/reports/at-risk").get_data(as_text=True)
+        self.assertIn("User Two", page)                     # diary.txt, and plan.txt, shared with them
+        self.assertIn("User One", page)
+        self.assertRegex(page, r"<td class=\"num\">2</td><td class=\"num\">8 B</td>")   # diary and plan, 4 B each
+        c1, _ = self.login("user-1", "correct horse battery")
+        mine = c1.get("/reports/at-risk").get_data(as_text=True)
+        self.assertNotIn("User Two", mine)
+        tok = self.csrf(c1, "/step-up")
+        c1.post("/step-up", data={"csrf": tok, "reason": "planning a disk swap", "code": auth.totp(self.secret)})
+        self.assertIn("User Two", c1.get("/reports/at-risk").get_data(as_text=True))
+        access = c2.get("/access").get_data(as_text=True)
+        self.assertIn("report at-risk", access)
+
     def test_person_without_role_cannot_step_up(self):
         c2, _ = self.login("user-2", "staple pony 12345")
         self.assertEqual(c2.get("/step-up").status_code, 403)

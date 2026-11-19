@@ -22,8 +22,10 @@
     <a href="{{ url_for('report', name='dupes') }}">Duplicates</a>
     <a href="{{ url_for('report', name='safe-to-delete') }}">Safe to delete?</a>
     <a href="{{ url_for('report', name='only-here') }}">Only here</a>
+    <a href="{{ url_for('at_risk') }}">If a disk failed</a>
     <a href="{{ url_for('report', name='manifests') }}">Manifests</a>
     <a href="{{ url_for('access') }}">Access to your records</a>
+    {% if 'operator' in roles %}<a href="{{ url_for('operator') }}">Operator</a>{% endif %}
     <a href="{{ url_for('account') }}">{{ display }}</a>
     {% if 'administrator' in roles and not stepped_up %}<a href="{{ url_for('step_up') }}">Step up</a>{% endif %}
   </nav>

@@ -6,12 +6,13 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 7                 # the newest entry in RELEASES.toml (cut or being prepared)
-PROTOCOL = 4                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
+RELEASE = 8                 # the newest entry in RELEASES.toml (cut or being prepared)
+PROTOCOL = 5                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
                             # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46);
                             # 4: checksum manifests' hint and manifest records (DESIGN.md "Checksum manifests"),
                             # and extraction outcomes in a file's meta (METADATA.md "Extraction", ROADMAP 44)
+                            # 5: the schema's operator functions (ROADMAP 10, 42); batches as at 4
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
@@ -68,6 +69,7 @@ UPGRADE_PROBES = {
     "manifests.sql": "EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('pinakes.files') "
                      "AND attname = 'manifest_verdict' AND NOT attisdropped)",
     "extractions.sql": "to_regclass('pinakes.extractions') IS NOT NULL",
+    "operator.sql": "to_regprocedure('pinakes.operator_at_risk()') IS NOT NULL",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

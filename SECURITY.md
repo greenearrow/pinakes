@@ -131,6 +131,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   administrator only in a step-up (audited for the owners), and nobody else; readers and annotators can't. The web
   role has no write on the table itself. Under a token (`pinakes review`), `mark_changes()` also needs the token's
   `review` scope and skips changes outside its roots.
+- The operator page (`/operator`) shows every person's totals per root and what a disk's loss would cost per disk
+  and per host: counts, sizes and dates, never a path, a folder, a file's name or a person. The database gives them
+  (`operator_roots()`, `operator_at_risk()`) only to an operator signed in on the web, never under a token. "If a
+  disk failed" shows a person their own at-risk files by folder, under row-level security, counting only the copies
+  they can see; an administrator sees everyone's only in a step-up, audited for the owners.
 - `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
   batch, last complete scan, whether it is stale, its scrub's dates, and how many of its roots its batches no longer
   name. It names hosts and nothing else (no root, person or file, no

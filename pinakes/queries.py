@@ -687,6 +687,60 @@ def agent_versions(conn):
                          FROM pinakes.hosts h LEFT JOIN pinakes.checkins c USING (host_id) ORDER BY h.name""")
 
 
+# What a disk's loss would cost (ROADMAP 42), from pinakes.at_risk(): the files with no copy on another host, and of
+# them those with none on another device of their host either. Each inode once (hard links take their space once).
+_AT_RISK_INODES = """WITH i AS (SELECT a.host_id, a.dev, min(a.root_id) AS root_id, max(a.size) AS size,
+                                   bool_or(a.disk_only) AS disk_only
+                            FROM pinakes.at_risk() a GROUP BY a.host_id, a.dev, coalesce(a.ino, -a.file_id))"""
+AT_RISK_FOLDERS = 200       # the largest folders listed; the rest counted
+
+
+def at_risk(conn):
+    """What losing a disk, or a whole machine, would cost the person: of the files they can see, those with no copy
+    they can see on another disk (another host, or another device of the host). `disks`: per device of a host (dev
+    None: not known), files and bytes lost with it and the roots they are in; `hosts`: the same if the machine were
+    lost; `folders`: per disk, root, top folder ('' for files at the root's top) and owner, the largest first (at
+    most AT_RISK_FOLDERS of them, `folders_total` all); `owners`: the owner ids shown, for the step-up audit."""
+    disks = rows(conn, _AT_RISK_INODES + """
+                       SELECT h.name AS host, i.dev, array_agg(DISTINCT r.label ORDER BY r.label) AS roots,
+                              count(*) AS files, coalesce(sum(i.size), 0) AS bytes
+                       FROM i JOIN pinakes.roots r ON r.root_id = i.root_id
+                       JOIN pinakes.hosts h ON h.host_id = i.host_id
+                       WHERE i.disk_only GROUP BY h.name, i.dev ORDER BY bytes DESC, h.name, i.dev NULLS LAST""")
+    hosts = rows(conn, _AT_RISK_INODES + """
+                       SELECT h.name AS host, array_agg(DISTINCT r.label ORDER BY r.label) AS roots,
+                              count(*) AS files, coalesce(sum(i.size), 0) AS bytes
+                       FROM i JOIN pinakes.roots r ON r.root_id = i.root_id
+                       JOIN pinakes.hosts h ON h.host_id = i.host_id
+                       GROUP BY h.name ORDER BY bytes DESC, h.name""")
+    folders = rows(conn, """SELECT h.name AS host, x.dev, r.label AS root, x.folder, x.owner_id, p.display AS owner,
+                                   count(*) AS files, coalesce(sum(x.size), 0) AS bytes, """ + TOTAL + """
+                            FROM (SELECT a.host_id, a.dev, a.root_id, a.owner_id,
+                                         CASE WHEN strpos(a.relpath, '/') > 0 THEN split_part(a.relpath, '/', 1)
+                                              ELSE '' END AS folder, max(a.size) AS size
+                                  FROM pinakes.at_risk() a WHERE a.disk_only
+                                  GROUP BY 1, 2, 3, 4, 5, coalesce(a.ino, -a.file_id)) x
+                            JOIN pinakes.roots r ON r.root_id = x.root_id JOIN pinakes.hosts h ON h.host_id = x.host_id
+                            LEFT JOIN pinakes.people p ON p.person_id = x.owner_id
+                            GROUP BY h.name, x.dev, r.label, x.folder, x.owner_id, p.display
+                            ORDER BY bytes DESC, h.name, x.dev NULLS LAST, r.label, x.folder, x.owner_id NULLS LAST"""
+                   + PAGE, (AT_RISK_FOLDERS, 0))
+    return {"disks": disks, "hosts": hosts, "folders": folders, "folders_total": page_total(folders),
+            "owners": sorted({f["owner_id"] for f in folders if f["owner_id"] is not None})}
+
+
+def operator_roots(conn):
+    """The operator page (ROADMAP 10): every root's files, bytes, scan, scrub, reporting state and scan errors, as
+    counts and dates (pinakes.operator_roots(): an operator signed in on the web only)."""
+    return rows(conn, "SELECT * FROM pinakes.operator_roots()")
+
+
+def operator_at_risk(conn):
+    """What a disk's loss would cost, as every person's totals per disk and per host, without names (ROADMAP 42)."""
+    out = rows(conn, "SELECT * FROM pinakes.operator_at_risk()")
+    return {"disks": [r for r in out if r["scope"] == "disk"], "hosts": [r for r in out if r["scope"] == "host"]}
+
+
 def roots(conn, hidden=True):
     """Every root with the files the person can see in it (under a token, only the roots it may see); without
     `hidden`, not counting the hidden ones, which `hidden_files` still counts. Every root's counts come from one

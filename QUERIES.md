@@ -98,6 +98,24 @@ WHERE r.label = 'downloads' AND (f.relpath LIKE 'camera/%' OR f.relpath = 'camer
 ORDER BY f.relpath;
 ```
 
+## if a disk failed (web UI)
+
+What losing a disk, or a whole machine, would cost (ROADMAP 42): `at_risk()` gives every file with no copy on another
+host, and `disk_only` marks those with none on another device of their host either, the copies counted as only-here
+counts them. Under row-level security a person counts only the copies they can see; the operator page has every
+person's totals, without names (`operator_at_risk()`, an operator on the web only). An inode counts once.
+
+```sql
+-- per disk: the files and bytes lost with it
+SELECT h.name AS host, i.dev, count(*) AS files, sum(i.size) AS bytes
+FROM (SELECT a.host_id, a.dev, max(a.size) AS size
+      FROM at_risk() a WHERE a.disk_only
+      GROUP BY a.host_id, a.dev, coalesce(a.ino, -a.file_id)) i       -- hard links once
+JOIN hosts h USING (host_id)
+GROUP BY h.name, i.dev
+ORDER BY bytes DESC;
+```
+
 ## safe-to-delete HOST:PATH
 
 Lists the files that are **not** safe: no copy in a primary or backup root outside the folder on another disk, with

@@ -17,7 +17,7 @@ import unittest
 import unittest.mock
 import zipfile
 
-from pinakes import agent, chunker, config, fsinfo, globs, hidden, manifests, names, outbox, transport
+from pinakes import agent, chunker, compat, config, fsinfo, globs, hidden, manifests, names, outbox, transport
 from pinakes.scan import Interrupted, MountChanged, Scanner, TooManyGone, check, check_verdict
 from pinakes.state import State
 
@@ -1250,7 +1250,7 @@ print("ack %%d" %% header["seq"])
     def test_send_alone_checks_in_too(self):
         self.write("a.txt", b"a")
         self.scan()
-        with unittest.mock.patch.dict(os.environ, {"FAKE_SERVER": self.server(1, min_agent=5)}), \
+        with unittest.mock.patch.dict(os.environ, {"FAKE_SERVER": self.server(1, min_agent=compat.PROTOCOL + 1)}), \
                 contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(agent.cmd_send(self.cfg, argparse.Namespace()), 4)
         self.assertEqual(len(outbox.pending(self.cfg.outbox)), 1)
