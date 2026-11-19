@@ -122,12 +122,11 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
     is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an
     active step-up, and every call in the audit.
 
-## Proposed (from a review of the whole project; not yet agreed)
+## Reports and exports
 
-Things a catalog's users would expect that nothing above lists. Each fits next to something built; none is started
-(41, the scrub, 46, a machine replaced under the same name, 44, extraction outcomes, and 43, folders that are copies of
-each other, were agreed and are built: REARVIEW.md).
-Ranked by value over cost (cost: S half a day or less, M a day or two, L more).
+Things a catalog's users would expect, from a review of the whole project; agreed 2026-11-19, none started. The rest of
+that review (41, 43, 44, 46) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
+two, L more).
 
 42. [Feature; also operability] **What a disk's loss would cost.** `only-here` answers for a folder; nobody asks
     folder by folder before a disk fails. One report per device: how much has no copy on another disk, by owner and
