@@ -25,6 +25,12 @@ timeout = 600                          # seconds to wait for the server to apply
 # kind = "directory"
 # path = "/srv/pinakes/inbox"
 
+# [monitor]
+# A push monitor called at the end of every `run`: up with counts, down with the reasons (pinakes/monitor.py).
+# The URL is a secret; it goes in its own file, readable by the agent's user only, never here. The file's first
+# line that isn't empty or a # comment is the URL; status, msg and ping in its query are set by the agent.
+# url_file = "/etc/pinakes/monitor-url"
+
 # One [[root]] per scanned folder.
 # This example shows one root of every kind; a real machine lists only its own, and the server's [hosts] says
 # which host may report which root (server.example.toml).

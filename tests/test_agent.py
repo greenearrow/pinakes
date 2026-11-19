@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import gzip
 import hashlib
+import http.server
 import io
 import json
 import os
@@ -12,9 +13,11 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
+import urllib.parse
 import zipfile
 
 from pinakes import agent, chunker, compat, config, fsinfo, globs, hidden, manifests, names, outbox, transport
@@ -1366,6 +1369,176 @@ class TestFullScanHeader(Tree):
             self.scanner.hook = None
             self.scan(full=resumed_full)
             self.assertEqual(self.complete_header()["full"], want)
+
+
+class TestMonitor(Tree):
+    """The agent reports each run to a push monitor (ROADMAP 51), against a local test server: up after a good run,
+    down with the reason after a failed one, nothing without a [monitor] or its file, the exit status the run's
+    whatever the monitor does, and the URL in no output, command line or config."""
+
+    TOKEN = "push-token-7f3a9c"
+
+    def setUp(self):
+        super().setUp()
+        self.got = []
+        self.answer = 200
+        self.delay = 0
+        test = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                test.got.append(self.path)
+                time.sleep(test.delay)
+                try:
+                    self.send_response(test.answer)
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":true}')
+                except OSError:                             # the agent gave up waiting
+                    pass
+
+            def log_message(self, *a):
+                pass
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.url = "http://127.0.0.1:%d/api/push/%s?status=up&msg=OK&ping=" % (self.httpd.server_port, self.TOKEN)
+        self.url_file = os.path.join(self.tmp, "monitor-url")
+        with open(self.url_file, "w") as f:
+            f.write("# the push monitor for test-1\n%s\n" % self.url)
+        self.cfg.monitor = self.url_file
+        p = unittest.mock.patch.object(agent, "on_ac_power", return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def run_agent(self):
+        """One `pinakes-agent run`: (exit, stdout + stderr, argv of every process started)."""
+        out, argvs = io.StringIO(), []
+        real = subprocess.Popen.__init__
+
+        def popen(pself, args, *a, **kw):
+            argvs.append(args)
+            return real(pself, args, *a, **kw)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), \
+                unittest.mock.patch.object(subprocess.Popen, "__init__", popen):
+            rc = agent.cmd_run(self.cfg, argparse.Namespace(root=None))
+        return rc, out.getvalue(), argvs
+
+    def calls(self):
+        return [dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(g).query, keep_blank_values=True))
+                for g in self.got]
+
+    def assertNoURL(self, text):
+        self.assertNotIn(self.TOKEN, text)
+        self.assertNotIn("127.0.0.1:%d" % self.httpd.server_port, text)
+
+    def test_up_after_a_good_run(self):
+        self.write("a.txt", b"a")
+        self.write("d/b.txt", b"b")
+        self.cfg.busy_command = "false"                     # a process started, to check its argv
+        rc, out, argvs = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self.got), 1)
+        self.assertTrue(self.got[0].startswith("/api/push/%s?" % self.TOKEN))
+        c = self.calls()[0]
+        self.assertEqual(c["status"], "up")
+        self.assertEqual(c["msg"], "1 root(s) scanned, 2 files seen, 0 error(s); 2 batch(es) sent, 0 waiting")
+        self.assertNotIn("ping", c)                         # the URL's own status, msg and ping replaced
+        self.assertNoURL(out)
+        self.assertTrue(argvs)
+        self.assertNoURL(repr(argvs))
+
+    def test_down_with_the_reason_after_a_failed_run(self):
+        shutil.rmtree(self.top)
+        rc, out, _ = self.run_agent()
+        self.assertEqual(rc, 2)
+        c = self.calls()
+        self.assertEqual(len(c), 1)
+        self.assertEqual(c[0]["status"], "down")
+        self.assertEqual(c[0]["msg"], "exit 2: root r: not found; 0 batch(es) waiting")
+        self.assertNotIn(self.top, c[0]["msg"])             # the error's text (a path) isn't sent
+        self.assertNoURL(out)
+
+    def test_down_when_most_of_a_root_is_gone(self):
+        for i in range(150):
+            self.write("f%03d" % i, b"%d" % i)
+        self.run_agent()
+        for i in range(120):
+            os.remove(os.path.join(self.top, "f%03d" % i))
+        rc, _, _ = self.run_agent()
+        self.assertEqual(rc, 2)
+        self.assertEqual(self.calls()[1]["status"], "down")
+        self.assertEqual(self.calls()[1]["msg"],
+                         "exit 2: root r: most files missing (deleted), not reported gone; 0 batch(es) waiting")
+
+    def test_a_crash_is_reported_down_and_still_raised(self):
+        self.write("a.txt", b"a")
+        with unittest.mock.patch.object(agent.Scanner, "scan", side_effect=RuntimeError("/home/user/secret.txt")):
+            with self.assertRaises(RuntimeError):
+                self.run_agent()
+        self.assertEqual(self.calls(), [{"status": "down", "msg": "crashed: RuntimeError"}])
+
+    def test_a_skipped_run_is_up(self):
+        self.cfg.busy_command = "true"
+        rc, _, _ = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.calls(), [{"status": "up", "msg": "busy: not scanning"}])
+
+    def test_nothing_sent_with_no_setting_or_no_file(self):
+        self.write("a.txt", b"a")
+        self.cfg.monitor = None
+        rc, out, _ = self.run_agent()
+        self.assertEqual((rc, self.got), (0, []))
+        self.assertNotIn("monitor", out)
+        self.cfg.monitor = os.path.join(self.tmp, "none")
+        rc, out, _ = self.run_agent()
+        self.assertEqual((rc, self.got), (0, []))
+        self.assertIn("pinakes-agent: monitor: not reported: no push URL file at %s" % self.cfg.monitor, out)
+        with open(self.cfg.monitor, "w") as f:
+            f.write("# not set yet\n\nftp://example.net/x\n")
+        rc, out, _ = self.run_agent()
+        self.assertEqual((rc, self.got), (0, []))
+        self.assertIn("holds no http or https URL", out)
+        self.assertNotIn("example.net", out)
+
+    def test_a_dead_or_failing_monitor_leaves_the_exit_status(self):
+        self.write("a.txt", b"a")
+        self.answer = 500
+        rc, out, _ = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertIn("pinakes-agent: monitor: not reported: HTTP 500\n", out)
+        self.assertNoURL(out)
+        self.answer, self.delay = 200, 2
+        with unittest.mock.patch.object(agent.monitor, "TIMEOUT", 0.3):
+            rc, out, _ = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertIn("pinakes-agent: monitor: not reported: timed out\n", out)
+        self.delay = 0
+        self.httpd.shutdown()
+        self.httpd.server_close()                           # nothing listens on the port now
+        rc, out, _ = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertIn("pinakes-agent: monitor: not reported: connection refused\n", out)
+        self.assertNoURL(out)
+        with unittest.mock.patch.object(agent.monitor, "push", side_effect=RuntimeError(self.url)):
+            rc, out, _ = self.run_agent()
+        self.assertEqual(rc, 0)
+        self.assertIn("pinakes-agent: monitor: not reported: RuntimeError\n", out)
+        self.assertNoURL(out)
+
+    def test_config(self):
+        base = '[agent]\nhost = "h"\nstate = "/s"\noutbox = "/o"\n'
+        self.assertIsNone(config.loads(base).monitor)
+        self.assertEqual(config.loads(base + '[monitor]\nurl_file = "/etc/pinakes/monitor-url"\n').monitor,
+                         "/etc/pinakes/monitor-url")
+        for bad, says in (('url = "https://example.net/api/push/x"', "never goes in the config"),
+                          ('url_file = ""', "needs url_file"),
+                          ("", "needs url_file"),
+                          ('url_file = "monitor-url"', "absolute path")):
+            with self.assertRaisesRegex(config.ConfigError, says):
+                config.loads(base + "[monitor]\n" + bad + "\n")
 
 
 if __name__ == "__main__":

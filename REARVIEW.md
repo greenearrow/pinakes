@@ -57,6 +57,7 @@ agents).
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
 - 50. A web page for folder copies
+- 51. The agent reports its runs to a push monitor
 
 ## Dropped
 
@@ -676,3 +677,26 @@ relations with the edited file named, 58 rows over pages of 50 with none twice a
 both ways, another person's folders absent until a step-up and then listed with the access shown to them (checked to
 fail without the audit); all 408 tests pass. Other Pythons and PostgreSQL versions not run; not tried in a browser; not
 run on a real catalog; not deployed.
+
+## 51. The agent reports its runs to a push monitor
+
+Design: ROADMAP.md item 51 (built, so no longer listed); SECURITY.md "Agents".
+
+**Built:** An optional `[monitor] url_file` in `agent.toml`, the path of a file whose first line that isn't empty or a
+comment is a push monitor's URL; a config with `url` itself, or a relative path, is refused. Every `pinakes-agent run`,
+by timer or by hand, ends by calling it (`pinakes/monitor.py`, standard library, 10 s): `status=up` with
+`N root(s) scanned, N files seen, N error(s); N batch(es) sent, N waiting` (or the skip, "on battery" or "busy"; "the
+server didn't answer" added when check-in failed), `status=down` with `exit N:` and the reasons (a root not found, most
+of a root missing, the scrub's file, locked with both sides' protocols, sending stopped) or `crashed:` and the
+exception's kind, which is still raised. The URL's own `status`, `msg` and `ping` are replaced, the rest kept (the
+push form with the state in the query). No path, file name or error text is sent. A missing file, a file without an
+http(s) URL, an HTTP error, a timeout or a refused connection is one line on stderr naming the status code or the
+error's kind, without the URL, and the exit status stays the run's. Only `run` reports, not `scan` or `send`.
+
+**State:** Tested on Python 3.12.3 (x86-64 desktop; `tests/test_agent.py` `TestMonitor`, against a local HTTP server
+on generated trees): up after a good run with the counts, down with the reason after a missing root, after most of a
+root gone, and after a crash; up for a skipped run; nothing sent with no setting, no file or no URL in it; HTTP 500,
+a 0.3 s timeout, a closed port and a failing call each one line with exit 0; the URL absent from stdout, stderr and
+the argv of the processes started (checked to fail with an error's text printed), and refused in the config. All 419
+tests pass (tools/test, PostgreSQL 16.15). Other Pythons not run; not run on a real tree against a real push monitor;
+not deployed.

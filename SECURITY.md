@@ -112,6 +112,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   manifest, even when some of the files it lists are someone else's: counts only, of a list its reader can open
   where it lies. The ingester refuses manifest records from a protected root, or for a manifest behind a protected
   link.
+- A push monitor (`[monitor]`, off unless configured) is the agent's one outbound call besides the server: at the
+  end of each run, up or down with counts and reasons from a fixed set (a root's label, a protocol, a number of
+  batches), never a path, a file's name or an error's text. Its URL is a secret, kept only in the file
+  `url_file` names: a config with the URL itself is refused, and no message, log line or command line carries it;
+  a report that fails says why as a status code or an error's kind. It never changes the run's exit status.
 - Resolving a symlink's target looks names up (`lstat`, never reading a file) only inside the agent's own roots,
   as configured: a link pointing elsewhere gets no access the scan didn't already have. On the web, a link shows its
   target's page only to someone who may see that file.

@@ -656,6 +656,7 @@ class Scanner:
                 w.header.update(full=True, accept_gone=bool(accept_gone))
             self.state.finish_scan(scan_id)
             flush(True)
+            summary["seen"] = seen
         except BaseException:
             self.state.rollback()  # the unwritten batch's records are found again on the next run
             raise

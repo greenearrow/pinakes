@@ -122,6 +122,21 @@ class AgentConfig:
         t = self.transport.get("timeout", 600)
         if isinstance(t, bool) or not isinstance(t, int) or t <= 0:
             raise ConfigError("[transport] timeout must be a whole number of seconds above 0")
+        # a push monitor called at the end of every run (pinakes/monitor.py): the file holding its URL, never the URL
+        mon = d.get("monitor")
+        self.monitor = None
+        if mon is not None:
+            if not isinstance(mon, dict):
+                raise ConfigError("[monitor] is a table")
+            if "url" in mon:
+                raise ConfigError("[monitor] takes url_file, a file holding the push URL; the URL itself never goes "
+                                  "in the config")
+            f = mon.get("url_file")
+            if not isinstance(f, str) or not f.strip():
+                raise ConfigError("[monitor] needs url_file, the path of a file holding the push URL")
+            self.monitor = os.path.expanduser(f)
+            if not os.path.isabs(self.monitor):
+                raise ConfigError("[monitor] url_file must be an absolute path")
         self.roots = [Root(r) for r in d.get("root", [])]
         labels = [r.label for r in self.roots]
         if len(set(labels)) != len(labels):

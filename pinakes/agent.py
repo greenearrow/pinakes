@@ -27,6 +27,10 @@ must update, and exits 4. The next run checks again and sends what it held once 
 server it can't reach is held for and retried as before. Check-in also answers the last batch number the server
 applied for this host: an agent whose numbering is behind it (a new or restored state, as on a new machine) renumbers
 its waiting batches to follow, and says so, rather than send numbers the server would refuse.
+
+With a [monitor] (url_file: a file holding a push monitor's URL), every run, by timer or by hand, ends by calling it:
+up with counts (roots, files seen, errors, batches sent and waiting), down with the reasons (pinakes/monitor.py). A
+report that fails is one line on stderr, without the URL, and the exit status stays the run's.
 """
 
 import argparse
@@ -35,7 +39,7 @@ import os
 import subprocess
 import sys
 
-from . import compat, config, fsinfo, outbox, scrub, transport
+from . import compat, config, fsinfo, monitor, outbox, scrub, transport
 from .scan import Scanner, TooManyGone, check, check_verdict
 from .state import State
 
@@ -77,6 +81,9 @@ def find_config(given):
 
 
 def cmd_scan(cfg, args):
+    tally = getattr(args, "tally", None)        # run's report to the monitor: counts and reasons, never a path
+    if tally is None:
+        tally = {}
     st = State(cfg.state)
     rc = 0
     try:
@@ -91,7 +98,13 @@ def cmd_scan(cfg, args):
             except (TooManyGone, FileNotFoundError) as e:
                 print("pinakes-agent: %s" % e, file=sys.stderr)
                 rc = 2
+                tally.setdefault("problems", []).append(
+                    "root %s: %s" % (root.label, "most files missing (%s), not reported gone" % e.cause
+                                     if isinstance(e, TooManyGone) else "not found"))
                 continue
+            tally["roots"] = tally.get("roots", 0) + 1
+            tally["seen"] = tally.get("seen", 0) + s.get("seen", 0)
+            tally["errors"] = tally.get("errors", 0) + s["errors"]
             print("%(root)s: scan %(scan)d%(r)s, %(sent)d sent, %(gone)d gone, %(errors)d errors, %(batches)d batches"
                   % dict(s, r=" (resumed)" if s["resumed"] else ""))
             m = s.get("manifests")
@@ -105,7 +118,10 @@ def cmd_scan(cfg, args):
         if getattr(args, "check_busy", False) and busy(cfg):
             print("busy: no scrub")
             return rc
-        rc = max(rc, run_scrub(cfg, st, [r.label for r in roots] if getattr(args, "root", None) else None))
+        src = run_scrub(cfg, st, [r.label for r in roots] if getattr(args, "root", None) else None)
+        if src:
+            tally.setdefault("problems", []).append("scrub: its file can't be read or written")
+        rc = max(rc, src)
     finally:
         st.close()
     return rc
@@ -270,18 +286,26 @@ def check_in(cfg):
 
 
 def cmd_send(cfg, args, checked=None):
+    tally = getattr(args, "tally", None)
+    if tally is None:
+        tally = {}
     status, why = checked or check_in(cfg)
     if status == "locked":
+        tally.setdefault("problems", []).append("locked: %s" % why)
         print("pinakes-agent: locked: %s; scanning goes on, %d batch(es) held, nothing sent until then"
               % (why, len(outbox.pending(cfg.outbox))), file=sys.stderr, flush=True)
         return compat.LOCKED_EXIT
     if status == "unreachable":
         print("pinakes-agent: %s; batches are kept, and sent once the server answers" % why, file=sys.stderr,
               flush=True)
+        tally["unreachable"] = True
     sent, err = transport.send_pending(cfg)
+    tally["sent"] = sent
     print("sent %d batch(es)" % sent)
     if err:
         print("pinakes-agent: %s" % err, file=sys.stderr)
+        tally.setdefault("problems", []).append("sending stopped%s" % (
+            ": the server didn't answer" if status == "unreachable" else " at a batch"))
         return 1
     return 0
 
@@ -341,11 +365,41 @@ def _fmt(t):
 
 
 def cmd_run(cfg, args):
+    """Check conditions, scan, send; then report the run to the push monitor if there is one (ROADMAP 51): up with
+    counts, down with the reasons, a crash as its exception's kind. The report never changes the exit status."""
+    args.tally = {}
+    try:
+        rc = _run(cfg, args)
+    except Exception as e:
+        _report(cfg, False, "crashed: %s" % type(e).__name__)
+        raise
+    t = args.tally
+    if rc == 0:
+        _report(cfg, True, t.get("skipped") or "%d root(s) scanned, %d files seen, %d error(s); %d batch(es) sent, "
+                "%d waiting" % (t.get("roots", 0), t.get("seen", 0), t.get("errors", 0), t.get("sent", 0),
+                                len(outbox.pending(cfg.outbox)))
+                + ("; the server didn't answer" if t.get("unreachable") else ""))
+    else:
+        _report(cfg, False, "exit %d: %s; %d batch(es) waiting" % (
+            rc, "; ".join(t.get("problems") or ["see the agent's log"]), len(outbox.pending(cfg.outbox))))
+    return rc
+
+
+def _report(cfg, up, msg):
+    try:
+        monitor.report(cfg.monitor, up, msg)
+    except Exception as e:                      # never fails the run
+        print("pinakes-agent: monitor: not reported: %s" % type(e).__name__, file=sys.stderr)
+
+
+def _run(cfg, args):
     if cfg.only_on_ac and not on_ac_power():
         print("on battery: not scanning")
+        args.tally["skipped"] = "on battery: not scanning"
         return 0
     if busy(cfg):
         print("busy: not scanning")
+        args.tally["skipped"] = "busy: not scanning"
         return 0
     args.check_busy = True
     checked = check_in(cfg)                     # before anything is sent; a locked agent still scans
