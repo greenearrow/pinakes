@@ -173,6 +173,89 @@ class TestWeb(ServerCase):
         c1.post("/step-up", data={"csrf": tok, "action": "end"})
         self.assertEqual(c1.get("/file/%d" % hers).status_code, 404)
 
+    def test_folder_copies_page_relations_paging_sort_and_row_level_security(self):
+        """ROADMAP 50: the page for `pinakes folder-copies`: the three relations, another person's folders absent
+        until a step-up (which the owner sees), sorted and paged like the other reports."""
+        def put(who, folder, files):
+            for name, data in files.items():
+                self.write("server-1", "store", "people/%s/%s/%s" % (who, folder, name), data)
+        photos = {"a.jpg": os.urandom(300), "b.jpg": os.urandom(300)}
+        put("user-1", "trip", photos)
+        put("user-1", "trip-same", photos)                                       # the same
+        docs = {"d%d.txt" % i: os.urandom(100) for i in range(5)}
+        put("user-1", "docs", docs)
+        put("user-1", "docs-edit", dict(docs, **{"d2.txt": os.urandom(100)}))      # nearly: d2.txt edited
+        put("user-1", "extra", dict(photos, **{"c.jpg": os.urandom(300)}))        # holds trip: trip is inside it
+        theirs = {"h1.txt": os.urandom(400), "h2.txt": os.urandom(400)}
+        put("user-2", "hers-1", theirs)
+        put("user-2", "hers-2", theirs)
+        for i in range(55):                                                      # enough pairs for a second page
+            data = os.urandom(1000 + i)
+            put("user-1", "many/p%02d" % i, {"f.bin": data})
+            put("user-1", "many/p%02d-copy" % i, {"f.bin": data})
+        self.scan("server-1", "store")
+        c1, _ = self.login("user-1", "correct horse battery")
+        url = "/reports/folder-copies?loc=store:people/user-1/"
+        page = c1.get(url).get_data(as_text=True)
+        self.assertIn("Folder copies", page)
+        self.assertEqual(c1.get("/reports/folder-copies").status_code, 200)       # the form alone
+        self.assertEqual(c1.get("/reports/folder-copies?loc=nocolon").status_code, 200)
+        self.assertIn("a location is ROOT:PATH", c1.get("/reports/folder-copies?loc=nocolon").get_data(as_text=True))
+        self.assertNotIn("people/user-2", page)                                  # another person's folders
+        self.assertNotIn("hers-", page)
+
+        def table(html):
+            """(folder, relation, other) per row, folder and other as the path after people/user-1/."""
+            return [(f, rel, o) for f, rel, o in re.findall(
+                r'<tr><td><a href="[^"]*">store:people/user-1/([^<]*)</a></td><td>(\w+)</td>'
+                r'<td><a href="[^"]*">store:people/user-1/([^<]*)</a></td>', html)]
+        # the relations, on a page of a smaller folder
+        small = {}
+        for f, rel, o in table(c1.get(url + "&per=500").get_data(as_text=True)):
+            small[(f, o)] = rel
+        self.assertEqual(small[("trip", "trip-same")], "same")
+        self.assertEqual(small[("trip", "extra")], "inside")
+        self.assertEqual(small[("docs", "docs-edit")], "nearly")
+        row = re.search(r'<tr><td><a [^>]*>store:people/user-1/docs</a></td>.*?</tr>',
+                        c1.get(url + "&per=500").get_data(as_text=True), re.S).group(0)
+        self.assertIn("d2.txt", row)                                              # the edited file is named
+        self.assertIn('href="/browse/store/people/user-1/docs"', row)             # a folder links to its listing
+        # paging: 58 or more rows over pages of 50, none twice, none missing
+        first = table(c1.get(url + "&per=50&sort=where&dir=asc").get_data(as_text=True))
+        second = table(c1.get(url + "&per=50&sort=where&dir=asc&page=2").get_data(as_text=True))
+        everything = table(c1.get(url + "&per=500&sort=where&dir=asc").get_data(as_text=True))
+        self.assertEqual(len(first), 50)
+        self.assertEqual(first + second, everything)
+        self.assertGreaterEqual(len(second), 8)
+        self.assertEqual(len(set(everything)), len(everything))
+        self.assertEqual([r[0] for r in everything], sorted(r[0] for r in everything))
+        self.assertIn("1–50 of ", c1.get(url + "&per=50").get_data(as_text=True))
+        desc = table(c1.get(url + "&per=500&sort=where&dir=desc").get_data(as_text=True))
+        self.assertEqual([r[0] for r in desc], sorted((r[0] for r in desc), reverse=True))
+        biggest = table(c1.get(url + "&per=50&sort=size&dir=desc").get_data(as_text=True))[0]
+        self.assertEqual(biggest[0].split("/")[0], "many")                         # p54 holds the most bytes: 1054 B
+        self.assertIn("p54", biggest[0] + biggest[2])
+        smallest = table(c1.get(url + "&per=50&sort=size&dir=asc").get_data(as_text=True))[0]
+        self.assertEqual(smallest[0], "docs")
+        by_rel = [r[1] for r in table(c1.get(url + "&per=500&sort=relation&dir=asc").get_data(as_text=True))]
+        self.assertEqual(by_rel, sorted(by_rel))
+        for col in queries.FOLDER_COPIES_SORT:
+            for d in ("asc", "desc"):
+                html = c1.get(url + "&sort=%s&dir=%s" % (col, d)).get_data(as_text=True)
+                self.assertEqual(html.count('aria-sort="%s"' % ("ascending" if d == "asc" else "descending")), 1)
+        # another person's folders: none without a step-up, listed in one, which they see
+        theirs_url = "/reports/folder-copies?loc=store:people/user-2/"
+        self.assertNotIn("hers-1", c1.get(theirs_url).get_data(as_text=True))
+        c2, _ = self.login("user-2", "staple pony 12345")
+        mine = c2.get(theirs_url).get_data(as_text=True)
+        self.assertIn("people/user-2/hers-1", mine)
+        self.assertNotIn("people/user-1", c2.get("/reports/folder-copies?loc=store:people/").get_data(as_text=True))
+        self.assertNotIn("report folder-copies", c2.get("/access").get_data(as_text=True))
+        tok = self.csrf(c1, "/step-up")
+        c1.post("/step-up", data={"csrf": tok, "reason": "checking the copies", "code": auth.totp(self.secret)})
+        self.assertIn("people/user-2/hers-1", c1.get(theirs_url).get_data(as_text=True))
+        self.assertIn("report folder-copies", c2.get("/access").get_data(as_text=True))
+
     def test_operator_page_totals_without_paths(self):
         c1, _ = self.login("user-1", "correct horse battery")              # an operator
         self.assertIn('href="/operator"', c1.get("/").get_data(as_text=True))

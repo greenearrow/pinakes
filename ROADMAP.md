@@ -123,7 +123,7 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
 ## Reports and exports
 
 Things a catalog's users would expect, from a review of the whole project; agreed 2026-11-19, none started. The rest of
-that review (41, 42, 43, 44, 46) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
+that review (41, 42, 43, 44, 46, 50) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
 two, L more).
 
 45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
@@ -138,12 +138,6 @@ two, L more).
     bytes and files added and gone per week. Sits next to: history, the changes page, the operator page. Value:
     medium. Cost: S. Risk: none. *Done when:* a test with three dated scans gives the right weekly deltas, per
     person under row-level security.
-50. [Feature] **A web page for folder copies** (43 is built as the CLI and API only). The same query as
-    `pinakes folder-copies`, on the web beside Duplicates and Only here: a folder or root asked about, rows with the
-    relation (same, inside, nearly), file counts and what differs, sortable and paged as those are. Sits next to:
-    the Duplicates page, 43. Value: medium. Cost: S. Risk: none beyond 43's (the query reads the whole catalog per
-    call; paging doesn't cheapen it). *Done when:* a web test shows the page for a folder with the three relations,
-    another person's folders absent, and the sort and paging working.
 
 ## Soon: add-on modules
 

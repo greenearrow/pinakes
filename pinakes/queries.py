@@ -314,6 +314,20 @@ def folder_copies(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
                 + PAGE, (root, path, path, path, path, NEAR_PERCENT, NEAR_PERCENT, limit, offset))
 
 
+def folder_owners(conn, locs):
+    """Owner person ids of the files under these folders (ROOT:PATH), for the step-up audit of a page that names
+    folders. Only files the person can see (row-level security)."""
+    pairs = [split_location(loc) for loc in locs]
+    if not pairs:
+        return []
+    return [r[0] for r in conn.execute(
+        """SELECT DISTINCT f.owner_id FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+           JOIN unnest(%s::text[], %s::text[]) AS w(label, path)
+             ON r.label = w.label AND (w.path = '' OR left(f.relpath, length(w.path) + 1) = w.path || '/')
+           WHERE f.owner_id IS NOT NULL""",
+        ([p[0] for p in pairs], [p[1] for p in pairs])).fetchall()]
+
+
 def history(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
     return rows(conn, """SELECT h.seen_after, h.seen_on, h.kind, h.old_relpath, h.new_relpath,
                                 encode(oc.sha256, 'hex') AS old_sha256, encode(nc.sha256, 'hex') AS new_sha256,

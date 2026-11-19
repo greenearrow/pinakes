@@ -660,7 +660,8 @@ def create_app(cfg, connect=None):
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
                           "changes": queries.CHANGES_SORT, "restore": queries.RESTORE_SORT,
                           "only-here": queries.COPY_SORT, "manifests": queries.MANIFEST_SORT,
-                          "safe-to-delete": queries.COPY_SORT}.get(name, queries.FILE_SORT))
+                          "safe-to-delete": queries.COPY_SORT,
+                          "folder-copies": queries.FOLDER_COPIES_SORT}.get(name, queries.FILE_SORT))
         lim = (pg.per, pg.offset)
         try:
             if name == "only-here" and loc:
@@ -670,6 +671,10 @@ def create_app(cfg, connect=None):
                 links = queries.links_into(g.db, loc, LINKS_SHOWN)
             elif name == "backed-up" and loc:
                 rows = queries.backed_up(g.db, loc, *lim, **pg.order)
+            elif name == "folder-copies" and loc:
+                rows = queries.folder_copies(g.db, loc, *lim, **pg.order)
+                audit_people(queries.folder_owners(g.db, {r[k] for r in rows for k in ("folder", "other")}),
+                             "report folder-copies %s" % loc, len(rows))
             elif name == "dupes":
                 rows = queries.dupes(g.db, *lim, **pg.order)
             elif name == "changes":
@@ -691,7 +696,7 @@ def create_app(cfg, connect=None):
                 rows = queries.restores(g.db, loc or None, bool(request.args.get("back")), *lim, **pg.order)
             elif name == "manifests":
                 rows = queries.manifests(g.db, loc or None, *lim, **pg.order)
-            elif name not in ("only-here", "safe-to-delete", "backed-up"):
+            elif name not in ("only-here", "safe-to-delete", "backed-up", "folder-copies"):
                 abort(404)
         except ValueError as e:
             error = str(e)

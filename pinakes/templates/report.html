@@ -3,7 +3,7 @@
 {% from "_pager.html" import pager, th with context %}
 {% set titles = {'only-here': 'Only here', 'safe-to-delete': 'Safe to delete?', 'backed-up': 'Backed up?',
                  'dupes': 'Duplicates', 'changes': 'Changes', 'restore': 'To restore',
-                 'manifests': 'Checksum manifests'} %}
+                 'manifests': 'Checksum manifests', 'folder-copies': 'Folder copies'} %}
 {% block title %}{{ titles[name] }} · pinakes{% endblock %}
 {% block body %}
 <h1>{{ titles[name] }}</h1>
@@ -30,6 +30,18 @@
     </table></div>
     {{ pager(pg, "files") }}
   {% endif %}
+{% endif %}
+{% elif name == 'folder-copies' %}
+{% macro folder(loc) %}{% set parts = loc.split(':', 1) %}<a href="{{ url_for('browse', root=parts[0], path=parts[1]) }}">{{ loc }}</a>{% endmacro %}
+<form><label>Folder <input name="loc" value="{{ loc }}" placeholder="root:folder/ (a whole root: root:)" size="40"></label> <button>Check</button></form>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if loc and not error %}
+<p class="muted">Folders under {{ loc }} that are copies of another folder you can see: <strong>same</strong> (the same files at the same paths), <strong>inside</strong> (the other holds all of them and more) or <strong>nearly</strong> (all there, a few edited, named). Backups, symlinks and empty files aren't counted. Worked out from every file on each call, so ask about a folder, not a whole large root.</p>
+{{ pager(pg, "folders") }}
+<div class="scroll"><table><tr>{{ th(pg, "where", "Folder") }}{{ th(pg, "relation", "Is") }}<th>Copy at</th>{{ th(pg, "files", "Files", "num") }}<th class="num">Only in folder</th><th class="num">Only in copy</th>{{ th(pg, "size", "Size", "num") }}<th>Edited</th></tr>
+{% for r in rows %}<tr><td>{{ folder(r.folder) }}</td><td>{{ r.relation }}</td><td>{{ folder(r.other) }}</td><td class="num">{{ r.files }}</td><td class="num">{{ r.only_in_folder }}</td><td class="num">{{ r.only_in_other }}</td><td class="num">{{ fmt_size(r.bytes) }}</td><td>{{ r.differing|join(', ') }}</td></tr>
+{% else %}<tr><td colspan="8" class="muted">No folder under {{ loc }} is a copy of another.</td></tr>{% endfor %}</table></div>
+{{ pager(pg, "folders") }}
 {% endif %}
 {% elif name == 'dupes' %}
 <p class="muted">The same content stored more than once where you can see it (backups not counted; hard links are one copy).</p>

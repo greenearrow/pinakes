@@ -54,6 +54,7 @@ agents).
 - 46. A machine replaced under the same name
 - 48. A fast home page on a large catalog, (a) and (b)
 - 49. Token forms a password manager can fill
+- 50. A web page for folder copies
 
 ## Dropped
 
@@ -502,7 +503,7 @@ Biggest first.
 **Not as the roadmap said:** it is computed on each call, not at scan completion. A stored digest would be built from
 every file, so it could not follow row-level security; a query over `present` can. The cost is a pass over the
 catalog's present files per call, so a very large root should be asked about a folder at a time. Not measured on a
-large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. There is no web page for it yet (ROADMAP 50).
+large catalog; if it is too slow, the way out is per-owner digests kept at scan completion. The web page is item 50.
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tools/test`, 396 tests, all pass):
 `tests/test_server.py` `TestFolderCopies` on generated trees (same with a subfolder, inside, nearly with the edited
@@ -603,3 +604,21 @@ no ops form, stay at the top); a days field that isn't a number is now said to b
 **State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15, the only one installed (x86-64 desktop;
 `tests/test_api.py` `TestOpsToken`, checked to fail without the change). Not tried in a browser with a password manager;
 not deployed.
+
+## 50. A web page for folder copies
+
+Design: ROADMAP.md item 50 (built, so no longer listed); no DECISIONS.md entry.
+
+**Built:** `/reports/folder-copies?loc=ROOT:PATH`, with "Folder copies" in the header: the query of
+`pinakes folder-copies` (`queries.folder_copies`) as a table beside Duplicates and Only here, one row per folder with
+its relation (same, inside, nearly), the folder it is a copy of (both link to their listing), file counts, the files
+only on either side, the size, and the edited files named. Sortable by folder, relation, files and size, and paged,
+as the other reports are (`queries.FOLDER_COPIES_SORT`); a location that isn't ROOT:PATH is said, as there. In a
+step-up it is audited for the owners of the folders shown (`queries.folder_owners`). Like the query, it reads the
+whole catalog per call; the page says to ask about a folder, not a large root.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_web.py` `TestWeb`): the three
+relations with the edited file named, 58 rows over pages of 50 with none twice and none missing, every sort column
+both ways, another person's folders absent until a step-up and then listed with the access shown to them (checked to
+fail without the audit); all 408 tests pass. Other Pythons and PostgreSQL versions not run; not tried in a browser; not
+run on a real catalog; not deployed.
