@@ -120,20 +120,6 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
     is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an
     active step-up, and every call in the audit.
 
-## Reports and exports
-
-Things a catalog's users would expect, from a review of the whole project; agreed 2026-11-19, none started. The rest of
-that review (41, 42, 43, 44, 46, 47, 50) is built: REARVIEW.md. Ranked by value over cost (cost: S half a day or less, M a day or
-two, L more).
-
-45. [Feature; also security] **A person's export of their own records.** Everything the catalog holds about my
-    files (paths, hashes, history, metadata, reviews), as CSV or JSON, through the API with the token's `read`
-    scope. A catalog that describes people's files should hand them their description. Sits next to: the JSON API
-    and person tokens (34), removing a person (23). Value: medium. Cost: S. Risk: row-level security must apply
-    exactly as for a query: the export is a query, not a dump. *Done when:* a test exports one person's records and
-    finds none of a second person's, sensitive fields only where `sensitive_visible()` allows, and the export in the
-    audit.
-
 ## Soon: add-on modules
 
 Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.

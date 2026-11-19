@@ -384,6 +384,22 @@ GROUP BY 1, 2, 3
 ORDER BY 1, 2, 3;
 ```
 
+## export (API)
+
+A person's own records (ROADMAP 45): the files they own, and the same `mine` for the other parts (history, reviews,
+metadata, lineage). As the person under row-level security, so a token's roots and the sensitive fields apply as to
+any query. `queries.export`, `GET /api/v1/export`.
+
+```sql
+-- the export's files part, as the person
+WITH mine AS (SELECT f.* FROM files f WHERE f.owner_id = current_person())
+SELECT f.file_id, r.label AS root, f.relpath, f.size, encode(c.sha256, 'hex') AS sha256, f.mtime, f.gone_on
+FROM mine f
+JOIN roots r USING (root_id)
+LEFT JOIN contents c ON c.content_id = f.content_id
+ORDER BY f.file_id;
+```
+
 ## stale
 
 ```sql

@@ -1,6 +1,7 @@
 """The JSON API and person tokens (ROADMAP 34), through Flask's test client, on a catalog built by real scans."""
 
 import contextlib
+import csv
 import datetime
 import hashlib
 import io
@@ -337,6 +338,104 @@ class TestApi(ApiCase):
 
     def test_upgrade_file_matches_the_schema(self):
         self.check_upgrade_matches_the_schema()
+
+    # a person's export (ROADMAP 45) ----------------------------------------------------------------------------
+    def test_an_export_is_the_persons_own_records_and_nobody_elses(self):
+        # a change to her diary and his plan (which she reads), sensitive and plain metadata on each, and a gone
+        # file of his, marked
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers, later")
+        self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan, later")
+        self.write("server-1", "store", "people/user-1/old.txt", b"old")
+        self.scan("server-1", "store")
+        os.remove(os.path.join(self.agent("server-1", "store")[2], "people/user-1/old.txt"))
+        self.scan("server-1", "store")
+        for rel in ("people/user-2/diary.txt", "people/user-1/shared-with-2/plan.txt"):
+            for sensitive, vals in ((True, '{"gps": [0, 0]}'), (False, '{"title": "x"}')):
+                self.conn.execute("INSERT INTO pinakes.metadata (content_id, schema, vals, source, sensitive) "
+                                  "SELECT content_id, 'exif', %s, 'embedded', %s FROM pinakes.present "
+                                  "WHERE relpath = %s", (vals, sensitive, rel))
+        self.conn.execute("INSERT INTO pinakes.review_marks (history_id, mark, marked_by) SELECT history_id, "
+                          "'intended', %s FROM pinakes.history WHERE kind = 'gone'", (self.pid("user-1"),))
+        owned = {name: {r[0] for r in self.q("SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r "
+                                             "USING (root_id) WHERE f.owner_id = %s AND r.label = 'store'",
+                                             (self.pid(name),))} for name in ("user-1", "user-2")}
+        diary, plan = self.file("store", "people/user-2/diary.txt"), self.file("store", "people/user-1/shared-with-2/plan.txt")
+        his, hers = self.token("user-1"), self.token("user-2")
+
+        def ids(body):
+            return ({r["file_id"] for p in ("files", "history", "reviews", "metadata") for r in body[p]}
+                    | {i for r in body["lineage"] for i in (r["from_file_id"], r["to_file_id"])})
+
+        status, mine = self.get("export", hers)
+        self.assertEqual(status, 200, mine)
+        self.assertEqual(sorted(mine), ["exported", "files", "history", "lineage", "metadata", "person", "reviews"])
+        self.assertEqual(mine["person"], "user-2")
+        self.assertEqual([(f["root"], f["relpath"], f["sha256"]) for f in mine["files"]],
+                         [("store", "people/user-2/diary.txt", hashlib.sha256(b"hers, later").hexdigest())])
+        self.assertEqual(sorted(h["kind"] for h in mine["history"]), ["changed", "new"])
+        self.assertEqual(sorted((m["sensitive"], json.dumps(m["vals"])) for m in mine["metadata"]),
+                         [(False, '{"title": "x"}'), (True, '{"gps": [0, 0]}')])
+        self.assertEqual(ids(mine), {diary})            # not the plan she reads, nor anything of his
+        self.assertNotIn("plan", json.dumps(mine))
+
+        status, theirs = self.get("export", his)
+        self.assertEqual(status, 200, theirs)
+        self.assertEqual(sorted(f["relpath"] for f in theirs["files"]),      # the protected downloads left out
+                         ["people/user-1/old.txt", "people/user-1/shared-with-2/plan.txt", "people/user-1/taxes.txt"])
+        self.assertTrue(ids(theirs) <= owned["user-1"])
+        self.assertNotIn(diary, ids(theirs))
+        self.assertNotIn("diary", json.dumps(theirs))
+        self.assertNotIn(hashlib.sha256(b"hers").hexdigest(), json.dumps(theirs))
+        self.assertIn((plan, True), {(m["file_id"], m["sensitive"]) for m in theirs["metadata"]})
+        self.assertEqual([(r["kind"], r["mark"], r["marked_by"]) for r in theirs["reviews"]],
+                         [("gone", "intended", "user-1")])
+        self.assertEqual([f["gone_on"] is not None for f in theirs["files"] if f["relpath"].endswith("old.txt")],
+                         [True])
+        # sensitive rows only where sensitive_visible() allows, under the token as the export ran
+        with self.app_conn() as c:
+            c.execute("SELECT pinakes.begin_token_call(%s, 'test')", (hashlib.sha256(his.encode()).digest(),))
+            for m in theirs["metadata"]:
+                if m["sensitive"]:
+                    self.assertTrue(queries.sensitive_visible(c, m["file_id"], None), m)
+        # an administrator's token exports their own, never stepped up: the same as above, with no step-up to use
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.step_ups")[0][0], 0)
+
+        # a token limited to a root exports only that root's
+        only = self.token("user-1", roots=[self.root_id("downloads")], client="workstation-1")
+        self.assertEqual(sorted(f["relpath"] for f in self.get("export?part=files", only)[1]["files"]),
+                         ["letter.txt", "taxes-copy.txt"])
+        # one part, paged; and as CSV
+        status, page = self.get("export?part=files&limit=1&offset=1", his)
+        self.assertEqual((status, sorted(page)), (200, ["exported", "files", "person"]))
+        self.assertEqual([f["file_id"] for f in page["files"]], [sorted(f["file_id"] for f in theirs["files"])[1]])
+        r = self.app.test_client().get("/api/v1/export?part=metadata&format=csv",
+                                       headers={"Authorization": "Bearer " + hers})
+        self.assertEqual((r.status_code, r.mimetype), (200, "text/csv"))
+        table = list(csv.DictReader(io.StringIO(r.get_data(as_text=True))))
+        self.assertEqual(sorted((t["file_id"], t["sensitive"], t["vals"]) for t in table),
+                         [(str(diary), "False", '{"title": "x"}'), (str(diary), "True", '{"gps": [0, 0]}')])
+        empty = self.app.test_client().get("/api/v1/export?part=reviews&format=csv",
+                                           headers={"Authorization": "Bearer " + hers}).get_data(as_text=True)
+        self.assertEqual(empty, "history_id,file_id,kind,mark,marked_at,marked_by,marked_by_group\n")
+        # bad arguments, and tokens that aren't a person's with read
+        for call, said in (("export?format=csv", "a CSV is one part"), ("export?part=everything", "part is one of"),
+                           ("export?format=xml", "format is json or csv")):
+            status, body = self.get(call, hers)
+            self.assertEqual(status, 400)
+            self.assertIn(said, body["error"])
+        self.assertEqual(self.get("export", self.token("user-1", group="household", client="kitchen")),
+                         (403, {"error": "an export is a person's own records: use a person's token"}))
+        self.assertEqual(self.get("export", self.token("user-1", scopes=("review",), client="phone")),
+                         (403, {"error": "this token doesn't have the read scope"}))
+        # and every export is in the audit, the person's to see
+        self.assertEqual(self.q("SELECT p.name, a.detail->>'call' FROM pinakes.audit a JOIN pinakes.people p "
+                                "ON p.person_id = a.actor WHERE a.action = 'api' AND a.detail->>'call' LIKE 'export%%' "
+                                "AND a.detail->>'token' = 'laptop-1' ORDER BY a.audit_id"),
+                         [("user-2", "export"), ("user-1", "export"), ("user-1", "export?part=files&limit=1&offset=1"),
+                          ("user-2", "export?part=metadata&format=csv"), ("user-2", "export?part=reviews&format=csv"),
+                          ("user-2", "export?format=csv"), ("user-2", "export?part=everything"),
+                          ("user-2", "export?format=xml")])
+        self.assertIn("export?part=metadata&amp;format=csv", self.login("user-2").get("/access").get_data(as_text=True))
 
 
 # the CLI, as a client of the API (ROADMAP 35) ------------------------------------------------------------------------

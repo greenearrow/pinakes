@@ -605,6 +605,64 @@ def meta(conn, schema, field, value, limit=None, offset=0):
                 + PAGE, (schema, field, value, limit, offset))
 
 
+# A person's export of their own records (ROADMAP 45): the files they own (files.owner_id; shared, co-owned and a
+# group's files are their owners' exports) and what the catalog holds about them, in parts. A query, not a dump: it
+# runs as the person under row-level security like any other, so a token's roots limit it and sensitive metadata
+# comes only where sensitive_visible() allows. Every part ends in a unique key, so pages neither overlap nor skip.
+_MINE = """WITH mine AS (SELECT f.* FROM pinakes.files f WHERE f.owner_id = pinakes.current_person())"""
+EXPORT = {
+    "files": _MINE + """
+        SELECT f.file_id, h.name AS host, r.label AS root, r.kind AS root_kind, f.relpath, f.name, f.size,
+               encode(c.sha256, 'hex') AS sha256, c.mime, f.mtime, f.ctime, f.btime, f.first_seen, f.last_seen,
+               f.gone_on, f.hidden, f.is_symlink, f.link_target, f.backup_of, f.snapshot, f.unreadable_on,
+               f.unreadable_error, f.manifest_verdict, f.manifest_on
+        FROM mine f JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+        LEFT JOIN pinakes.contents c ON c.content_id = f.content_id
+        ORDER BY f.file_id""",
+    "history": _MINE + """
+        SELECT hi.history_id, hi.file_id, hi.kind, hi.seen_after, hi.seen_on, hi.old_relpath, hi.new_relpath,
+               encode(oc.sha256, 'hex') AS old_sha256, encode(nc.sha256, 'hex') AS new_sha256,
+               hi.old_mtime, hi.new_mtime, hi.evidence, hi.confidence
+        FROM mine f JOIN pinakes.history hi USING (file_id)
+        LEFT JOIN pinakes.contents oc ON oc.content_id = hi.old_content_id
+        LEFT JOIN pinakes.contents nc ON nc.content_id = hi.new_content_id
+        ORDER BY hi.history_id""",
+    "reviews": _MINE + """
+        SELECT m.history_id, hi.file_id, hi.kind, m.mark, m.marked_at, p.name AS marked_by, g.name AS marked_by_group
+        FROM mine f JOIN pinakes.history hi USING (file_id) JOIN pinakes.review_marks m USING (history_id)
+        LEFT JOIN pinakes.people p ON p.person_id = m.marked_by
+        LEFT JOIN pinakes.groups g ON g.group_id = m.marked_by_group
+        ORDER BY m.history_id""",
+    # a content's metadata is true of every copy: one row per file of theirs that holds it
+    "metadata": _MINE + """
+        SELECT x.file_id, m.metadata_id, CASE WHEN m.file_id IS NULL THEN 'content' ELSE 'file' END AS of,
+               m.schema, m.vals, m.source, m.version, m.at, m.sensitive, p.name AS author
+        FROM (SELECT f.file_id, m.metadata_id FROM mine f JOIN pinakes.metadata m ON m.content_id = f.content_id
+              UNION ALL
+              SELECT f.file_id, m.metadata_id FROM mine f JOIN pinakes.metadata m ON m.file_id = f.file_id) x
+        JOIN pinakes.metadata m USING (metadata_id) LEFT JOIN pinakes.people p ON p.person_id = m.author
+        ORDER BY x.file_id, m.metadata_id""",
+    # lineage with either end theirs (row-level security shows a link only when both ends are visible)
+    "lineage": _MINE + """
+        SELECT l.from_file_id, rf.label AS from_root, ff.relpath AS from_relpath, l.to_file_id, rt.label AS to_root,
+               ft.relpath AS to_relpath, l.kind, l.evidence, l.confidence, l.found_on, l.decision
+        FROM pinakes.lineage l
+        JOIN pinakes.files ff ON ff.file_id = l.from_file_id JOIN pinakes.roots rf ON rf.root_id = ff.root_id
+        JOIN pinakes.files ft ON ft.file_id = l.to_file_id JOIN pinakes.roots rt ON rt.root_id = ft.root_id
+        WHERE l.from_file_id IN (SELECT file_id FROM mine) OR l.to_file_id IN (SELECT file_id FROM mine)
+        ORDER BY l.from_file_id, l.to_file_id, l.kind""",
+}
+
+
+def export(conn, part, limit=None, offset=0):
+    """One part of the current person's export (EXPORT's keys), a page of it: its column names and its rows."""
+    if part not in EXPORT:
+        raise ValueError("part is one of %s" % ", ".join(EXPORT))
+    cur = conn.execute(EXPORT[part] + PAGE, (limit, offset))
+    cols = [d.name for d in cur.description]
+    return cols, [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
 def file_metadata(conn, file_id, content_id):
     """The metadata the person may see on a file: its content's (extracted, true of every copy) and the file's own
     (entered by people). Sensitive rows come back only where row-level security lets them (sensitive_visible())."""

@@ -22,6 +22,9 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   token's roots; {"asked", "marked"}
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
+  export?part=PART&format=json|csv  (a person's token) the files the person owns and what the catalog holds about
+                                  them, under row-level security: parts files, history, reviews, metadata, lineage;
+                                  JSON without part= is every part, a CSV is one ({"person", "exported", PART: [...]})
   POST session {"name", "password", "code"}   pinakes --as: the person's password, and their second factor if
                                   they have one, for a read-only token of minutes ({"token", "until"}); limited
                                   like the web sign-in, and recorded for the person
@@ -38,9 +41,11 @@ UI's.
 """
 
 import argparse
+import csv
 import datetime
 import functools
 import hashlib
+import io
 import json
 from urllib.parse import unquote, urlencode
 import os
@@ -500,6 +505,31 @@ def create_app(cfg, connect=None):
             return api_answer({"error": "ids is a list of change numbers"}, 400)
         return api_answer({"asked": len(ids), "marked": queries.mark_changes(g.db, ids, mark) if ids else 0})
 
+    @app.route(API + "export")
+    def api_export():
+        """A person's export of their own records (ROADMAP 45): the files they own and what the catalog holds about
+        them, as the person under row-level security; the call is recorded like any other. JSON: every part, or one
+        with part=; CSV (format=csv): one part. limit= and offset= page each part."""
+        if "read" not in g.scopes:
+            return api_answer({"error": "this token doesn't have the read scope"}, 403)
+        if g.kind != "person":
+            return api_answer({"error": "an export is a person's own records: use a person's token"}, 403)
+        part, fmt = request.args.get("part") or None, request.args.get("format") or "json"
+        try:
+            if fmt not in ("json", "csv"):
+                raise ValueError("format is json or csv")
+            if fmt == "csv" and not part:
+                raise ValueError("a CSV is one part: part=%s" % "|".join(queries.EXPORT))
+            parts = [part] if part else list(queries.EXPORT)
+            got = {p: queries.export(g.db, p, *lim()) for p in parts}
+        except ValueError as e:
+            return api_answer({"error": str(e)}, 400)
+        if fmt == "csv":
+            return Response(_csv(*got[part]), mimetype="text/csv")
+        me = g.db.execute("SELECT name FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()[0]
+        return api_answer(dict({"person": me, "exported": datetime.datetime.now(datetime.timezone.utc)},
+                               **{p: rows for p, (_, rows) in got.items()}))
+
     @api("host-roots")
     def api_host_roots():
         return {"rows": queries.roots_of_host(g.db, arg("host", "host=NAME"))}
@@ -917,6 +947,18 @@ def fmt_meta(value, field=None):
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     return str(value)
+
+
+def _csv(columns, rows):
+    """Rows as CSV with a header: times as ISO 8601, JSON values (metadata) as JSON text, NULL as an empty field."""
+    out = io.StringIO()
+    w = csv.writer(out, lineterminator="\n")
+    w.writerow(columns)
+    for r in rows:
+        w.writerow("" if r[c] is None else json.dumps(r[c], sort_keys=True) if isinstance(r[c], (dict, list))
+                   else queries.json_default(r[c]) if isinstance(r[c], (datetime.date, bytes, memoryview)) else r[c]
+                   for c in columns)
+    return out.getvalue()
 
 
 def _int_arg(name, default, lo, hi):

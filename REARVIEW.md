@@ -51,6 +51,7 @@ agents).
 - 42. What a disk's loss would cost
 - 43. Folders that are copies of each other
 - 44. Extraction outcomes kept
+- 45. A person's export of their own records
 - 46. A machine replaced under the same name
 - 47. Growth by folder over time
 - 48. A fast home page on a large catalog, (a) and (b)
@@ -542,6 +543,35 @@ lists left out; a protected link takes them; the upgrade against the schema); `t
 line, a reader's identical for a GPS-only photo and one with none); `tests/test_queries.py` with the new block;
 `tests/test_releases.py` (the meta entry's fields declared in `compat.BATCH_FIELDS`). Only this Python and
 PostgreSQL; not run on a real tree; not deployed.
+
+## 45. A person's export of their own records
+
+Design: ROADMAP.md item 45 (built, so no longer listed; with it the "Reports and exports" section, all built); no
+DECISIONS.md entry.
+
+**Built:** `GET /api/v1/export`, with a person's token and the `read` scope (`queries.export`, QUERIES.md "export"):
+the files the person owns and what the catalog holds about them, in five parts: `files` (host, root, path, size,
+SHA-256, MIME, times, gone, hidden, symlink, backup, scrub and manifest state), `history` (every change, with both
+hashes), `reviews` (their marks, and by whom), `metadata` (a content's rows once per file of theirs that holds it, and
+the file's own), `lineage` (links with either end theirs). JSON: every part, or one with `part=`; `format=csv`: one
+part, with a header even when empty, metadata values as JSON text. `limit=` and `offset=` page each part, in a unique
+order. It is a query, not a dump: it runs as the person under row-level security, so a token's roots limit it (the
+protected ones left out unless named) and sensitive metadata comes only where `sensitive_visible()` allows. The call
+is recorded like every API call, on the person's access page. A group token is refused (its files have no person
+owner), an ops token too (no `read`).
+
+**Not as the roadmap said:** "my files" is the files the person owns (`files.owner_id`): a folder shared with them,
+co-owned or a group's is in its owner's export, not theirs. Metadata of a past content no file holds any more isn't
+in it (row-level security shows none). Built in memory as the other calls are, not streamed. No CLI command or web
+page yet.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestApi`): two
+people's exports, each with only their own files, history, marks and metadata and nothing of the other's (by id, path
+and hash), the reader of a shared folder getting none of it, sensitive metadata present and each row allowed by
+`sensitive_visible()` under the token, a token limited to a protected root, a page, CSV with and without rows, bad
+arguments, group and review-only tokens refused, and every call in the audit and on the access page (checked to fail
+without the owner filter); all 411 tests pass. Other Pythons and PostgreSQL versions not run; not run on a real
+catalog; not deployed.
 
 ## 46. A machine replaced under the same name
 
