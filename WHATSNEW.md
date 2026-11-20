@@ -2,6 +2,40 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 9
+
+Not cut. Affects the server and the CLI; the agents are unchanged. Protocol 5, as release 8: no schema upgrade.
+
+### Before you update
+
+1. Update the server, then the CLI. The new commands ask the server's new calls; against a release 8 server they
+   answer `pinakes: no such call`. The other commands work with either.
+
+### A root's first scan is not a change
+
+- The Changes page, `/api/v1/changes` and `pinakes changes` leave out the new files of a root's first scan, as Growth
+  already did; on a large catalog this made the page slow for a week after a root's first scan. A file's own history
+  still shows its first scan.
+
+### What the server answered that `pinakes` didn't ask
+
+- `pinakes whoami`: whose token this is, its kind, scopes and the roots it may see.
+- `pinakes export [PART] [--csv]`: your own records (release 8's export) on standard output, as JSON or one part as
+  CSV.
+- `pinakes at-risk`, `pinakes growth [FOLDER] [--weeks N]` and `pinakes restores [PATH] [--back]`: the If a disk
+  failed, Growth and Restore reports, until now on the web only.
+- `pinakes changes --tree [--depth N]`, `--what KIND` and `--review reviewed|unreviewed`: the Changes page's tree and
+  filters.
+- `pinakes access`: your access record, newest first.
+- New API calls `at-risk`, `growth`, `restores`, `change-tree` (the `read` scope) and `access` (a person's token
+  only). Each is the web's own query, under row-level security and the token's roots, recorded like every call, and
+  refused to an ops token. The operator's totals stay on the web (ROADMAP 60).
+
+### Not yet
+
+Tested: 428 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64); the installed wheel, and
+PostgreSQL 15, 17 and 18, not run. Not run against a real catalog; not deployed.
+
 ## Release 8
 
 Cut 2026-11-19 (tag `release-8`). Affects the server and the agents; the CLI is unchanged. Protocol 5, a change to the schema only: agents of
