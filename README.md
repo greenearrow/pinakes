@@ -64,7 +64,7 @@ tests. When to run what:
   (`tools/test --agent-only`, about 3 s; `PINAKES_SKIP_TESTS=1` skips them once). Run the full `tools/test` yourself
   (about 75 s).
 - A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
-- Before a release: `tools/test --matrix` and `tools/test --wheel`.
+- Before a release: `tools/test --matrix` and `tools/test --wheel` ("Cutting a release" below).
 - Preparing a release: its entry in `RELEASES.toml` (what it affects, its protocol, the `upgrades/*.sql` it needs)
   and the same numbers in `pinakes/compat.py`. Cutting it is a deliberate step, never implied by a commit: tag the
   commit `release-N` when the owner says so; until then nothing counts it. A change to the batch fields, the
@@ -85,3 +85,23 @@ installed in a new environment.
 
 Run `git config core.hooksPath githooks` once. The hooks run `tools/leak-scan`, which blocks addresses, MACs, LAN
 host names, email addresses, keys and your own private terms (`leak-patterns.example`) from being committed.
+
+### Cutting a release
+
+Only when the owner says to cut it. In order:
+
+1. **Ready:** its `RELEASES.toml` entry (what it affects, protocol, upgrade files, fingerprint, a note) and
+   `pinakes/compat.py` agree, and `tests/test_releases.py` passes. `affects` names every role whose code changed
+   since the last cut (`git diff release-N-1 --stat`): the CLI counts.
+2. **Tested:** `tools/test --matrix` and `tools/test --wheel`, both on the commit to be cut, both OK. A run that
+   wasn't made is said to be not run, in step 3 and in the commits.
+3. **What's new:** a `## Release N` section at the top of `WHATSNEW.md`: a first line that begins `Not cut.`, then
+   what it affects, its protocol and which side may be updated first; *Before you update* (upgrade files in order,
+   `tools/latest-release --upgrades-after N-1`, and the order of server, agents and CLI); one heading per change;
+   *Not yet*, with what was tested (tests, Pythons, PostgreSQL, OS) and what wasn't (the wheel, other PostgreSQL, a
+   real catalog, a deployment). Commit: `Release N: What's new (ROLES; protocol P; UPGRADES; not cut, not
+   deployed)`, its body the test runs and the commit they ran on.
+4. **Cut:** `Not cut.` becomes "Cut DATE (tag `release-N`)."; any "not cut" about release N in `REARVIEW.md` goes.
+   Commit: `Release N: cut (WHATSNEW says so)`, the same test lines. Then `git tag release-N` on that commit.
+5. **Check:** `tools/latest-release server`, `agent` and `cli` each print what they now should. No push, no
+   deployment: that is the site's.

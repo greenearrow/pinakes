@@ -33,8 +33,9 @@ Cut 2026-11-20 (tag `release-9`). Affects the server and the CLI; the agents are
 
 ### Not yet
 
-Tested: 428 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64); the installed wheel, and
-PostgreSQL 15, 17 and 18, not run. Not run against a real catalog; not deployed.
+Tested: 428 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64), and on the installed wheel
+(Python 3.12.3; one test skipped there by design, as it needs git); PostgreSQL 15, 17 and 18 not run. Not run against
+a real catalog; not deployed.
 
 ## Release 8
 
