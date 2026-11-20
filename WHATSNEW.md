@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 9
 
-Not cut. Affects the server and the CLI; the agents are unchanged. Protocol 5, as release 8: no schema upgrade.
+Cut 2026-11-20 (tag `release-9`). Affects the server and the CLI; the agents are unchanged. Protocol 5, as release 8: no schema upgrade.
 
 ### Before you update
 
