@@ -197,7 +197,7 @@ may see it; `upgrades/symlink-targets.sql`.
 (an inode once), last complete scan, oldest scrub check, whether its host stopped reporting it or it was retired, and
 its scan errors' count and newest date; then 42's totals. From `operator_roots()`, a database function that refuses
 anyone but an operator signed in on the web (a token, ops or not, too): counts, sizes and dates, never a path, a file's
-name or a person. `upgrades/operator.sql` (release 8, protocol 5, not cut).
+name or a person. `upgrades/operator.sql` (release 8, protocol 5).
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop, `tools/test`, 406 tests, all pass):
 `tests/test_server.py` `TestAtRisk` (another person's root counted, an inode once, scan errors counted without their
