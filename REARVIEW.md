@@ -564,8 +564,8 @@ owner), an ops token too (no `read`).
 
 **Not as the roadmap said:** "my files" is the files the person owns (`files.owner_id`): a folder shared with them,
 co-owned or a group's is in its owner's export, not theirs. Metadata of a past content no file holds any more isn't
-in it (row-level security shows none). Built in memory as the other calls are, not streamed. No CLI command or web
-page yet.
+in it (row-level security shows none). Built in memory as the other calls are, not streamed. No web page yet;
+`pinakes export` since 54.
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestApi`): two
 people's exports, each with only their own files, history, marks and metadata and nothing of the other's (by id, path
@@ -611,7 +611,7 @@ file isn't a change of size. Each folder links to its own growth. In a step-up i
 files counted. At most 2000 rows, said on the page when cut.
 
 **Not as the roadmap said:** "per root and top folder" is the default; a folder can be chosen, as on the changes page.
-Bytes are per path, so a new hard link counts again (history has no inode). No API call or CLI command yet.
+Bytes are per path, so a new hard link counts again (history has no inode). The API call and `pinakes growth` since 56.
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_web.py` `TestWeb`): the first
 scan, then three scans dated two weeks ago, last week and this week (new files, a change, a move between folders, a
@@ -725,3 +725,28 @@ scan.
 scan absent from the list, the tree and the count, a file new in a later scan present, the file's history kept, the
 page); `TestSorting` and the CLI tests in `tests/test_api.py` now scan before their files arrive, so they still see
 changes. All tests pass (tools/test). Other Pythons not run; not run on a real catalog; not deployed.
+
+## 53 to 59. What the server answered that `pinakes` didn't ask
+
+Server features built before the rule that a person's function names its `pinakes` command (ROADMAP, above the
+items), with no command: an API call only, or a web page only.
+
+**Built:** `pinakes whoami` (53: whose token, its kind, scopes and roots; any token); `pinakes export [PART] [--csv]`
+(54: the export of 45 on standard output, JSON, or one part as CSV); `pinakes at-risk` (55: per disk, per host and by
+top folder, as the If a disk failed report); `pinakes growth [FOLDER] [--weeks N]` (56); `pinakes restores [PATH]
+[--back]` (57: the Restore report, each content's backup copies as ROOT:PATH); `pinakes changes --tree [--depth N]`,
+`--what KIND` (again for more) and `--review reviewed|unreviewed` (58: the Changes page's tree and filters; `--tree`
+takes no `--host`); `pinakes access` (59: the access page, newest first). New API calls, each the web's own query
+under row-level security and the token's roots, recorded like every call: `at-risk`, `growth`, `restores`,
+`change-tree` (`read` scope) and `access` (a person's token only; a group's is refused). The web keeps owner ids
+for its step-up audit; the API leaves them out, as a token never steps up. `growth` and `change-tree` say when they
+were cut at their row limit (`cut`), and `--json` prints it. Every new call refuses an ops token (`TestOpsToken`
+checks every call).
+
+**Not as the roadmap said:** the restore report's command is `pinakes restores`, so as not to read as `pinakes review
+restore`, which marks.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCliReports`,
+through the API from a real HTTP server: each command and its `--json`, a second person's records left out, a
+token's root limit kept, group and ops tokens refused where a person's is needed). All 428 tests pass (tools/test). Other Pythons not run;
+not run against a real catalog; not deployed.

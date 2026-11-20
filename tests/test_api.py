@@ -963,6 +963,212 @@ as = "co-owner"
             return r.status, json.load(r)
 
 
+def make_kind_token(case, person, scopes=("read",), roots=None, client="laptop-1", group=None):
+    """make_token() with a group: a group token of it (ROADMAP 38); scopes ("ops",): an ops token (39)."""
+    secret = "pinakes_test_%s_%s" % (person, os.urandom(8).hex())
+    with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=case.db) as c:
+        pid = c.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (person,)).fetchone()[0]
+        gid = c.execute("SELECT group_id FROM pinakes.groups WHERE name = %s", (group,)).fetchone()[0] if group else None
+        c.execute("SELECT set_config('pinakes.person', %s, true)", (str(pid),))
+        c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, NULL, %s)",
+                  (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots, gid))
+    return secret
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliReports(ServerCase):
+    """What the server answered before `pinakes` asked it (ROADMAP 53 to 59): each command through the API, as the
+    token's person, another person's records left out."""
+
+    GONE = "people/user-1/cleanup/a.txt"
+
+    def setUp(self):
+        super().setUp()
+        self.scan("server-1", "store")      # empty: a root's first scan is not a change (ROADMAP 52), the next is
+        self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
+        self.write("server-1", "store", self.GONE, b"cleanup a")
+        self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "letter.txt", b"letter")
+        self.scan("laptop-1", "downloads")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/" + self.GONE, b"cleanup a")
+        self.scan("server-2", "snapshots")
+        os.remove(self.path("server-1", "store", self.GONE))
+        self.scan("server-1", "store")
+        self.conn.execute("INSERT INTO pinakes.review_marks (history_id, mark, marked_by) SELECT history_id, "
+                          "'restore', %s FROM pinakes.history WHERE kind = 'gone'",
+                          (self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0],))
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')                              # this machine's name in the catalog
+
+    def as_token(self, secret):
+        self.cli.save(self.cli.home_token(), secret)
+
+    def test_whoami_for_each_kind_of_token(self):
+        cli = self.cli
+        self.assertEqual(cli("whoami"), "user-1 (User One)'s token\nscopes: read\nroots: downloads, store, snapshots\n")
+        self.assertEqual(json.loads(cli("whoami", "--json")),
+                         {"person": "user-1", "display": "User One", "kind": "person", "scopes": ["read"],
+                          "roots": ["downloads", "store", "snapshots"]})
+        self.as_token(make_token(self, "user-1", roots=[self.q("SELECT root_id FROM pinakes.roots "
+                                                                  "WHERE label = 'downloads'")[0][0]], client="phone"))
+        self.assertEqual(json.loads(cli("whoami", "--json"))["roots"], ["downloads"])
+        self.as_token(make_kind_token(self, "user-1", group="household", client="kitchen"))
+        self.assertEqual(cli("whoami").splitlines()[0], "the group household, as no one member")
+        self.assertEqual(json.loads(cli("whoami", "--json"))["kind"], "group")
+        self.as_token(make_kind_token(self, "user-1", scopes=("ops",), client="deploy"))
+        self.assertEqual(cli("whoami"), "an ops token: no person, no root\nscopes: ops\n")
+
+    def test_export_is_the_persons_own(self):
+        cli = self.cli
+        mine = json.loads(cli("export"))
+        self.assertEqual(mine["person"], "user-1")
+        self.assertEqual(sorted((f["root"], f["relpath"]) for f in mine["files"]),
+                         [("downloads", "letter.txt"), ("snapshots", "2026-01-01_0140/" + self.GONE),
+                          ("store", self.GONE), ("store", "people/user-1/taxes.txt")])
+        self.assertNotIn("diary", json.dumps(mine))
+        self.assertEqual(json.loads(cli("export", "files", "--json")).keys(), {"person", "exported", "files"})
+        table = list(csv.DictReader(io.StringIO(cli("export", "files", "--csv"))))
+        self.assertEqual(sorted(t["relpath"] for t in table), ["2026-01-01_0140/" + self.GONE, "letter.txt", self.GONE,
+                                                               "people/user-1/taxes.txt"])
+        self.assertEqual(cli("export", "--csv", code=1), "pinakes: a CSV is one part: pinakes export PART --csv")
+        self.assertIn("part is one of", cli("export", "everything", code=1))
+        # a token limited to a root: that root's only; a group's or an ops token: refused
+        self.as_token(make_token(self, "user-1", roots=[self.q("SELECT root_id FROM pinakes.roots "
+                                                                  "WHERE label = 'downloads'")[0][0]], client="phone"))
+        self.assertEqual([f["relpath"] for f in json.loads(cli("export", "files"))["files"]], ["letter.txt"])
+        self.as_token(make_kind_token(self, "user-1", group="household", client="kitchen"))
+        self.assertEqual(cli("export", code=1), "pinakes: an export is a person's own records: use a person's token")
+        self.as_token(make_kind_token(self, "user-1", scopes=("ops",), client="deploy"))
+        self.assertEqual(cli("export", code=1), "pinakes: this token doesn't have the read scope")
+        # and user-2's is hers
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual([f["relpath"] for f in json.loads(cli("export", "files"))["files"]], ["people/user-2/diary.txt"])
+
+    def test_at_risk(self):
+        cli = self.cli
+        got = json.loads(cli("at-risk", "--json"))
+        self.assertEqual(sorted(got), ["disks", "folders", "folders_shown", "folders_total", "hosts"])
+        self.assertEqual({(h["host"], h["files"]) for h in got["hosts"]}, {("server-1", 1), ("laptop-1", 1), ("server-2", 1)})
+        # the gone file's one backup copy is now its only copy: at risk with its disk
+        self.assertEqual(sorted((f["root"], f["folder"], f["owner"]) for f in got["folders"]),
+                         [("downloads", "", "User One"), ("snapshots", "2026-01-01_0140", "User One"),
+                          ("store", "people", "User One")])
+        self.assertNotIn("owner_id", json.dumps(got))
+        text = cli("at-risk")
+        self.assertTrue(text.startswith("lost with a disk (no copy on another disk of any machine):\n"), text)
+        self.assertIn("lost with a machine", text)
+        self.assertIn("3 B", text)                                     # "his", as a size to read
+        # her diary is hers: not in his, and his not in hers
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        got = json.loads(cli("at-risk", "--json"))
+        self.assertEqual([(f["root"], f["owner"], f["files"]) for f in got["folders"]], [("store", "User Two", 1)])
+        # a token limited to a root: only that root
+        self.as_token(make_token(self, "user-1", roots=[self.q("SELECT root_id FROM pinakes.roots "
+                                                                  "WHERE label = 'downloads'")[0][0]], client="phone"))
+        self.assertEqual([h["host"] for h in json.loads(cli("at-risk", "--json"))["hosts"]], ["laptop-1"])
+        # nothing at risk: said so (she has nothing in the downloads)
+        self.as_token(make_token(self, "user-2", roots=[self.q("SELECT root_id FROM pinakes.roots "
+                                                                  "WHERE label = 'downloads'")[0][0]], client="tv"))
+        self.assertEqual(cli("at-risk"), "nothing at risk: every file you can see has a copy you can see on another "
+                                         "disk\n")
+
+    def test_growth_from_a_folder_and_given_one(self):
+        cli = self.cli
+        got = json.loads(cli("growth", "store:people", "--json"))
+        self.assertEqual(sorted(got), ["cut", "rows"])
+        self.assertFalse(got["cut"])
+        self.assertEqual({(r["folder"], r["files_added"], r["files_gone"]) for r in got["rows"]}, {("user-1", 2, 1)})
+        self.assertNotIn("owners", json.dumps(got))
+        here = json.loads(cli("growth", "--json", "--weeks", "2", cwd=self.path("server-1", "store", "people/user-1")))
+        self.assertEqual(sorted((r["folder"], r["files_added"]) for r in here["rows"]), [("", 1), ("cleanup", 1)])
+        text = cli("growth", cwd=self.path("server-1", "store", "people/user-1"))
+        self.assertTrue(text.startswith("growth per folder under store:people/user-1, per week, in the last 8 "
+                                        "weeks:\n"), text)
+        self.assertIn("(files directly in it)", text)
+        self.assertEqual(cli("growth", "taxes.txt", cwd=self.path("server-1", "store", "people/user-1"), code=1),
+                         "pinakes: pinakes growth needs a folder; taxes.txt is a file: `pinakes history` shows its "
+                         "changes")
+        # hers is not counted in his, and his not in hers
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual({r["folder"] for r in json.loads(cli("growth", "store:people", "--json"))["rows"]}, {"user-2"})
+
+    def test_restores_and_where_they_are_held(self):
+        cli = self.cli
+        rows = json.loads(cli("restores", "--json"))
+        self.assertEqual([(r["root"], r["old_relpath"], r["backups"], r["back"]) for r in rows],
+                         [("store", self.GONE, 1, False)])
+        self.assertEqual(rows[0]["held_in"], [{"root": "snapshots", "snapshot": "2026-01-01",
+                                              "path": "2026-01-01_0140/" + self.GONE}])
+        text = cli("restores", "store:people/user-1")
+        self.assertIn("store:" + self.GONE, text)
+        self.assertIn("snapshots:2026-01-01_0140/" + self.GONE, text)        # a cell is cut at 60 characters
+        self.assertEqual(cli("restores", "store:people/user-2"), "(none)\n")
+        # back where it was: gone from the list unless --back is asked for
+        self.write("server-1", "store", self.GONE, b"cleanup a")
+        self.scan("server-1", "store")
+        self.assertEqual(json.loads(cli("restores", "--json")), [])
+        self.assertEqual([r["back"] for r in json.loads(cli("restores", "--back", "--json"))], [True])
+        # not hers to see
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual(json.loads(cli("restores", "--back", "--json")), [])
+
+    def test_changes_tree_and_filters(self):
+        cli = self.cli
+        tree = json.loads(cli("changes", "store:", "--tree", "--json"))
+        self.assertEqual(sorted(tree), ["cut", "rows"])
+        by = {r["folder"]: r for r in tree["rows"]}
+        self.assertEqual(sorted(by), ["", "people", "people/user-1", "people/user-1/cleanup"])
+        self.assertEqual((by["people/user-1"]["new"], by["people/user-1"]["gone"]), (2, 1))
+        self.assertNotIn("owners", json.dumps(tree))
+        shallow = json.loads(cli("changes", "store:", "--tree", "--depth", "1", "--json"))
+        self.assertEqual([r["folder"] for r in shallow["rows"]], ["", "people"])
+        text = cli("changes", "--tree", cwd=self.path("server-1", "store", "people"))
+        self.assertTrue(text.startswith("changes per folder under store:people in the last 7 days:\n"), text)
+        self.assertIn("  user-1", text.replace("people/", ""))
+        self.assertEqual(cli("changes", "--tree", "--host", "server-1", code=1),
+                         "pinakes: pinakes changes --tree takes a folder, not --host")
+        # the filters, on the list and on the tree
+        gone = json.loads(cli("changes", "store:", "--what", "gone", "--json"))
+        self.assertEqual([(r["kind"], r["old_relpath"]) for r in gone], [("gone", self.GONE)])
+        self.assertEqual(sorted(r["kind"] for r in json.loads(cli("changes", "store:", "--what", "gone", "--what",
+                                                                   "new", "--json"))), ["gone", "new", "new"])
+        self.assertEqual(json.loads(cli("changes", "store:", "--what", "gone", "--review", "unreviewed", "--json")), [])
+        self.assertEqual(len(json.loads(cli("changes", "store:", "--what", "gone", "--review", "reviewed", "--json"))), 1)
+        self.assertEqual({r["folder"]: r["gone"] for r in json.loads(cli(
+            "changes", "store:", "--tree", "--what", "gone", "--json"))["rows"]}["people/user-1/cleanup"], 1)
+        self.assertIn("what is one of", cli("changes", "--what", "renamed", code=1))
+        # her changes are not counted in his tree, and his not in hers
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual({r["folder"] for r in json.loads(cli("changes", "store:", "--tree", "--json"))["rows"]},
+                         {"", "people", "people/user-2"})
+
+    def test_access_is_the_persons_own(self):
+        cli = self.cli
+        cli("whoami")
+        rows = json.loads(cli("access", "--json"))
+        self.assertEqual([(r["action"], r["detail"]["call"], r["mine"]) for r in rows[:2]],
+                         [("api", "access", True), ("api", "whoami", True)])          # the newest first
+        self.assertTrue(all(r["actor"] == "User One" for r in rows))
+        text = cli("access").splitlines()
+        self.assertEqual(text[0].split(), ["at", "actor", "action", "detail"])
+        self.assertIn('"call": "access"', text[1])
+        self.assertEqual(text[1].split()[2], "you")
+        # hers has none of his calls
+        self.as_token(make_token(self, "user-2", client="laptop-2"))
+        hers = json.loads(cli("access", "--json"))
+        self.assertEqual([r["detail"]["call"] for r in hers if r["action"] == "api"], ["access"])
+        self.assertTrue(all(r["mine"] and r["actor"] == "User Two" for r in hers), hers)
+        # a group's or an ops token: refused
+        self.as_token(make_kind_token(self, "user-1", group="household", client="kitchen"))
+        self.assertEqual(cli("access", code=1), "pinakes: an access record is a person's own: use a person's token")
+        self.as_token(make_kind_token(self, "user-1", scopes=("ops",), client="deploy"))
+        self.assertEqual(cli("access", code=1), "pinakes: this token doesn't have the read scope")
+
+
 @unittest.skipUnless(web is not None, "Flask not installed")
 class TestOpsToken(ApiCase):
     """Ops tokens (ROADMAP 39): an operator's, acting as no person: releases and stale, and nothing that names a

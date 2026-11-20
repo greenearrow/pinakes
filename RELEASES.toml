@@ -101,10 +101,10 @@ note = "The operator page (ROADMAP 10): /operator, for an operator signed in on 
 
 [[release]]
 id = 9
-affects = ["server"]
+affects = ["server", "cli"]
 protocol = 5
 min_agent_protocol = 0
 min_server_protocol = 0
 upgrade_sql = []
 fingerprint = { batch = "099342d9ac728abd", state = "11155534073777cb", schema = "78c159405258792d" }
-note = "A root's first scan is not a change (ROADMAP 52): the Changes page, /api/v1/changes and pinakes changes leave out the new files of a root's first scan, as Growth does, which made the page slow for a week after a root's first scan on a large catalog; a file's own history still shows it."
+note = "A root's first scan is not a change (ROADMAP 52): the Changes page, /api/v1/changes and pinakes changes leave out the new files of a root's first scan, as Growth does, which made the page slow for a week after a root's first scan on a large catalog; a file's own history still shows it. What the server answered that pinakes didn't ask (ROADMAP 53 to 59): pinakes whoami, export [PART] [--csv], at-risk, growth [FOLDER] [--weeks N], restores [PATH] [--back], access, and changes --tree [--depth N] --what KIND --review reviewed|unreviewed; new API calls at-risk, growth, restores, change-tree and access (a person's token only), under row-level security and the token's roots, recorded like every call, refused to ops tokens."

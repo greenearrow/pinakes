@@ -548,6 +548,46 @@ def create_app(cfg, connect=None):
             raise ValueError("field is SCHEMA.FIELD")
         return {"rows": queries.meta(g.db, schema, field, request.args.get("value", ""), *lim())}
 
+    # the web's reports, for `pinakes` (ROADMAP 55 to 59): the same queries under row-level security, without the
+    # owner ids the web keeps for its step-up audit (a token never steps up)
+    def no_owners(rows, key="owners"):
+        return [{k: v for k, v in r.items() if k != key} for r in rows]
+
+    @api("at-risk")
+    def api_at_risk():
+        r = queries.at_risk(g.db)
+        return {"disks": r["disks"], "hosts": r["hosts"], "folders": no_owners(r["folders"], "owner_id"),
+                "folders_total": r["folders_total"], "folders_shown": queries.AT_RISK_FOLDERS}
+
+    @api("growth")
+    def api_growth():
+        rows = queries.growth(g.db, _int_arg("weeks", 8, 1, 520), request.args.get("loc") or None)
+        return {"rows": no_owners(rows[:queries.GROWTH_LIMIT]), "cut": len(rows) > queries.GROWTH_LIMIT}
+
+    @api("restores")
+    def api_restores():
+        return {"rows": queries.restores(g.db, request.args.get("loc") or None, bool(request.args.get("back")),
+                                         *lim())}
+
+    @api("change-tree")
+    def api_change_tree():
+        review = request.args.get("review")
+        if review and review not in queries.REVIEWS:
+            raise ValueError("review is %s" % " or ".join(queries.REVIEWS))
+        kinds = request.args.getlist("what")
+        if set(kinds) - set(queries.KINDS):
+            raise ValueError("what is one of %s" % ", ".join(queries.KINDS))
+        rows = queries.change_tree(g.db, _int_arg("days", 7, 1, 3650), request.args.get("loc") or None,
+                                   _int_arg("depth", 3, 1, 8), kinds or None, review or None)
+        return {"rows": no_owners(rows[:queries.TREE_LIMIT]), "cut": len(rows) > queries.TREE_LIMIT}
+
+    @api("access")
+    def api_access():
+        """The person's access record, as on the access page: who saw their records, and their own calls."""
+        if g.kind != "person":
+            abort(403, "an access record is a person's own: use a person's token")
+        return {"rows": queries.audit_mine(g.db, *lim())}
+
     # sign-in -------------------------------------------------------------------------------------------------
     @app.route("/login", methods=["GET", "POST"])
     def login():

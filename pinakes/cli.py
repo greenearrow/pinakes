@@ -17,14 +17,28 @@
   pinakes history FILE
   pinakes versions FILE
   pinakes lineage FILE [--down]
-  pinakes changes [PATH] [--days N] [--host NAME]   no path, outside every root: everything you can see
+  pinakes changes [PATH] [--days N] [--host NAME] [--what KIND] [--review reviewed|unreviewed]
+                                       no path, outside every root: everything you can see. --what (again for
+                                       more) keeps only those kinds of change; --tree [--depth N] counts them per
+                                       folder instead, from PATH down N levels (3)
   pinakes review intended|restore [PATH] [--days N] [--yes]   mark the unreviewed gone files and moves under PATH
                                        (or of that file) reviewed, as on the web's Changes page: shown, then marked
                                        once you say yes. Only your own or co-owned; the token needs the review scope
+  pinakes restores [PATH] [--back]     the changes marked restore and the backup copies holding their content;
+                                       --back: also those whose content is back where it was
+  pinakes growth [FOLDER] [--weeks N]  per folder under FOLDER (none, outside every root: each root's top
+                                       folders) and week, the files and bytes that came and went (8 weeks)
+  pinakes at-risk                      what losing a disk or a machine would cost you: your files with no copy
+                                       on another disk, per disk, per host and by top folder
   pinakes meta SCHEMA.FIELD=VALUE
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
   pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
+  pinakes whoami                       whose token this is, its kind, scopes and the roots it may see
+  pinakes access                       your access record: who saw your records, and the calls made with your
+                                       tokens, the newest first (a person's token only)
+  pinakes export [PART] [--csv]        your own records, as JSON (every part, or one) or as CSV (one part: files,
+                                       history, reviews, metadata or lineage), on standard output
   pinakes releases                     this server's release and protocol, whether its schema is applied, and each
                                        agent's last check-in (release, protocol, locked or not, newest batch,
                                        refusals, the last time its batch numbering went back). It needs an ops
@@ -143,9 +157,11 @@ class Api:
         self.token = token
         self.context = ssl.create_default_context(cafile=ca_file) if u.scheme == "https" else None
 
-    def get(self, call, **args):
+    def get(self, call, raw=False, **args):
+        """The answer as JSON; with raw, as text (a CSV)."""
         q = urllib.parse.urlencode({k: v for k, v in args.items() if v is not None and v is not False}, doseq=True)
-        return self._ask(urllib.request.Request(self.base + call + ("?" + q if q else ""), headers=self._headers()))
+        return self._ask(urllib.request.Request(self.base + call + ("?" + q if q else ""), headers=self._headers()),
+                         raw)
 
     def post(self, call, body=None):
         return self._ask(urllib.request.Request(self.base + call, data=json.dumps(body or {}).encode(), method="POST",
@@ -157,10 +173,10 @@ class Api:
             h["Authorization"] = "Bearer " + self.token
         return h
 
-    def _ask(self, req):
+    def _ask(self, req, raw=False):
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT, context=self.context) as r:
-                return json.load(r)
+                return r.read().decode("utf-8") if raw else json.load(r)
         except urllib.error.HTTPError as e:
             try:
                 msg = json.load(e).get("error") or e.reason
@@ -298,11 +314,78 @@ def _when(iso):
     return datetime.datetime.fromisoformat(iso)
 
 
+def size(n):
+    """Bytes for a person to read: 1.5 GB, 320.0 KB, 12 B."""
+    n = float(n or 0)
+    if abs(n) < 1000:
+        return "%d B" % n
+    for unit in ("KB", "MB", "GB", "TB", "PB"):
+        n /= 1000
+        if abs(n) < 1000 or unit == "PB":
+            return "%.1f %s" % (n, unit)
+
+
+def sized(rows, *keys):
+    return [dict(r, **{k: size(r[k]) for k in keys}) for r in rows]
+
+
+def whoami(api, as_json):
+    got = api.get("whoami")
+    if as_json:
+        print(json.dumps(got, indent=1))
+        return
+    who = {"person": "%s (%s)" % (got.get("person"), got.get("display")) if got.get("display") else got.get("person"),
+           "group": "the group %s, as no one member" % got.get("group"),
+           "ops": "an ops token: no person, no root"}[got["kind"]]
+    print("%s's token" % who if got["kind"] == "person" else who)
+    print("scopes: %s" % ", ".join(got["scopes"]))
+    if got["kind"] != "ops":
+        print("roots: %s" % (", ".join(got["roots"]) or "none"))
+
+
+def at_risk(api, as_json):
+    """pinakes at-risk: the web's at-risk report (ROADMAP 42, 55)."""
+    got = api.get("at-risk")
+    if as_json:
+        print(json.dumps(got, indent=1))
+        return
+    if not got["hosts"]:
+        print("nothing at risk: every file you can see has a copy you can see on another disk")
+        return
+    print("lost with a disk (no copy on another disk of any machine):")
+    _print(sized(got["disks"], "bytes"), False, ["host", "dev", "roots", "files", "bytes"])
+    print("\nlost with a machine (no copy on another machine):")
+    _print(sized(got["hosts"], "bytes"), False, ["host", "roots", "files", "bytes"])
+    print("\nby top folder, the largest first:")
+    _print(sized(got["folders"], "bytes"), False, ["host", "dev", "root", "folder", "owner", "files", "bytes"])
+    if got["folders_total"] > len(got["folders"]):
+        print("... and %d more folder(s)" % (got["folders_total"] - len(got["folders"])))
+
+
+def restores(rows):
+    """The restore report's rows for reading: where each content is held, as ROOT:PATH (snapshot)."""
+    return [{"seen_on": r["seen_on"], "kind": r["kind"], "path": "%s:%s" % (r["root"], r["old_relpath"] or r["new_relpath"]),
+             "marked_by": r["marked_by"], "back": "yes" if r["back"] else "", "backups": r["backups"],
+             "held_in": ", ".join("%s:%s%s" % (h["root"], h["path"], " (%s)" % h["snapshot"] if h["snapshot"] else "")
+                                  for h in r["held_in"] or [])} for r in rows]
+
+
+def export(api, a):
+    """pinakes export [PART] [--csv]: the person's own records (ROADMAP 45, 54), as the API gives them."""
+    if a.csv:
+        if not a.arg:
+            raise Failed("a CSV is one part: pinakes export PART --csv")
+        sys.stdout.write(api.get("export", raw=True, part=a.arg, format="csv"))
+        return
+    print(json.dumps(api.get("export", part=a.arg), indent=1))
+
+
 # commands ----------------------------------------------------------------------------------------------------------
 FILE = ("where", "history", "versions", "lineage")                  # take one file
 FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
-                                         "releases", "manifests")
+                                         "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
+                                         "restores")
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -351,6 +434,20 @@ def run(api, a, cfg):
     def loc(want):
         return location(api, a.cmd, a.arg, _this_host(a.host, cfg), want)
 
+    def loc_or_everywhere(want):
+        """The argument's ROOT:PATH; none given, outside every root: None (everything the person can see)."""
+        try:
+            return loc(want)
+        except NotInRoot:
+            if a.arg:
+                raise
+            return None
+
+    if a.cmd in ("whoami", "at-risk", "export"):
+        {"whoami": lambda: whoami(api, a.json), "at-risk": lambda: at_risk(api, a.json),
+         "export": lambda: export(api, a)}[a.cmd]()
+        return
+
     if a.cmd == "review":
         review(api, a, cfg)
         return
@@ -391,17 +488,53 @@ def run(api, a, cfg):
             if a.arg:
                 raise
             where = None
-        got = api.get("changes", days=a.days, host=a.host, loc=where)
+        filters = {"days": a.days, "loc": where, "what": a.what, "review": a.review}
+        if a.tree:
+            if a.host:
+                raise Failed("pinakes changes --tree takes a folder, not --host")
+            got = api.get("change-tree", depth=a.depth, **filters)
+            if a.json:
+                print(json.dumps(got, indent=1))
+                return
+            print("changes per folder %s in the last %d days:" % ("under " + where if where else
+                                                                  "everywhere you can see", a.days))
+            if got["cut"]:
+                print("(cut at %d folders: give a folder or a smaller --depth)" % len(got["rows"]))
+            got["rows"] = [dict(r, folder="  " * r["level"] + (r["folder"] or "(top)")) for r in got["rows"]]
+            _print(got["rows"], False, ["host", "root", "folder", "new", "changed", "moved_in", "moved_out",
+                                        "gone", "scrub", "unreviewed"])
+            return
+        else:
+            got = api.get("changes", host=a.host, **filters)
+            if not a.json:
+                print("changes %s in the last %d days%s:" % ("under " + where if where else "everywhere you can see",
+                                                             a.days, ", on " + a.host if a.host else ""))
+    elif a.cmd == "growth":
+        where = loc_or_everywhere("folder")
+        got = api.get("growth", loc=where, weeks=a.weeks)
+        if a.json:
+            print(json.dumps(got, indent=1))
+            return
+        print("growth per folder %s, per week, in the last %d weeks:" % (
+            "under " + where if where else "at the top of each root", a.weeks))
+        if got["cut"]:
+            print("(cut at %d rows: give a folder or fewer --weeks)" % len(got["rows"]))
+        got["rows"] = [dict(r, folder=r["folder"] or "(files directly in it)")
+                       for r in sized(got["rows"], "bytes_added", "bytes_gone")]
+    elif a.cmd == "restores":
+        got = api.get("restores", loc=loc_or_everywhere("any"), back=1 if a.back else None)
         if not a.json:
-            print("changes %s in the last %d days%s:" % ("under " + where if where else "everywhere you can see",
-                                                         a.days, ", on " + a.host if a.host else ""))
+            got["rows"] = restores(got["rows"])
+    elif a.cmd == "access":
+        got = api.get("access")
+        if not a.json:
+            got["rows"] = [dict(r, actor="you" if r["mine"] else r["actor"],
+                                detail=json.dumps(r["detail"], sort_keys=True) if r["detail"] else "")
+                           for r in got["rows"]]
+            _print(got["rows"], False, ["at", "actor", "action", "detail"])
+            return
     elif a.cmd == "manifests":
-        try:
-            where = loc("any")
-        except NotInRoot:
-            if a.arg:
-                raise
-            where = None
+        where = loc_or_everywhere("any")
         got = api.get("manifests", loc=where)
         if not a.json:
             print("checksum manifests %s: %s" % ("under " + where if where else "everywhere you can see",
@@ -481,6 +614,14 @@ def main(argv=None):
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--host", help="changes: only this host's; backups: this machine's name in the catalog")
     ap.add_argument("--yes", action="store_true", help="review: mark without asking")
+    ap.add_argument("--what", action="append", metavar="KIND",
+                    help="changes: only this kind (new, changed, moved, moved_changed, gone, mismatch, unreadable)")
+    ap.add_argument("--review", choices=("reviewed", "unreviewed"), help="changes: only the reviewed or unreviewed")
+    ap.add_argument("--tree", action="store_true", help="changes: per folder, from PATH down --depth levels")
+    ap.add_argument("--depth", type=int, default=3, help="changes --tree: how many levels (3)")
+    ap.add_argument("--weeks", type=int, default=8, help="growth: how many weeks, this one counted (8)")
+    ap.add_argument("--back", action="store_true", help="restores: also those whose content is back")
+    ap.add_argument("--csv", action="store_true", help="export: one part, as CSV")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
     ap.add_argument("--as", dest="person", metavar="NAME",
                     help="as this person: asks for their password (and second factor) or a token of theirs")

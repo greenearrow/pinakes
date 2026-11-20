@@ -348,10 +348,16 @@ pinakes folder-copies [PATH]           folders under PATH that are copies of ano
 pinakes history FILE                   what happened to a file
 pinakes lineage FILE                   where this file came from and what came from it, on every host
 pinakes versions FILE                  each known version (hash, dates) and which backup copies hold it
-pinakes changes [PATH] [--days N] [--host]     what changed
+pinakes changes [PATH] [--days N] [--host]     what changed; --what KIND, --review; --tree: per folder
 pinakes review intended|restore [PATH]  mark the gone files and moves under it reviewed (shown, then confirmed)
+pinakes restores [PATH] [--back]       the changes marked restore, and the backup copies holding their content
+pinakes growth [FOLDER] [--weeks N]    per folder and week, the files and bytes that came and went
+pinakes at-risk                        what losing a disk or a machine would cost you, by disk, host and folder
 pinakes meta SCHEMA.FIELD=VALUE        files by metadata
 pinakes stale                          hosts whose last scan is older than their schedule allows
+pinakes whoami                         whose token this is, its scopes and roots
+pinakes access                         who saw your records, and the calls made with your tokens
+pinakes export [PART] [--csv]          your own records
 ```
 
 FILE, FOLDER and PATH are a path on this machine (none: the current folder) or ROOT:PATH; a folder report given a
