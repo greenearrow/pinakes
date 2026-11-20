@@ -115,6 +115,39 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
     is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an
     active step-up, and every call in the audit.
 
+### What the server answers that `pinakes` doesn't ask yet
+
+Built on the server (an API call, or a web page only) before the rule above, with no command. Each *done when*
+names the command, its `--json`, and a test of it through the API.
+
+53. [Feature] **`pinakes whoami`:** whose token this is, its kind, scopes and the roots it may see (`/api/v1/whoami`
+    is built and only used inside the CLI). *Done when:* `pinakes whoami` and `--json` print it for a person's, a
+    group's and an ops token, tested through the API.
+54. [Feature; also security] **`pinakes export [PART]`:** a person's export of their own records (45) from the shell,
+    JSON (every part) or `--csv` (one part) on standard output. *Done when:* `pinakes export`, `export PART --csv` and
+    `--json` are tested through the API: the person's own records only, a token's root limit kept, a group or ops
+    token refused.
+55. [Feature] **`pinakes at-risk`:** what losing a disk or a machine would cost the person (42; the web page only).
+    *Done when:* `pinakes at-risk` and `--json` give per disk, per host and per top folder, tested through the API, with
+    another person's files and a root outside the token's limit left out.
+56. [Feature] **`pinakes growth [FOLDER] [--weeks N]`:** growth by folder over time (47; the web page only). *Done
+    when:* `pinakes growth` from inside a folder and given one, and `--json`, are tested through the API, another
+    person's files not counted.
+57. [Feature] **`pinakes restores [PATH] [--back]`:** the changes marked restore and the backup copies that hold their
+    content (the web's Restore report only). *Done when:* `pinakes restores` and `--json` are tested through the API:
+    a marked gone file and where it is held, `--back` once it is back, another person's left out.
+58. [Feature] **The Changes page's tree and filters in `pinakes changes`:** `--tree [--depth N]` (per folder, what
+    happened under it), `--what KIND` and `--review reviewed|unreviewed` (the web only). *Done when:* each and
+    `--json` are tested through the API, another person's changes not counted in the tree.
+59. [Security; also feature] **`pinakes access`:** a person's access record (the web's access page: who saw their
+    records, every call made with their tokens). *Done when:* `pinakes access` and `--json` are tested through the
+    API: the person's own entries only, a group or ops token refused.
+60. [Security; also operability] **The operator's totals through the API** (10, 42; the operator page only), as
+    `pinakes operator` with an ops token. The database refuses its functions to every token, ops tokens too
+    (`require_operator()`); opening them to ops tokens is the owner's decision first, and an upgrade. *Done when:*
+    decided; then `pinakes operator` and `--json` are tested through the API with an ops token, a person's token
+    refused, and no path or person in the answer.
+
 ## Soon: add-on modules
 
 Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.
