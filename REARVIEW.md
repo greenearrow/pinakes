@@ -58,6 +58,7 @@ agents).
 - 49. Token forms a password manager can fill
 - 50. A web page for folder copies
 - 51. The agent reports its runs to a push monitor
+- 52. A root's first scan is not a change
 
 ## Dropped
 
@@ -700,3 +701,27 @@ a 0.3 s timeout, a closed port and a failing call each one line with exit 0; the
 the argv of the processes started (checked to fail with an error's text printed), and refused in the config. All 419
 tests pass (tools/test, PostgreSQL 16.15). Other Pythons not run; not run on a real tree against a real push monitor;
 not deployed.
+
+## 52. A root's first scan is not a change
+
+Found at the first deployment: the Changes page took long enough to be forgotten while it loaded.
+
+**Measured** on 2026-11-20 (a generated catalog: 2M primary files, 3.3M file rows with backups and drops, 3.7M history
+rows; 8 roots on 3 hosts, 40 ACLs; PostgreSQL 16.15 with fsync off, warm cache; x86-64 desktop, 24 threads; as a person
+under row-level security; the deployment's size and hardware not checked). A first scan writes a `new` history row for
+every file, so for a week after a root's first scan the page (folder tree, list and unreviewed count) read every file of
+it: 29.7 s with the first scan in the window, 6.7 s as built (the rest the generated churn, 10% of the files gone in a
+month); a week of ordinary churn, 2.5 s before and 2.0 s as built. The plan already used `history_seen`: no index was
+missing. Also measured, unchanged: Duplicates 3.5 s, Only here and Safe to delete for a whole root 2.9 s, for one folder
+0.2 to 0.3 s.
+
+**Built:** `queries.changes()` and `queries.change_tree()` leave out `new` rows with `seen_after` NULL (a root's
+first scan, a root added later too), as `queries.growth()` already did; the changes page says so. The API's changes and
+`pinakes changes` use the same query. A file's own history (`queries.history()`, the file page) still shows its first
+scan.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_web.py`
+`test_a_roots_first_scan_is_not_a_change`, checked to fail without the change: a first scan and a later root's first
+scan absent from the list, the tree and the count, a file new in a later scan present, the file's history kept, the
+page); `TestSorting` and the CLI tests in `tests/test_api.py` now scan before their files arrive, so they still see
+changes. All tests pass (tools/test). Other Pythons not run; not run on a real catalog; not deployed.

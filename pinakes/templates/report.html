@@ -64,6 +64,7 @@
 {% if ch.marked is not none %}<p class="notice">{{ ch.marked }} of {{ ch.asked }} change(s) marked.{% if ch.marked < ch.asked %} The others are not yours to mark (a step-up lets an administrator mark them).{% endif %}</p>{% endif %}
 {% if error %}<p class="error">{{ error }}</p>{% else %}
 <h2>By folder</h2>
+<p class="muted">A root's first scan is the catalog starting, not a change, and isn't shown; a file's own page still has it.</p>
 <p class="muted">Files under each folder. A tracked move counts as moved in at its destination and moved out at its source, not as new and gone; a move within a folder counts there as both. A move between roots is not tracked: it shows as gone and new.</p>
 {% macro n(t, count, what, review=ch.review) %}{% if count %}<a href="{{ url_for('report', name='changes', days=ch.days, depth=ch.depth, loc=t.root ~ ':' ~ t.folder ~ ('/' if t.folder else ''), what=what, review=review) }}">{{ count }}</a>{% else %}<span class="muted">·</span>{% endif %}{% endmacro %}
 <div class="scroll"><table class="tree">

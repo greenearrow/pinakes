@@ -363,13 +363,19 @@ _REVIEW_WHERE = """(%%s::text IS NULL OR (%%s = 'reviewed' AND m.history_id IS N
                          AND hi.kind IN (%s)))""" % ", ".join("'%s'" % k for k in REVIEWABLE)
 
 
+# A root's first scan records every file as new (seen_after NULL): the catalog starting, not a change. Left out of the
+# changes page, as growth() leaves it out; a file's own history (history()) still shows it. Without this, a window
+# holding a first scan reads every file in the root (ROADMAP 52: 30 s to 7 s, generated 2M files).
+_NOT_FIRST = "NOT (hi.kind = 'new' AND hi.seen_after IS NULL)"
+
+
 def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction="asc", kinds=None, loc=None,
             review=None, until=None, elsewhere=False):
     """History in the last `days` (and up to `until`, a date), optionally only some kinds, only what touched a folder
     or a file (ROOT:PATH; a move counts at both ends), only unreviewed or reviewed changes, and only gone files whose
     last content is still in another root you can see, not a backup (`elsewhere`). Each row has its review mark, and for
     a gone file the copies of its last content you can see: `elsewhere` (primary and drop roots, one shown in
-    `elsewhere_at`) and `backups`."""
+    `elsewhere_at`) and `backups`. A root's first scan is not a change: its new files are left out (_NOT_FIRST)."""
     since = today() - datetime.timedelta(days=days)
     root, pre, path = (None, None, None)
     if loc:
@@ -397,6 +403,7 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
                              WHERE hi.kind = 'gone' AND o.content_id = hi.old_content_id
                                AND o.unreadable_on IS NULL) c ON true
                          WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
+                           AND """ + _NOT_FIRST + """
                            AND (%s::text IS NULL OR h.name = %s)
                            AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
                            AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s
@@ -471,7 +478,8 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
     there as both in and out. From the folder `loc` (ROOT:PATH; None: every root) down `depth` levels, in tree order.
     `scrub` counts what the scrub found (a mismatch or an unreadable file). `unreviewed` counts the gone files, moves
     and scrub findings under it with no review mark (a move once), and `review` filters
-    as in changes(). `owners` is the owners of the files counted, for the step-up audit. At most TREE_LIMIT rows."""
+    as in changes(). `owners` is the owners of the files counted, for the step-up audit. A root's first scan is
+    left out, as in changes(). At most TREE_LIMIT rows."""
     since = today() - datetime.timedelta(days=days)
     root, pre, base = None, "%", 0
     if loc:
@@ -495,6 +503,7 @@ def change_tree(conn, days=7, loc=None, depth=3, kinds=None, review=None):
                                  (CASE WHEN hi.kind IN ('mismatch', 'unreadable') THEN hi.new_relpath END, 'scrub'))
                                  AS x (path, role)
                              WHERE hi.seen_on >= %s AND x.path IS NOT NULL AND x.path LIKE %s
+                               AND """ + _NOT_FIRST + """
                                AND (%s::text IS NULL OR r.label = %s)
                                AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
                                AND """ + _REVIEW_WHERE + """),

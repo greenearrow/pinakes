@@ -262,7 +262,9 @@ ORDER BY hi.seen_on, path;
 For a clean-up: per folder, what happened under it in the last N days, from a chosen folder down a few levels.
 A tracked move counts as moved in at its destination and moved out at its source, never as new and gone; a move
 within a folder counts there as both. Moves are matched within a root only. The changes page filters by kind (What)
-and by folder too; `queries.change_tree` and `queries.changes(kinds=, loc=)`.
+and by folder too; `queries.change_tree` and `queries.changes(kinds=, loc=)`. A root's first scan (`seen_after` NULL)
+records every file as new: the catalog starting, not a change, so its new files are left out there (and from the
+API's and `pinakes changes`), as from growth; a file's own history still has them (ROADMAP 52).
 
 ```sql
 -- each history row gives one or two (path, role): new, changed, gone, or a move's in (new path) and out (old path);

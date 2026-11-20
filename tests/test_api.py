@@ -515,6 +515,7 @@ def make_token(case, person, scopes=("read",), roots=None, client="laptop-1"):
 class TestCli(ServerCase):
     def setUp(self):
         super().setUp()
+        self.scan("server-1", "store")      # empty: a root's first scan is not a change (ROADMAP 52), the next is
         self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
         self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
         self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")
@@ -643,6 +644,7 @@ class TestCliHere(ServerCase):
 
     def setUp(self):
         super().setUp()
+        self.scan("server-1", "store")      # empty: a root's first scan is not a change (ROADMAP 52), the next is
         self.write("server-1", "store", "people/user-1/taxes.txt", b"his")
         self.write("server-1", "store", "people/user-2/diary.txt", b"hers")
         self.write("server-1", "store", "people/user-1/shared-with-2/plan.txt", b"plan")

@@ -369,6 +369,30 @@ class TestWeb(ServerCase):
         for url in ("/reports/dupes", "/reports/changes", "/reports/backed-up?loc=store:", "/access", "/account"):
             self.assertEqual(c1.get(url).status_code, 200, url)
 
+    def test_a_roots_first_scan_is_not_a_change(self):
+        """ROADMAP 52: every file a first scan records is new; the changes page leaves them out (a root added later
+        too), keeps what is new in a later scan, and the file's own history still has it."""
+        from pinakes import queries
+        self.write("server-1", "store", "people/user-1/added.txt", b"added later")
+        self.scan("server-1", "store")
+        self.agent("laptop-1", "downloads", kind="drop")
+        self.write("laptop-1", "downloads", "fetched.txt", b"fetched")
+        self.scan("laptop-1", "downloads")
+        with self.as_person("user-1", "s-first") as c:
+            self.assertEqual(len(queries.find(c, "fetched.txt")), 1)                 # visible, so absent below by rule
+            self.assertEqual([(r["root"], r["path"], r["kind"]) for r in queries.changes(c, 7)],
+                             [("store", "people/user-1/added.txt", "new")])
+            tree = {(t["root"], t["folder"]): t["new"] for t in queries.change_tree(c, 7, None, 3)}
+            self.assertEqual(tree, {("store", ""): 1, ("store", "people"): 1, ("store", "people/user-1"): 1})
+            self.assertEqual(queries.page_total(queries.changes(c, 7, None, 1, kinds=["new"])), 1)
+            taxes = self.file("store", "people/user-1/taxes.txt")
+            self.assertEqual([h["kind"] for h in queries.history(c, taxes)], ["new"])
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/reports/changes").get_data(as_text=True)
+        self.assertIn("added.txt", page)
+        self.assertNotIn("taxes.txt", page)
+        self.assertNotIn("fetched.txt", page)
+
     def test_changes_tree_and_what_filter(self):
         """A clean-up: a folder emptied into another (moves, not new and gone), one file deleted, one added."""
         from pinakes import queries
@@ -405,6 +429,7 @@ class TestWeb(ServerCase):
             self.assertEqual({r["kind"] for r in queries.changes(c, 7, kinds=["gone", "bogus"])}, {"gone"})
         c1, _ = self.login("user-1", "correct horse battery")
         page = c1.get("/reports/changes?what=gone&loc=store:people/").get_data(as_text=True)
+        self.assertIn("first scan", page)
         self.assertIn("junk.txt", page)
         self.assertNotIn("index.txt", page)
         self.assertIn('value="gone" checked', page)
@@ -629,6 +654,8 @@ class TestSorting(ServerCase):
         self.scan("server-1", "store")
         self.write("server-1", "store", self.MANY + "target-2.txt", b"version 5", mtime=t0 + 300)
         self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "readme.txt", b"first scan", mtime=t0)   # a first scan is no change
+        self.scan("laptop-1", "downloads")
         for i in range(3):          # another machine's changes (owned by the default owner, user-1)
             self.write("laptop-1", "downloads", "camera/img-%d.jpg" % i, b"photo %d" % i, mtime=t0)
         self.scan("laptop-1", "downloads")
