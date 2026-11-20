@@ -2,6 +2,60 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 8
+
+Not cut. Affects the server and the agents; the CLI is unchanged. Protocol 5, a change to the schema only: agents of
+protocol 0 to 4 work with this server unchanged, and this agent with any server, so either side may be updated first.
+
+### Before you update
+
+1. As the schema's owner, run `upgrades/operator.sql` (`tools/latest-release --upgrades-after 7` lists it). Then
+   update the server, then the agents.
+2. To have an agent report its runs to a push monitor, put the monitor's push URL in a file readable by the agent's
+   user only and name it in `agent.toml`: `[monitor] url_file = "/etc/pinakes/monitor-url"`. Off without it.
+
+### The operator page
+
+- `/operator`, for an operator signed in on the web: every root's files and bytes, last complete scan, oldest scrub
+  check, reporting state and scan errors. Counts and dates only, never a path, a file's name or a person; refused to a
+  token, ops or not.
+
+### What a disk's loss would cost
+
+- The files with no copy on another disk, per device and per host (if the machine were lost). The operator page has
+  every person's totals, without names.
+- The **If a disk failed** report (`/reports/at-risk`) shows a person their own, by disk, machine, root, top folder and
+  owner, largest first, each opening Only here for its folder. Audited in a step-up.
+
+### Folder copies on the web
+
+- `/reports/folder-copies?loc=ROOT:PATH`: the query of `pinakes folder-copies`, sortable and paged, beside Duplicates
+  and Only here. Audited in a step-up. It reads the whole catalog per call: ask about a folder, not a large root.
+
+### Growth by folder over time
+
+- `/reports/growth`: per root and folder, per week, the files and bytes that came and went (8 weeks by default). A
+  root's first scan isn't counted. Audited in a step-up. No API call or CLI command yet.
+
+### A person's export of their own records
+
+- `GET /api/v1/export` with a person's `read` token: the files they own, their history, reviews, metadata and lineage,
+  as JSON, or one part as CSV (`part=`, `format=csv`), paged. Under row-level security, limited by the token's roots,
+  and recorded on the person's access page. Group and ops tokens are refused. Files shared with the person are in
+  their owner's export, not theirs. No CLI command or web page yet.
+
+### Push monitor reports from the agent
+
+- Every `pinakes-agent run`, by timer or by hand, ends by calling the push monitor: up with counts, down with the
+  reasons (or the kind of crash). No path, file name or error text is sent. A failed report is one line on stderr
+  without the URL, and never changes the exit status. `scan` and `send` don't report.
+
+### Not yet
+
+Tested: 419 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64); the installed wheel, and
+PostgreSQL 15, 17 and 18, not run. Not run against a real catalog, on real disks or in a browser; the push monitor not tried against a real one;
+not deployed. What a disk's loss would cost and folder copies not measured on a large catalog.
+
 ## Release 7
 
 Cut 2026-11-17 (tag `release-7`). Affects the server, the agents and the CLI. Protocol 4; agents and servers of
