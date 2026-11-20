@@ -9,6 +9,11 @@ Each open item starts with its category in brackets: *feature* (something new to
 what), *correctness* (a wrong answer without a crash), *stability* (staying up), *scalability* (bigger trees, busier
 machines) or *operability* (installing and running it); "also" names a second.
 
+An item added from here on that gives a person something to ask or do (a report, a query, a review, a mark) names
+the `pinakes` command in its *done when*: the command, its `--json`, and a test of it through the API. A web page or
+API call alone doesn't finish it. Only an item with nothing a person asks or does (the agent's scanning, an install
+step, the operator's own tools) leaves it out, and says why.
+
 ## How things are tested
 
 - **Agent:** `unittest` on generated trees in a temporary directory; standard library only, so it runs anywhere the
