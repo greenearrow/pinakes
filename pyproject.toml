@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pinakes"
-version = "0.1.0.dev0"
+dynamic = ["version"]                  # pinakes.__version__: RELEASES.toml's newest entry
 description = "A catalog of every file on every machine in a home lab, and of who owns it"
 readme = "README.md"
 license = { text = "GPL-3.0-only" }
@@ -27,6 +27,9 @@ pinakes-web = "pinakes.web:main"
 
 [tool.setuptools]
 packages = ["pinakes"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pinakes.__version__" }
 
 [tool.setuptools.package-data]
 pinakes = ["schema.sql", "upgrades/*.sql", "patterns/*.toml", "schemas/*.toml", "templates/*.html", "static/*"]

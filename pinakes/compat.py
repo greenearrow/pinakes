@@ -6,7 +6,7 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 12                # the newest entry in RELEASES.toml (cut or being prepared)
+RELEASE = 13                # the newest entry in RELEASES.toml (cut or being prepared)
 PROTOCOL = 6                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
                             # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46);

@@ -32,8 +32,9 @@ PACKAGE = os.path.dirname(os.path.abspath(pinakes.__file__))   # as installed: a
 UPGRADES = os.path.join(PACKAGE, "upgrades")
 ROLES = ("server", "agent", "cli")
 FIELDS = {"id": int, "affects": list, "protocol": int, "min_agent_protocol": int, "min_server_protocol": int,
-          "upgrade_sql": list, "note": str, "fingerprint": dict}
+          "upgrade_sql": list, "note": str, "fingerprint": dict, "version": str}
 REQUIRED = ("id", "affects", "protocol", "min_agent_protocol", "min_server_protocol", "upgrade_sql")
+SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 
 
 def load_manifest(path=MANIFEST):
@@ -48,6 +49,7 @@ def validate(manifest, upgrade_files):
     if set(manifest) != {"release"} or not isinstance(rels, list) or not rels:
         return ["the manifest is [[release]] entries and nothing else"]
     named = {}
+    version = None                                  # the newest version so far, as (MAJOR, MINOR, PATCH)
     for i, r in enumerate(rels, 1):
         where = "release %s" % r.get("id", "#%d" % i)
         for k in REQUIRED:
@@ -80,6 +82,16 @@ def validate(manifest, upgrade_files):
             named[u] = r["id"]
         if r["upgrade_sql"] and "server" not in r["affects"]:
             errs.append("%s: an upgrade_sql is the server's" % where)
+        if "version" in r:
+            m = SEMVER.fullmatch(r["version"])
+            if not m:
+                errs.append("%s: version must be MAJOR.MINOR.PATCH, e.g. 1.2.3" % where)
+            elif version and tuple(map(int, m.groups())) <= version:
+                errs.append("%s: version must be above the release before's" % where)
+            else:
+                version = tuple(map(int, m.groups()))
+        elif version:
+            errs.append("%s: no version, after a release with one" % where)
     for u in sorted(set(upgrade_files) - set(named)):
         errs.append("pinakes/upgrades/%s belongs to no release" % u)
     return errs
@@ -134,6 +146,13 @@ class TestManifest(unittest.TestCase):
                          (r["id"], r["protocol"], r["min_agent_protocol"], r["min_server_protocol"]),
                          "pinakes/compat.py and the newest release in RELEASES.toml must agree")
 
+    def test_the_package_is_the_newest_version(self):
+        self.assertEqual(pinakes.__version__, self.rels[-1].get("version"),
+                         "pinakes.__version__ and the newest release's version in RELEASES.toml must agree")
+        if PACKAGE != os.path.join(TOP, "pinakes"):                 # an installed copy (tools/test --wheel)
+            import importlib.metadata
+            self.assertEqual(importlib.metadata.version("pinakes"), pinakes.__version__)
+
     def test_the_protocol_is_raised_with_its_formats(self):
         now = fingerprints()
         same = [r for r in self.rels if r["protocol"] == compat.PROTOCOL and "fingerprint" in r]
@@ -162,6 +181,11 @@ class TestManifest(unittest.TestCase):
             ({"upgrade_sql": ["nope.sql"]}, "not in pinakes/upgrades"),
             ({"colour": "red"}, "unknown field"),
             ({"protocol": 1, "fingerprint": fp, "upgrade_sql": ["x.sql"]}, "the server's"),
+            ({"version": "1.2"}, "MAJOR.MINOR.PATCH"),
+            ({"version": "v1.2.3"}, "MAJOR.MINOR.PATCH"),
+            ({"version": "1.02.3"}, "MAJOR.MINOR.PATCH"),
+            ({"version": "1.2.3-rc1"}, "MAJOR.MINOR.PATCH"),
+            ({"version": 1}, "version must be a str"),
         ]
         for change, msg in cases:
             r = dict(ok["release"][0], **change)
@@ -176,6 +200,15 @@ class TestManifest(unittest.TestCase):
                  dict(ok["release"][0], id=2, affects=["server"], upgrade_sql=["x.sql"])]
         self.assertTrue(any("already release 1's" in e for e in validate({"release": twice}, ["x.sql"])))
         self.assertIn("pinakes/upgrades/y.sql belongs to no release", validate(ok, ["y.sql"]))
+        two = lambda a, b: [dict(ok["release"][0], **a), dict(ok["release"][0], id=2, **b)]
+        self.assertEqual(validate({"release": two({}, {"version": "0.2.0"})}, []), [])         # from a release on
+        self.assertEqual(validate({"release": two({"version": "0.9.1"}, {"version": "0.10.0"})}, []), [])  # numbers
+        self.assertTrue(any("above the release before's" in e
+                            for e in validate({"release": two({"version": "0.2.0"}, {"version": "0.2.0"})}, [])))
+        self.assertTrue(any("above the release before's" in e
+                            for e in validate({"release": two({"version": "1.0.0"}, {"version": "0.9.0"})}, [])))
+        self.assertIn("release 2: no version, after a release with one",
+                      validate({"release": two({"version": "0.1.0"}, {})}, []))
         self.assertTrue(validate({"releases": []}, []))
 
 

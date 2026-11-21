@@ -443,6 +443,16 @@ were made while building, to keep going, and are open to change.
   agent, the system log and `checkins`, which `pinakes --versions` reads with each agent's last check-in and the
   protocol its last batch declared (0: an agent before check-in). The directory transport doesn't check in: it is
   an agent on the server, from the same install.
+- **A release also has a semantic version** (from release 13, 0.13.0). The id stays the number agents, servers and
+  `tools/latest-release` compare (an int in check-in, in each batch's header and in `checkins`), so adding the
+  version changes no protocol; the version is for people and packages: `RELEASES.toml`'s `version`, which
+  `pinakes.__version__` and the package's version (read from it by `pyproject.toml`) follow, and a `vVERSION` tag
+  beside `release-N`. MAJOR when something that worked stops working until a person does more than update (an
+  oldest protocol raised, a command, call, page or setting changed or removed); MINOR when anything is added;
+  PATCH for fixes only. Before 1.0.0, while publishing isn't decided, what would raise MAJOR raises MINOR. Release
+  13 is 0.13.0 so the first version reads next to the release it is; after that the two move apart (a release of
+  fixes only is the next PATCH). Releases 1 to 12 have none: a version given afterwards would claim a rule they
+  weren't cut under.
 - **The API and person tokens (ROADMAP 34).** A token's secret is 32 random bytes, kept as its SHA-256: a slow hash
   like the passwords' guards a guessable secret, and this one isn't. Making one asks for the current password again,
   so a borrowed web session can't mint itself a lasting key. The database ties a call to its token
