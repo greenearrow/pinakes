@@ -30,7 +30,8 @@ except ImportError:
 import pinakes
 from pinakes import compat, config, outbox, queries, registry, server_config
 import jpegs
-from pinakes.ingest import Incompatible, Ingester, Refused, apply_schema, main as ingest_main, schema_missing
+from pinakes.ingest import (Incompatible, Ingester, Refused, TIDY_DELETES, TIDY_IDENTITY_FILES, apply_schema,
+                            main as ingest_main, schema_missing)
 from pinakes.scan import Scanner, check, check_verdict
 from pinakes.state import State
 
@@ -1840,6 +1841,19 @@ class TestBackupRoots(ServerCase):
         with self.conn.transaction():
             n = self.ing.tidy(queries.today())                            # a second run finds nothing
         self.assertEqual(set(n.values()), {0})
+
+    def test_tidy_plans_have_no_subplan(self):
+        """Most of a large catalog's files are in backup roots, too many to hash: a SubPlan over them is rescanned
+        for every row (the backup-lineage DELETE ran over an hour on 3.5 M files). Every set-wide statement of tidy
+        plans as joins. The check itself is checked on the form that had one."""
+        def plan(sql, args=()):
+            return "\n".join(r[0] for r in self.q("EXPLAIN " + sql, args))
+        backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
+        self.assertIn("SubPlan", plan("DELETE FROM pinakes.lineage WHERE from_file_id IN (%s) OR to_file_id IN (%s)"
+                                      % (backup, backup)))
+        for what, sql in TIDY_DELETES:
+            self.assertNotIn("SubPlan", plan(sql), what)
+        self.assertNotIn("SubPlan", plan(TIDY_IDENTITY_FILES, (["xmp"],)))
 
 
 class TestNameLineage(ServerCase):

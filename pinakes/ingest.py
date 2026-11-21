@@ -187,6 +187,43 @@ RARE_FOLDERS = """
     GROUP BY 1 HAVING count(DISTINCT (f.root_id, regexp_replace(f.relpath, '/[^/]+$', ''))) <= %s"""
 
 
+# tidy's set-wide deletes, run in order (ROADMAP 28, 9). On a large catalog most files are in backup roots, too many
+# for work_mem to hash: a column IN (backup files) OR another IN (...) can't become a join, and runs as a SubPlan
+# rescanned for every lineage row (an hour and more). So each edge column has its own DELETE, a join on its index;
+# tests/test_server.py checks that no plan of these has a SubPlan.
+_BACKUP_FILES = "pinakes.files f JOIN pinakes.roots r ON r.root_id = f.root_id AND r.kind = 'backup'"
+TIDY_DELETES = (
+    ("backup history rows",
+     "DELETE FROM pinakes.history h USING " + _BACKUP_FILES + " WHERE f.file_id = h.file_id"),
+    ("backup lineage edges",
+     "DELETE FROM pinakes.lineage l USING " + _BACKUP_FILES + " WHERE f.file_id = l.from_file_id"),
+    ("backup lineage edges",
+     "DELETE FROM pinakes.lineage l USING " + _BACKUP_FILES + " WHERE f.file_id = l.to_file_id"),
+    ("empty-file edges",
+     "DELETE FROM pinakes.lineage l USING pinakes.files f WHERE l.decision IS NULL AND f.file_id = l.to_file_id "
+     "AND f.size = 0"),
+    ("empty-file edges",
+     "DELETE FROM pinakes.lineage l USING pinakes.files f WHERE l.decision IS NULL AND f.file_id = l.from_file_id "
+     "AND f.size = 0"),
+    ("backup gone rows",
+     "DELETE FROM pinakes.files f USING pinakes.roots r WHERE f.gone_on IS NOT NULL AND r.root_id = f.root_id "
+     "AND r.kind = 'backup'"),
+)
+
+
+# _tidy_identity's files: semi- and anti-joins on indexes, no SubPlan (the same test).
+TIDY_IDENTITY_FILES = """
+    SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
+    WHERE r.kind <> 'backup' AND NOT r.protected AND f.size > 0 AND f.content_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM pinakes.metadata m WHERE m.content_id = f.content_id
+                  AND m.schema = ANY(%s) AND NOT m.sensitive AND m.source IN ('embedded', 'sidecar'))
+      AND NOT EXISTS (SELECT 1 FROM pinakes.history h WHERE h.file_id = f.file_id AND h.kind <> 'new')
+      AND NOT EXISTS (SELECT 1 FROM pinakes.lineage l WHERE l.to_file_id = f.file_id
+                      AND l.decision IS DISTINCT FROM 'rejected'
+                      AND NOT (l.decision IS NULL AND l.evidence LIKE 'similar name%%'))
+    ORDER BY f.first_seen, f.file_id"""
+
+
 def _folder_name(relpath):
     """The parent folder's name, lowercased as SQL's lower() would for the names that matter; None at the top."""
     parts = relpath.rsplit("/", 2)
@@ -1411,16 +1448,8 @@ class Ingester:
         but an undecided name edge are linked by them as a scan would now, and that name edge goes. Run it again
         after an upgrade; a second run changes nothing."""
         n = {}
-        backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
-        n["backup history rows"] = self.q("DELETE FROM pinakes.history WHERE file_id IN (%s)" % backup).rowcount
-        n["backup lineage edges"] = self.q("DELETE FROM pinakes.lineage WHERE from_file_id IN (%s) OR to_file_id IN "
-                                           "(%s)" % (backup, backup)).rowcount
-        n["empty-file edges"] = self.q(
-            "DELETE FROM pinakes.lineage l WHERE decision IS NULL AND (EXISTS (SELECT 1 FROM pinakes.files f "
-            "WHERE f.file_id = l.to_file_id AND f.size = 0) OR EXISTS (SELECT 1 FROM pinakes.files f "
-            "WHERE f.file_id = l.from_file_id AND f.size = 0))").rowcount
-        n["backup gone rows"] = self.q("DELETE FROM pinakes.files WHERE gone_on IS NOT NULL AND root_id IN "
-                                       "(SELECT root_id FROM pinakes.roots WHERE kind = 'backup')").rowcount
+        for what, sql in TIDY_DELETES:
+            n[what] = n.get(what, 0) + self.q(sql).rowcount
         # name keys by the current patterns (a release may change normalize): every file, read in a server cursor
         rekey = []
         with self.conn.cursor(name="pinakes_tidy_names") as cur:
@@ -1486,16 +1515,7 @@ class Ingester:
         if not self.identity_sql:
             return 0, 0
         schemas = sorted(s.name for s in self.registry if s.identity_rules())
-        ids = [r[0] for r in self.q(
-            """SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
-               WHERE r.kind <> 'backup' AND NOT r.protected AND f.size > 0 AND f.content_id IS NOT NULL
-                 AND EXISTS (SELECT 1 FROM pinakes.metadata m WHERE m.content_id = f.content_id
-                             AND m.schema = ANY(%s) AND NOT m.sensitive AND m.source IN ('embedded', 'sidecar'))
-                 AND NOT EXISTS (SELECT 1 FROM pinakes.history h WHERE h.file_id = f.file_id AND h.kind <> 'new')
-                 AND NOT EXISTS (SELECT 1 FROM pinakes.lineage l WHERE l.to_file_id = f.file_id
-                                 AND l.decision IS DISTINCT FROM 'rejected'
-                                 AND NOT (l.decision IS NULL AND l.evidence LIKE 'similar name%%'))
-               ORDER BY f.first_seen, f.file_id""", (schemas,)).fetchall()]
+        ids = [r[0] for r in self.q(TIDY_IDENTITY_FILES, (schemas,)).fetchall()]
         st = _LineageState()
         st.pass_ids = set(ids)
         added, linked = 0, set()
