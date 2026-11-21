@@ -498,4 +498,6 @@ were made while building, to keep going, and are open to change.
   (`decide_lineage()` decides every edge but the certain ones): software that copies one template's DocumentID into
   unrelated files would chain them with no way out. Not seen yet; if it is, either identity edges become decidable
   or a value shared by too many contents stops being evidence. Files ingested before this release are linked by
-  identity only when worked out again; `tidy` doesn't add them.
+  `pinakes-ingest tidy`: each with identity metadata, never changed, whose only source is an undecided name edge or
+  none, is worked out as a scan would now, and a name edge it had goes (identity outranks names; a decided edge
+  stays and keeps the file out). Chunk edges aren't redone, so a file whose source is chunks keeps it.

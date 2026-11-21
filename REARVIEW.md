@@ -280,7 +280,8 @@ the field's own index. XMP's `derived_instance_id` and `derived_document_id` nam
 `document_id`; `instance_id` and `document_id` shared are versions of one document. Certain `derived_from` edges, after
 the same content and before chunks, for a file with no line yet; never to or from a backup or protected root, an
 empty file or the same content. A file of an earlier scan gets its parent, or its earlier version, when that one
-arrives (at the end of the pass). The registry refuses an identity field that isn't exact-indexed text or is
+arrives (at the end of the pass). `pinakes-ingest tidy` links the files an older release worked out (counts `identity
+edges added`, `name edges replaced by identity`). The registry refuses an identity field that isn't exact-indexed text or is
 sensitive, and a `parent` that isn't another identity field without a parent of its own. No schema change, no new
 protocol: release 10.
 
@@ -292,8 +293,10 @@ schemas declare the fields, lineage reads them with no further code.
 sharing a DocumentID linked with certainty, and the lineage walk following it; the later version scanned first; an
 export linked to the parent's version over a later version of the parent's document, scanned before its parent;
 rounds of 1 and 2000 giving the same edges; a copy under a protected root not taken as the source (checked to fail
-without the check); a file changed in place left alone; the registry's refusals. All 446 tests pass (tools/test).
-Other Pythons not run; not run on a real catalog; not deployed. Existing files aren't linked until worked out again.
+without the check); a file changed in place left alone; the registry's refusals; `tidy` on a catalog of an older
+release adding the identity edges and dropping a name edge they replace, a second run changing nothing, and a
+confirmed name edge left as it was. All 448 tests pass (tools/test). Other Pythons not run; not run on a real
+catalog; not deployed.
 
 ## 16. Sensitive metadata for owners only (first part)
 

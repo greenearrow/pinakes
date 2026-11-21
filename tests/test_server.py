@@ -2046,6 +2046,52 @@ class TestIdentityLineage(ServerCase):
                       self.edges())
         self.assertNotIn("boats.jpg", [e[1] for e in self.edges() if e[0] == "kept.jpg"])
 
+    def test_tidy_links_what_an_older_release_left(self):
+        """A catalog worked out before ROADMAP 15: no identity edges, and a name edge where a scan would now find
+        the identity. tidy adds the one and drops the other; a second run changes nothing."""
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "people/user-1/harbour.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"),
+                   mtime=t0)
+        self.write("server-1", "store", "people/user-1/other.jpg", jpegs.version("xmp.did:doc-7", "xmp.iid:x-1"),
+                   mtime=t0)
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "boats.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-2"),
+                   mtime=t0 + 600)
+        self.write("laptop-1", "downloads", "lake.jpg",
+                   jpegs.version("xmp.did:doc-3", "xmp.iid:l-1", "xmp.did:doc-7", "xmp.iid:x-1"), mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.assertEqual(len(self.edges()), 2)
+        # what the older release left: no identity edges, one name edge instead
+        self.conn.execute("DELETE FROM pinakes.lineage")
+        self.conn.execute("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence) "
+                          "VALUES (%s, %s, 'derived_from', 'similar name, drop root', 'possible')",
+                          (self.file("store", "people/user-1/other.jpg"), self.file("downloads", "boats.jpg")))
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual((n["identity edges added"], n["name edges replaced by identity"]), (2, 1))
+        self.assertEqual(self.edges(), [
+            ("people/user-1/harbour.jpg", "boats.jpg", "derived_from", "same xmp document_id", "certain"),
+            ("people/user-1/other.jpg", "lake.jpg", "derived_from", "xmp derived_instance_id = instance_id",
+             "certain")])
+        with self.conn.transaction():
+            self.assertEqual(set(self.ing.tidy(datetime.date.today()).values()), {0})
+
+    def test_tidy_leaves_a_confirmed_name_edge(self):
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "a.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"), mtime=t0)
+        self.write("server-1", "store", "other.jpg", jpegs.version("xmp.did:doc-7", "xmp.iid:x-1"), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("laptop-1", "downloads", "b.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-2"), mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.conn.execute("DELETE FROM pinakes.lineage")
+        self.conn.execute("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, "
+                          "decision) VALUES (%s, %s, 'derived_from', 'similar name, drop root', 'possible', "
+                          "'confirmed')", (self.file("store", "other.jpg"), self.file("downloads", "b.jpg")))
+        with self.conn.transaction():
+            n = self.ing.tidy(datetime.date.today())
+        self.assertEqual((n["identity edges added"], n["name edges replaced by identity"]), (0, 0))
+        self.assertEqual([e[:2] for e in self.edges()], [("other.jpg", "b.jpg")])   # a person's decision stands
+
     def test_a_changed_file_keeps_its_own_line(self):
         t0 = time.time() - 86400
         self.write("server-1", "store", "a.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"), mtime=t0)

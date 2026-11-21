@@ -6,8 +6,9 @@
                                                       schemas' indexes (the schema must exist)
   pinakes-ingest --config server.toml passwd NAME     set a person's password at a hidden prompt (first sign-in)
   pinakes-ingest --config server.toml recompute ROOT  reassign a root's files after its rules or enrollments change
-  pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, and redo name
-                                                      lineage by the current rules (after an upgrade)
+  pinakes-ingest --config server.toml tidy [--dry-run] clear backup roots' history and gone rows, link files by
+                                                      identity fields and redo name lineage by the current rules
+                                                      (after an upgrade)
   pinakes-ingest --config server.toml totals          files and bytes per root, every owner's (no names): to compare
                                                       with pinakes-agent check; a root its host's batches no longer
                                                       name is marked NOT REPORTED, with the retire-root to run
@@ -1266,8 +1267,10 @@ class Ingester:
         st.new_round()
         kids = sorted(st.adopt)
         self._load_lineage(kids, st)
+        changed = {r[0] for r in self.q("SELECT DISTINCT file_id FROM pinakes.history WHERE file_id = ANY(%s) "
+                                        "AND kind <> 'new'", (kids,)).fetchall()}   # it keeps its own line
         for kid in kids:
-            if kid not in st.has_source:
+            if kid not in st.has_source and kid not in changed:
                 _, parent, evidence = st.adopt[kid]
                 self._edge(st, parent, kid, "derived_from", evidence, "certain", on)
         st.adopt = {}
@@ -1404,8 +1407,9 @@ class Ingester:
         their history rows, gone rows and any lineage edges go. Undecided edges to or from an empty file go (it
         descends from nothing). Name keys are recomputed by the current patterns. Name lineage: every undecided edge
         by name is worked out again by NAME_CANDIDATE (the same source kept, another taken, or none). Decided edges
-        stay, and a rejected pair isn't linked again (ROADMAP 9). Run it again after an upgrade; a second run changes
-        nothing."""
+        stay, and a rejected pair isn't linked again (ROADMAP 9). Identity fields (ROADMAP 15): files with no source
+        but an undecided name edge are linked by them as a scan would now, and that name edge goes. Run it again
+        after an upgrade; a second run changes nothing."""
         n = {}
         backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
         n["backup history rows"] = self.q("DELETE FROM pinakes.history WHERE file_id IN (%s)" % backup).rowcount
@@ -1428,6 +1432,7 @@ class Ingester:
         with self.conn.cursor() as cur:
             cur.executemany("UPDATE pinakes.files SET name_key = %s, ext = %s WHERE file_id = %s", rekey)
         n["name keys updated"] = len(rekey)
+        n["identity edges added"], n["name edges replaced by identity"] = self._tidy_identity(on)
         edges = self.q("SELECT from_file_id, to_file_id FROM pinakes.lineage WHERE evidence LIKE 'similar name%%' "
                        "AND decision IS NULL ORDER BY to_file_id").fetchall()
         old = {}
@@ -1471,6 +1476,49 @@ class Ingester:
                     dropped += 1
         n["name edges kept"], n["name edges to another source"], n["name edges removed"] = kept, moved, dropped
         return n
+
+    def _tidy_identity(self, on):
+        """Lineage by identity fields for files a release before 15 worked out: every file holding identity
+        metadata, outside backup and protected roots, not empty, never changed, whose only source (if any) is an
+        undecided name edge, in the order they were first seen, as one pass of lineage (_identity) would. A file
+        given a source here loses its undecided name edges: identity outranks names. (edges added, name edges
+        removed)."""
+        if not self.identity_sql:
+            return 0, 0
+        schemas = sorted(s.name for s in self.registry if s.identity_rules())
+        ids = [r[0] for r in self.q(
+            """SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
+               WHERE r.kind <> 'backup' AND NOT r.protected AND f.size > 0 AND f.content_id IS NOT NULL
+                 AND EXISTS (SELECT 1 FROM pinakes.metadata m WHERE m.content_id = f.content_id
+                             AND m.schema = ANY(%s) AND NOT m.sensitive AND m.source IN ('embedded', 'sidecar'))
+                 AND NOT EXISTS (SELECT 1 FROM pinakes.history h WHERE h.file_id = f.file_id AND h.kind <> 'new')
+                 AND NOT EXISTS (SELECT 1 FROM pinakes.lineage l WHERE l.to_file_id = f.file_id
+                                 AND l.decision IS DISTINCT FROM 'rejected'
+                                 AND NOT (l.decision IS NULL AND l.evidence LIKE 'similar name%%'))
+               ORDER BY f.first_seen, f.file_id""", (schemas,)).fetchall()]
+        st = _LineageState()
+        st.pass_ids = set(ids)
+        added, linked = 0, set()
+        for i in range(0, len(ids), self.lineage_round):
+            part = ids[i:i + self.lineage_round]
+            st.new_round()
+            self._load_lineage(part, st)
+            st.has_source -= set(part)      # a name edge is no source here: these have no other (the query above)
+            rows = {r[0]: r for r in self.q("SELECT file_id, content_id, mtime FROM pinakes.files "
+                                            "WHERE file_id = ANY(%s)", (part,)).fetchall()}
+            cands = {}
+            for c in self.q(self.identity_sql, (part, [rows[f][1] for f in part], [rows[f][2] for f in part])):
+                cands.setdefault(c[0], []).append(c)
+            for fid in part:
+                if fid not in st.has_source and cands.get(fid):
+                    self._identity(rows[fid], cands[fid], on, st)
+            linked.update(e[1] for e in st.queue)
+            added += len(st.queue)
+            self._write_queue(st)
+        self._adopt(on, st)              # nothing: every file it could adopt is in this pass
+        removed = self.q("DELETE FROM pinakes.lineage WHERE to_file_id = ANY(%s) AND decision IS NULL "
+                         "AND evidence LIKE 'similar name%%'", (sorted(linked),)).rowcount if linked else 0
+        return added, removed
 
     # setup -----------------------------------------------------------------------------------------------------
     def enroll(self, reg):
