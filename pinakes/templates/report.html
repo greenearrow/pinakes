@@ -23,6 +23,7 @@
   {% elif name == 'only-here' %}
     <p class="muted">Files under {{ loc }} with no copy you can see on another disk{% if pg.total %}: {{ pg.total }}{% endif %}. Copies on this disk die with it; a hard link is not a copy.</p>{{ pager(pg, "files") }}{{ file_table(rows, "None: everything here has a copy on another disk.", pg, True) }}{{ pager(pg, "files") }}
   {% else %}
+    {% if backed is not none %}<p>{{ backed }} of {{ pg.total }} file(s) have a backup; {{ pg.total - backed }} have none.</p>{% endif %}
     <p class="muted">Backup copies are physical: snapshots made with hard links share one copy.</p>
     {{ pager(pg, "files") }}
     <div class="scroll"><table><tr>{{ th(pg, "file", "File") }}{{ th(pg, "copies", "Backup copies", "num") }}{{ th(pg, "snapshots", "Snapshots", "num") }}{{ th(pg, "newest", "Newest snapshot") }}</tr>

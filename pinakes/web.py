@@ -1049,8 +1049,10 @@ def create_app(cfg, connect=None):
         pg.done(rows)
         audit_shown([r["file_id"] for r in rows + links if r.get("file_id")]
                     + [r["manifest_id"] for r in rows if r.get("manifest_id")], "report %s %s" % (name, loc))
+        backed = int(rows[0]["with_backup"]) if name == "backed-up" and rows else None    # of all, not the page
         return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
-                               kinds=queries.KINDS, links=links, links_total=queries.page_total(links))
+                               kinds=queries.KINDS, links=links, links_total=queries.page_total(links),
+                               backed=backed)
 
     @app.route("/reports/changes/mark", methods=["POST"])
     @signed_in

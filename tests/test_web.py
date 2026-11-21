@@ -369,6 +369,24 @@ class TestWeb(ServerCase):
         for url in ("/reports/dupes", "/reports/changes", "/reports/backed-up?loc=store:", "/access", "/account"):
             self.assertEqual(c1.get(url).status_code, 200, url)
 
+    def test_backed_up_report_says_how_many_have_a_backup(self):
+        """Sorted unbacked first, page 1 can be all zeros: the line above it counts every file, not the page's."""
+        from pinakes import queries
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        with self.as_person("user-1") as c:
+            (backed, *rest) = sorted(queries.backed_up(c, "store:people/user-1/"), key=lambda r: r["relpath"])
+        with open(self.path("server-1", "store", backed["relpath"]), "rb") as f:
+            self.write("server-2", "snapshots", "2026-01-01_0140/" + backed["relpath"], f.read())
+        self.scan("server-2", "snapshots")
+        n = len(rest) + 1
+        self.assertGreater(n, 1)
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/reports/backed-up?loc=store:people/user-1/").get_data(as_text=True)
+        self.assertIn("<p>1 of %d file(s) have a backup; %d have none.</p>" % (n, n - 1), page)
+        self.assertLess(page.index(rest[0]["relpath"]), page.index(backed["relpath"]))   # the unbacked first
+        empty = c1.get("/reports/backed-up?loc=store:people/nobody/").get_data(as_text=True)
+        self.assertNotIn("have a backup", empty)
+
     def test_a_roots_first_scan_is_not_a_change(self):
         """ROADMAP 52: every file a first scan records is new; the changes page leaves them out (a root added later
         too), keeps what is new in a later scan, and the file's own history still has it."""
