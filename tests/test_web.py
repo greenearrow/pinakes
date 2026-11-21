@@ -523,6 +523,48 @@ class TestWeb(ServerCase):
         self.assertEqual(len(self.q("SELECT 1 FROM pinakes.review_marks")), 3)
 
 
+    def test_decide_a_relative_on_the_file_page(self):
+        """Confirm, reject and clear a direct relative (ROADMAP 9), with the session's CSRF token; a reader of the
+        file sees the link and its buttons, and is told nothing was decided."""
+        t0 = time.time() - 86400
+        a, b = "people/user-1/shared-with-2/x/notes.txt", "people/user-1/shared-with-2/y/notes.txt"
+        self.write("server-1", "store", a, os.urandom(1000), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", b, os.urandom(1010), mtime=t0 + 1)
+        self.scan("server-1", "store")
+        fa, fb = self.file_id(a), self.file_id(b)
+        decision = lambda: self.q("SELECT decision FROM pinakes.lineage WHERE to_file_id = %s", (fb,))[0][0]
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/file/%d" % fb).get_data(as_text=True)
+        self.assertIn("Direct relatives", page)
+        self.assertIn('name="other" value="%d"' % fa, page)
+        self.assertIn('value="rejected">reject</button>', page)
+        tok = self.csrf(c1, "/file/%d" % fb)
+        url = "/file/%d/decide" % fb
+        self.assertEqual(c1.post(url, data={"decision": "rejected", "other": fa}).status_code, 400)   # no token
+        self.assertEqual(c1.post(url, data={"csrf": tok, "decision": "maybe", "other": fa}).status_code, 400)
+        self.assertEqual(c1.post(url, data={"csrf": tok, "decision": "rejected", "other": "x"}).status_code, 400)
+        r = c1.post(url, data={"csrf": tok, "decision": "rejected", "other": fa})
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/file/%d?decided=1#relatives" % fb), r.headers["Location"])
+        page = c1.get(r.headers["Location"]).get_data(as_text=True)
+        self.assertIn("Decided 1 link(s).", page)
+        self.assertIn('<span class="tag">rejected</span> <span class="muted">User One', page)
+        self.assertIn('value="clear">clear</button>', page)
+        self.assertEqual(decision(), "rejected")
+        # user-2 reads the folder: sees the link, can't decide it
+        c2, _ = self.login("user-2", "staple pony 12345")
+        tok2 = self.csrf(c2, "/file/%d" % fb)
+        r = c2.post(url, data={"csrf": tok2, "decision": "clear", "other": fa})
+        self.assertIn("Nothing decided", c2.get(r.headers["Location"]).get_data(as_text=True))
+        self.assertEqual(decision(), "rejected")
+        r = c1.post(url, data={"csrf": tok, "decision": "clear", "other": fa})
+        self.assertEqual(decision(), None)
+        r = c1.post("/file/%d/decide" % fa, data={"csrf": tok, "decision": "confirmed", "other": fb})  # either end
+        self.assertIn("decided=1", r.headers["Location"])
+        self.assertEqual(decision(), "confirmed")
+
+
 @unittest.skipUnless(web is not None, "Flask not installed")
 class TestBehindProxy(TestWeb):
     SERVER_WEB = '[web]\nsecure_cookies = false\nsession_key = "test-key"\nbehind_proxy = true\n'

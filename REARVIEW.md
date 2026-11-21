@@ -29,6 +29,7 @@ agents).
 - 5. Copies only on another disk
 - 6. Protection by inode
 - 7. Symlinks tied to their targets
+- 9. Lineage decisions
 - 10. The operator page
 - 12. The metadata schema registry
 - 13. Extractors, first part: EXIF and embedded XMP from JPEGs
@@ -191,6 +192,39 @@ safe-to-delete lists the links elsewhere that lead into the folder; a link's pag
 may see it; `upgrades/symlink-targets.sql`.
 
 **State:** Tested (agent on 3.12; ingester, row-level security, upgrade, CLI query and web on 16).
+
+## 9. Lineage decisions
+
+Design: ROADMAP.md item 9 (built, so no longer listed); DESIGN.md "Lineage across machines"; DECISIONS.md "Lineage
+decisions".
+
+**Built:** `decide_lineage(a, b, decision)` in the database (`upgrades/lineage-decisions.sql`, release 10, protocol 6):
+`confirmed`, `rejected` or NULL (clear) on every edge between two files, either way round, but a certain one (the
+same content), with who and when (`lineage.decided_by`, `decided_at`). Only the owner or a co-owner of an edge's later
+file (`to_file`) decides it, both ends visible to them; an administrator in a step-up decides others'; a decision
+touching another person's file, at either end, is audited for its owners and co-owners (`lineage`, with the decision
+and a count, no names). Under a token, only with the `review` scope and in its roots; never under a group token. The
+web role has no write on the table. The ingester never suggests a rejected pair again, either way round (`_edge`, and
+tidy's name pass); a confirmed edge already stood through tidy and gives the file its source, so no weaker one is
+looked for. Shown on the file page (Direct relatives: both ways, rejected ones too, with confirm, reject and clear);
+`GET /api/v1/relatives`, `POST /api/v1/decide` (`{"files": [A, B], "decision"}`, each a file number or ROOT:PATH);
+`pinakes relatives FILE [--confirm|--reject|--clear OTHER]` and its `--json`. The file page's step-up audit now
+counts the files its lineage shows, which it left out before.
+
+**Not as the roadmap said:** a decision is on a pair of files, not one edge, so that "these two aren't related" holds
+whichever way a later heuristic would point. A certain edge (the same content) can't be decided: the hash is the
+fact. "A recompute" is `pinakes-ingest tidy`, which redoes name lineage; nothing else rewrites edges.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_server.py`
+`TestLineageDecisions`, `tests/test_api.py` `TestCliRelatives`, `tests/test_web.py`
+`test_decide_a_relative_on_the_file_page`): a rejected edge gone from both walks and still listed, lineage worked out
+again, tidy and a move rescanned adding nothing, and a pair rejected only the other way round not linked (checked to
+fail without the ingester's check); a confirmed edge kept by tidy while an undecided one beside it went, and no other
+source added; a second person, a reader, an administrator without a step-up and a certain edge all refused, the
+step-up decision audited for the owner and the owner's own not; bad decisions and no person refused; the upgrade
+against the schema. The command from inside a folder and by ROOT:PATH, a read-only token, a token's roots, a group
+token and bad API bodies; the web form with and without its CSRF token. All 436 tests pass (tools/test). Other
+Pythons not run; not run on a real catalog; not deployed.
 
 ## 10. The operator page
 

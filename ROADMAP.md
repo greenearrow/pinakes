@@ -47,9 +47,6 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
    readers or annotators, a preview of how many files change hands before saving, audited and shown to the people
    affected. *Done when:* tests cover a person giving their own folder away, being refused someone else's, an
    administrator taking one only in a step-up, and the preview's count matching the result.
-9. [Feature; also correctness] **Lineage decisions:** confirm or reject a likely or possible relative; a decision
-   outranks every heuristic. *Done when:* a rejected edge disappears from walks and is never re-added by a later scan,
-   and a confirmed one survives a recompute.
 11. [Security] **Notifications** when an administrator saw someone's records: a pluggable command (an e-mail, a push
     service), off by default. *Done when:* a test with a stand-in command gets one message per step-up per person, with
     the reason and no file names.

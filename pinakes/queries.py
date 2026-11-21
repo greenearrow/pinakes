@@ -607,6 +607,34 @@ def lineage(conn, file_id, direction="up", depth=50):
                          ORDER BY w.depth, h.name""" % (nxt, nxt, join, nxt, FILE_COLS), (file_id, file_id, depth))
 
 
+DECISIONS = ("confirmed", "rejected")
+
+
+def relatives(conn, file_id):
+    """A file's direct relatives, both ways, rejected ones too (a walk leaves those out): one row per edge, with its
+    ends (from_file_id, to_file_id), so a person can confirm, reject or clear it (ROADMAP 9). Certain edges (the same
+    content) are listed but can't be decided: the hash decides them."""
+    return rows(conn, """SELECT CASE WHEN l.to_file_id = %%s THEN 'up' ELSE 'down' END AS direction,
+                                l.from_file_id, l.to_file_id, l.kind AS how, l.evidence, l.confidence, l.decision,
+                                l.decided_at, p.display AS decided_by, %s
+                         FROM pinakes.lineage l
+                         JOIN pinakes.files f ON f.file_id = CASE WHEN l.to_file_id = %%s THEN l.from_file_id
+                                                                  ELSE l.to_file_id END
+                         JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                         LEFT JOIN pinakes.people p ON p.person_id = l.decided_by
+                         WHERE %%s IN (l.from_file_id, l.to_file_id)
+                         ORDER BY direction DESC, l.decision NULLS FIRST, h.name, f.relpath, l.kind""" % FILE_COLS,
+                (file_id, file_id, file_id))
+
+
+def decide_lineage(conn, a, b, decision):
+    """Confirm or reject (None clears) every edge between files a and b, either way but the certain ones. The
+    database decides who may: edges the person may not decide are skipped. Returns how many were decided."""
+    if decision not in DECISIONS + (None,):
+        raise ValueError("a decision is confirmed or rejected")
+    return conn.execute("SELECT pinakes.decide_lineage(%s, %s, %s)", (a, b, decision)).fetchone()[0]
+
+
 def meta(conn, schema, field, value, limit=None, offset=0):
     return rows(conn, """SELECT %s, m.vals, %s FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)

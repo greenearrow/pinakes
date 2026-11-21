@@ -73,4 +73,20 @@
   {% else %}<tr><td colspan="4" class="muted">None known.</td></tr>{% endfor %}
 </table></div>
 {% endfor %}
+
+<h3 class="muted" id="relatives">Direct relatives</h3>
+{% if decided is not none %}<p class="notice">{% if decided %}Decided {{ decided }} link(s).{% else %}Nothing decided: only the owner or a co-owner of the later file decides a link, and a link by the same content can't be.{% endif %}</p>{% endif %}
+<p class="muted">Confirm or reject a suggested relative: a decision outranks every heuristic, and a rejected pair is never suggested again. A link by the same content is decided by its hash.</p>
+<div class="scroll"><table>
+  <tr><th>Way</th><th>How</th><th>File</th><th>Evidence</th><th>Decision</th></tr>
+  {% for l in relatives %}<tr><td>{{ 'came from' if l.direction == 'up' else 'went on to' }}</td><td>{{ l.how.replace('_', ' ') }}</td>
+    <td>{{ l.host }} · <a href="{{ url_for('file', file_id=l.file_id) }}">{{ l.root }}:{{ l.relpath }}</a>{% if l.gone_on %} <span class="tag">gone</span>{% endif %}</td>
+    <td>{{ l.evidence }} <span class="tag">{{ l.confidence }}</span></td>
+    <td>{% if l.decision %}<span class="tag">{{ l.decision }}</span> <span class="muted">{{ l.decided_by or '' }}{% if l.decided_at %} {{ l.decided_at.date() }}{% endif %}</span>{% endif %}
+      {% if l.confidence != 'certain' %}<form method="post" action="{{ url_for('decide', file_id=f.file_id) }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="other" value="{{ l.file_id }}">
+        {% if l.decision != 'confirmed' %}<button name="decision" value="confirmed">confirm</button>{% endif %}
+        {% if l.decision != 'rejected' %}<button name="decision" value="rejected">reject</button>{% endif %}
+        {% if l.decision %}<button name="decision" value="clear">clear</button>{% endif %}</form>{% endif %}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">None known.</td></tr>{% endfor %}
+</table></div>
 {% endblock %}

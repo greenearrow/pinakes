@@ -108,3 +108,13 @@ min_server_protocol = 0
 upgrade_sql = []
 fingerprint = { batch = "099342d9ac728abd", state = "11155534073777cb", schema = "78c159405258792d" }
 note = "A root's first scan is not a change (ROADMAP 52): the Changes page, /api/v1/changes and pinakes changes leave out the new files of a root's first scan, as Growth does, which made the page slow for a week after a root's first scan on a large catalog; a file's own history still shows it. What the server answered that pinakes didn't ask (ROADMAP 53 to 59): pinakes whoami, export [PART] [--csv], at-risk, growth [FOLDER] [--weeks N], restores [PATH] [--back], access, and changes --tree [--depth N] --what KIND --review reviewed|unreviewed; new API calls at-risk, growth, restores, change-tree and access (a person's token only), under row-level security and the token's roots, recorded like every call, refused to ops tokens."
+
+[[release]]
+id = 10
+affects = ["server", "cli"]
+protocol = 6
+min_agent_protocol = 0
+min_server_protocol = 0
+upgrade_sql = ["lineage-decisions.sql"]
+fingerprint = { batch = "099342d9ac728abd", state = "11155534073777cb", schema = "fe05455f70ceb4d2" }
+note = "Lineage decisions (ROADMAP 9, lineage-decisions.sql): confirm, reject or clear the link between a file and a direct relative, on the file page (Direct relatives), through POST /api/v1/decide and with pinakes relatives FILE --confirm|--reject|--clear OTHER; GET /api/v1/relatives and pinakes relatives FILE list a file's direct relatives both ways, rejected ones too. A decision covers every edge between the two files but a certain one (the same content: the hash decides), and outranks every heuristic: a rejected pair leaves the walks and is never suggested again by a scan or tidy, either way round; a confirmed edge survives tidy. Only the owner or a co-owner of the later file decides, or an administrator in a step-up; a decision touching another person's file is audited for them. Never under a group token; a token needs the review scope. Protocol 6 changes the schema only: agents of protocol 0 to 5 work with it unchanged."

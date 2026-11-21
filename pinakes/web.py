@@ -20,6 +20,12 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
                                   only gone files and moves, only the person's own or co-owned, only in the
                                   token's roots; {"asked", "marked"}
+  relatives?loc=ROOT:PATH (or ?file=ID)   the file's direct relatives both ways, rejected ones too, with each
+                                  edge's ends (from_file_id, to_file_id), confidence and decision (ROADMAP 9)
+  POST decide {"files": [A, B], "decision": "confirmed"|"rejected"|null}   (scope review; a person's token) every
+                                  edge between A and B (each a file number or ROOT:PATH) but certain ones, decided
+                                  or cleared: only where the descendant is the person's own or co-owned, only in
+                                  the token's roots; {"files", "decision", "decided"}
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
   export?part=PART&format=json|csv  (a person's token) the files the person owns and what the catalog holds about
@@ -29,7 +35,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   they have one, for a read-only token of minutes ({"token", "until"}); limited
                                   like the web sign-in, and recorded for the person
   POST session/end                that token, revoked (its command is done)
-  POST is for these three; every other call is GET
+  POST is for these four; every other call is GET
   limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
   {"error": "..."} with 400, 401, 403, 404 or 429.
 
@@ -505,6 +511,42 @@ def create_app(cfg, connect=None):
             return api_answer({"error": "ids is a list of change numbers"}, 400)
         return api_answer({"asked": len(ids), "marked": queries.mark_changes(g.db, ids, mark) if ids else 0})
 
+    @api("relatives")
+    def api_relatives():
+        return {"rows": queries.relatives(g.db, target())}
+
+    @app.route(API + "decide", methods=["POST"])
+    def api_decide():
+        """Confirm, reject or clear (decision null) the link between two files (ROADMAP 9), each a file number or
+        ROOT:PATH: the database decides only what this person, this token's roots and its review scope allow, and
+        answers how many edges it decided."""
+        if "review" not in g.scopes:
+            return api_answer({"error": "this token doesn't have the review scope"}, 403)
+        if g.group:
+            return api_answer({"error": "a group token doesn't decide lineage"}, 403)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        decision, files = body.get("decision"), body.get("files")
+        if decision not in queries.DECISIONS + (None,):
+            return api_answer({"error": "a decision is confirmed, rejected or null (clear)"}, 400)
+        if not isinstance(files, list) or len(files) != 2:
+            return api_answer({"error": "files is two files, each a number or ROOT:PATH"}, 400)
+        ids = []
+        for x in files:
+            if isinstance(x, int) and not isinstance(x, bool) and 0 < x < 2 ** 62:
+                f = queries.file_by_id(g.db, x)
+            elif isinstance(x, str) and ":" in x:
+                try:
+                    f = queries.file_at(g.db, x)
+                except ValueError as e:
+                    return api_answer({"error": str(e)}, 400)
+            else:
+                return api_answer({"error": "files is two files, each a number or ROOT:PATH"}, 400)
+            if not f:
+                return api_answer({"error": "no file you can see at %s" % x}, 404)
+            ids.append(f["file_id"])
+        return api_answer({"files": ids, "decision": decision, "decided": queries.decide_lineage(g.db, *ids, decision)})
+
     @app.route(API + "export")
     def api_export():
         """A person's export of their own records (ROADMAP 45): the files they own and what the catalog holds about
@@ -690,7 +732,9 @@ def create_app(cfg, connect=None):
         page = {"f": f, "copies": copies, "pc": pc,
                 "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset, **pv.order)), "pv": pv,
                 "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset, **ph.order)), "ph": ph,
-                "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down")}
+                "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down"),
+                "relatives": queries.relatives(g.db, file_id),
+                "decided": _int_arg("decided", None, 0, 10 ** 9)}
         meta = queries.file_metadata(g.db, file_id, f["content_id"])
         page["metadata"] = metadata_view(reg, meta)
         page["extractions"] = [dict(e, title=reg.schemas[e["schema"]].title if e["schema"] in reg.schemas
@@ -700,8 +744,24 @@ def create_app(cfg, connect=None):
             {fd.description or fd.name for s in page["metadata"] if s["schema"]
              for fd in s["schema"].fields.values() if fd.sensitive})
         shown = "file %d" % file_id + (", with sensitive metadata" if any(m["sensitive"] for m in meta) else "")
-        audit_shown([file_id] + [c["file_id"] for c in copies], shown)
+        audit_shown([file_id] + [c["file_id"] for c in copies]
+                    + [r["file_id"] for r in page["up"] + page["down"] + page["relatives"]], shown)
         return render_template("file.html", **page)
+
+    @app.route("/file/<int:file_id>/decide", methods=["POST"])
+    @signed_in
+    def decide(file_id):
+        """Confirm, reject or clear the link between this file and a direct relative (ROADMAP 9). The database
+        decides only what the person may (the descendant's owner or co-owner, or an administrator in a step-up)."""
+        decision = {"confirmed": "confirmed", "rejected": "rejected", "clear": None}.get(request.form.get("decision"),
+                                                                                         "?")
+        if decision == "?":
+            abort(400, "a decision is confirmed, rejected or clear")
+        other = _int(request.form.get("other"), None, 1, 2 ** 62)
+        if other is None:
+            abort(400, "a relative is a file number")
+        n = queries.decide_lineage(g.db, file_id, other, decision)
+        return redirect(url_for("file", file_id=file_id, decided=n) + "#relatives")
 
     @app.route("/reports/at-risk")
     @signed_in

@@ -258,8 +258,10 @@ Lineage breaks only where content is never seen identical on both sides and no o
 copy edited and deleted before the laptop was ever scanned, with no identity field, no chunks and a new name.
 
 People settle what can't be proven. A file's page shows its likely and possible relatives ("looks like a later
-version of ..."); confirming or rejecting one is stored as fact and outranks every heuristic. Nothing is merged
-without that.
+version of ..."); confirming or rejecting one is stored as fact and outranks every heuristic: a rejected pair leaves
+the walks and is never suggested again, either way round, and a confirmed edge stays through tidy. A decision is on
+the two files, made by the owner or a co-owner of the later one (`pinakes relatives FILE --confirm|--reject OTHER`);
+the same content is a fact no one decides. Nothing is merged without that.
 
 Not covered: content changed so much that no chunks survive, and inode reuse by an unrelated file (hence the size
 check). A live watcher (fanotify/inotify) could be added later on a busy server; the nightly scan stays the source of
@@ -347,6 +349,7 @@ pinakes dupes [ROOT:PATH]              duplicates, largest first
 pinakes folder-copies [PATH]           folders under PATH that are copies of another: the same, inside it, or nearly (edits named)
 pinakes history FILE                   what happened to a file
 pinakes lineage FILE                   where this file came from and what came from it, on every host
+pinakes relatives FILE [--confirm|--reject|--clear OTHER]   its direct relatives; a decision on one
 pinakes versions FILE                  each known version (hash, dates) and which backup copies hold it
 pinakes changes [PATH] [--days N] [--host]     what changed; --what KIND, --review; --tree: per folder
 pinakes review intended|restore [PATH]  mark the gone files and moves under it reviewed (shown, then confirmed)
@@ -361,9 +364,9 @@ pinakes export [PART] [--csv]          your own records
 ```
 
 FILE, FOLDER and PATH are a path on this machine (none: the current folder) or ROOT:PATH; a folder report given a
-file answers for the file. Read-only but for `review`, which marks only what the caller owns or co-owns; scoped to
-what the caller may see. Output as text or JSON. Each one in SQL, with the columns it assumes:
-[QUERIES.md](QUERIES.md).
+file answers for the file. Read-only but for `review` and `relatives` with a decision, which change only what the
+caller owns or co-owns; scoped to what the caller may see. Output as text or JSON. Each one in SQL, with the
+columns it assumes: [QUERIES.md](QUERIES.md).
 
 ## Wish: an MCP server
 

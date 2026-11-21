@@ -28,7 +28,8 @@ history  (history_id, file_id, kind text,                                   -- n
           old_relpath, new_relpath, old_content_id, new_content_id,
           seen_after date, seen_on date, evidence text, confidence text)   -- the window: last scan before, scan that saw it
 lineage  (from_file_id, to_file_id, kind text,                              -- copied_from | replaced_by | derived_from
-          evidence text, confidence text, decision text)                   -- decision: NULL | confirmed | rejected
+          evidence text, confidence text, decision text,                   -- decision: NULL | confirmed | rejected,
+          decided_by, decided_at)                                          -- only through decide_lineage()
 metadata (content_id, file_id, schema text, vals jsonb, source text)        -- one of content_id, file_id is set
 extraction_outcomes (content_id, schema text, outcome text, reason text)  -- found | nothing | refused | skipped:
                                                                            -- what each extractor made of a content

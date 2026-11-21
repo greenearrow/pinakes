@@ -17,6 +17,10 @@
   pinakes history FILE
   pinakes versions FILE
   pinakes lineage FILE [--down]
+  pinakes relatives FILE [--confirm|--reject|--clear OTHER]   the file's direct relatives both ways, rejected ones
+                                       too; with an option, decides the link between FILE and OTHER (a path here or
+                                       ROOT:PATH): a rejected pair is never suggested again. Only where the later
+                                       file is your own or co-owned; the token needs the review scope
   pinakes changes [PATH] [--days N] [--host NAME] [--what KIND] [--review reviewed|unreviewed]
                                        no path, outside every root: everything you can see. --what (again for
                                        more) keeps only those kinds of change; --tree [--depth N] counts them per
@@ -385,7 +389,7 @@ FILE = ("where", "history", "versions", "lineage")                  # take one f
 FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
-                                         "restores")
+                                         "restores", "relatives")
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -450,6 +454,9 @@ def run(api, a, cfg):
 
     if a.cmd == "review":
         review(api, a, cfg)
+        return
+    if a.cmd == "relatives":
+        relatives(api, a, cfg)
         return
     if a.cmd == "releases":
         releases(api, a.json)
@@ -583,6 +590,34 @@ def review(api, a, cfg):
         print("the rest are not yours or co-owned to mark (readers can't), or outside this token's roots")
 
 
+def relatives(api, a, cfg):
+    """pinakes relatives FILE [--confirm|--reject|--clear OTHER]: the file's direct relatives; with an option, the
+    link between FILE and OTHER decided first (ROADMAP 9). The catalog decides only what the person may, and says how
+    many links it decided."""
+    host = _this_host(a.host, cfg)
+    where = location(api, "relatives", a.arg, host, "file")
+    picked = [(d, o) for d, o in (("confirmed", a.confirm), ("rejected", a.reject), (None, a.clear)) if o]
+    if len(picked) > 1:
+        raise Failed("pinakes relatives takes one of --confirm, --reject and --clear")
+    got = {}
+    if picked:
+        decision, other = picked[0]
+        got = api.post("decide", {"files": [where, location(api, "relatives", other, host, "file")],
+                                  "decision": decision})
+    listed = api.get("relatives", loc=where)
+    if a.json:
+        print(json.dumps(dict(listed, **got), indent=1))
+        return
+    if picked:
+        print("%s %d link(s)" % (decision or "cleared", got["decided"]) if got["decided"] else
+              "nothing decided: no link between the two that isn't by the same content, or the later file isn't "
+              "yours or co-owned, or it's outside this token's roots")
+    print("direct relatives of %s:" % where)
+    _print([{"way": "came from" if r["direction"] == "up" else "went on to", "how": r["how"],
+             "file": "%s:%s" % (r["root"], r["relpath"]), "evidence": r["evidence"], "confidence": r["confidence"],
+             "decision": r["decision"] or ""} for r in listed["rows"]], False)
+
+
 def open_api(a, cfg):
     """(the API, whether it is a --as session to end). Without --as, the token found here. With --as NAME, only
     what NAME's secret opens, asked for at a hidden prompt and never written down: a token of theirs, checked to be
@@ -614,6 +649,9 @@ def main(argv=None):
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--host", help="changes: only this host's; backups: this machine's name in the catalog")
     ap.add_argument("--yes", action="store_true", help="review: mark without asking")
+    ap.add_argument("--confirm", metavar="OTHER", help="relatives: confirm the link between FILE and OTHER")
+    ap.add_argument("--reject", metavar="OTHER", help="relatives: reject it (never suggested again)")
+    ap.add_argument("--clear", metavar="OTHER", help="relatives: clear the decision on it")
     ap.add_argument("--what", action="append", metavar="KIND",
                     help="changes: only this kind (new, changed, moved, moved_changed, gone, mismatch, unreadable)")
     ap.add_argument("--review", choices=("reviewed", "unreviewed"), help="changes: only the reviewed or unreviewed")

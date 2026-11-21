@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -274,11 +275,12 @@ class TestApi(ApiCase):
         self.assertEqual(c.get("/file/%d" % diary).status_code, 200)        # the web session is stepped up
         self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
-        # no API route changes anything: GET only, but for signing in and out (pinakes --as)
+        # GET only, but for signing in and out (pinakes --as), and the review marks and lineage decisions a token's
+        # review scope allows (the database checks the scope again)
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
         posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
-        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review"})
+        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review", "/api/v1/decide"})
         for rule in api:
             self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
@@ -961,6 +963,93 @@ as = "co-owner"
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.load(r)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliRelatives(ServerCase):
+    """pinakes relatives FILE [--confirm|--reject|--clear OTHER] (ROADMAP 9): a file's direct relatives, and a
+    decision on one, through decide_lineage() and its rules, with the token's review scope and roots."""
+
+    X, Y = "people/user-1/x/notes.txt", "people/user-1/y/notes.txt"
+    SA, SB = "people/user-1/shared-with-2/a/memo.txt", "people/user-1/shared-with-2/b/memo.txt"
+
+    def setUp(self):
+        super().setUp()
+        t0 = time.time() - 86400
+        self.write("server-1", "store", self.X, os.urandom(1000), mtime=t0)
+        self.write("server-1", "store", self.SA, os.urandom(1200), mtime=t0)
+        self.scan("server-1", "store")
+        self.write("server-1", "store", self.Y, os.urandom(1010), mtime=t0 + 1)
+        self.write("server-1", "store", self.SB, os.urandom(1210), mtime=t0 + 1)
+        self.scan("server-1", "store")
+        self.assertEqual(self.decisions(), {(self.X, self.Y): None, (self.SA, self.SB): None})
+        self.cli = None
+
+    def decisions(self):
+        return dict(((a, b), d) for a, b, d in self.q(
+            "SELECT ff.relpath, ft.relpath, l.decision FROM pinakes.lineage l "
+            "JOIN pinakes.files ff ON ff.file_id = l.from_file_id JOIN pinakes.files ft ON ft.file_id = l.to_file_id"))
+
+    def as_(self, person, scopes=("read", "review"), roots=None):
+        if self.cli:
+            self.cli.close()
+        self.cli = CliRun(self, person, scopes, roots)
+        self.addCleanup(lambda: self.cli and self.cli.close())
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')
+        return self.cli
+
+    def test_the_owner_rejects_from_inside_the_folder_then_clears(self):
+        cli = self.as_("user-1")
+        out = cli("relatives", "store:" + self.Y)
+        self.assertIn("direct relatives of store:" + self.Y, out)
+        self.assertIn("came from  derived_from  store:" + self.X, out)
+        out = cli("relatives", "notes.txt", "--reject", "../x/notes.txt", cwd=self.path("server-1", "store",
+                                                                                         "people/user-1/y"))
+        self.assertIn("rejected 1 link(s)", out)
+        self.assertIn("rejected", out.splitlines()[-1])
+        self.assertEqual(self.decisions()[(self.X, self.Y)], "rejected")
+        self.assertIn("(none)", cli("lineage", "store:" + self.Y))                  # gone from the walk
+        got = json.loads(cli("relatives", "store:" + self.X, "--clear", "store:" + self.Y, "--json"))
+        self.assertEqual((got["decided"], got["decision"]), (1, None))
+        self.assertEqual([(r["direction"], r["relpath"], r["decision"]) for r in got["rows"]],
+                         [("down", self.Y, None)])
+        self.assertEqual(self.decisions()[(self.X, self.Y)], None)
+        self.assertIn("confirmed 1 link(s)", cli("relatives", "store:" + self.Y, "--confirm", "store:" + self.X))
+        self.assertEqual(self.decisions()[(self.X, self.Y)], "confirmed")
+        self.assertIn("takes one of", cli("relatives", "store:" + self.Y, "--confirm", "store:" + self.X,
+                                          "--reject", "store:" + self.X, code=1))
+
+    def test_a_reader_a_token_without_the_scope_or_outside_its_roots_decides_nothing(self):
+        cli = self.as_("user-2")
+        out = cli("relatives", "store:" + self.SB, "--reject", "store:" + self.SA)      # a reader sees it
+        self.assertIn("nothing decided", out)
+        self.assertIn("store:" + self.SA, out)
+        self.assertIn("no file you can see", cli("relatives", "store:" + self.Y, "--reject", "store:" + self.X,
+                                                 code=1))
+        cli = self.as_("user-1", scopes=("read",))
+        self.assertEqual(cli("relatives", "store:" + self.Y, "--reject", "store:" + self.X, code=1),
+                         "pinakes: this token doesn't have the review scope")
+        cli = self.as_("user-1", roots=[self.q("SELECT root_id FROM pinakes.roots WHERE label = 'store'")[0][0]])
+        self.assertIn("rejected 1 link(s)", cli("relatives", "store:" + self.Y, "--reject", "store:" + self.X))
+        self.assertEqual(self.decisions(), {(self.X, self.Y): "rejected", (self.SA, self.SB): None})
+        # a group token never decides, and the API checks what it is given
+        c = cli.app.test_client()
+        group = make_kind_token(self, "user-1", scopes=("read", "review"), group="household")
+        mine = make_token(self, "user-1", scopes=("read", "review"))
+        for secret, body, want in (
+                (group, {"files": ["store:" + self.SA, "store:" + self.SB], "decision": "rejected"}, 403),
+                (mine, {"files": ["store:" + self.SA], "decision": "rejected"}, 400),
+                (mine, {"files": ["store:" + self.SA, "store:" + self.SB], "decision": "maybe"}, 400),
+                (mine, {"files": [True, 2], "decision": "rejected"}, 400),
+                (mine, {"files": ["store:nothing here", "store:" + self.SB], "decision": "rejected"}, 404)):
+            r = c.post("/api/v1/decide", json=body, headers={"Authorization": "Bearer " + secret})
+            self.assertEqual(r.status_code, want, (body, r.get_json()))
+        self.assertEqual(self.decisions()[(self.SA, self.SB)], None)
+        ids = [self.file("store", self.SA), self.file("store", self.SB)]
+        r = c.post("/api/v1/decide", json={"files": ids, "decision": "confirmed"},
+                   headers={"Authorization": "Bearer " + mine})
+        self.assertEqual((r.status_code, r.get_json()), (200, {"files": ids, "decision": "confirmed", "decided": 1}))
 
 
 def make_kind_token(case, person, scopes=("read",), roots=None, client="laptop-1", group=None):

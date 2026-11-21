@@ -477,3 +477,13 @@ were made while building, to keep going, and are open to change.
   Both are database functions an operator may call only from the web (a token, ops or not, is refused), so the web
   role's row-level security stays as it is. A person's report runs the same function under row-level security: copies
   only someone else can see don't count, so it errs toward "at risk". No API call or CLI yet.
+- **Lineage decisions (ROADMAP 9).** A decision is on two files, not on one edge: "these aren't related" must hold
+  when a later heuristic points the other way, or finds the same pair by other evidence (identity fields, 15, will).
+  So the ingester skips a rejected pair either way round, and `decide_lineage()` covers every edge between the two.
+  The person who decides is the owner or a co-owner of the later file (an edge's `to_file`): an edge says where that
+  file came from, and the earlier file's owner sees the decision in their audit, not a power over it. Both files must
+  be visible, since the function reads as the schema's owner, where row-level security doesn't apply. A certain edge
+  (the same content) can't be decided: the hash is the fact, and rejecting it would only hide a copy. A group token
+  can't decide: an edge's later file has a person or a group as owner, and keeping it to people keeps the audit
+  simple; a group's files are decided from a person's token or the web. `decided_at` was added for the file page and
+  the export; clearing a decision clears who and when.

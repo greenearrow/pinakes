@@ -1954,6 +1954,161 @@ class TestNameLineage(ServerCase):
                                         ("x/notes.txt", "y/notes.txt", "similar name, similar size")])
 
 
+class TestLineageDecisions(ServerCase):
+    """Confirming or rejecting a relative (ROADMAP 9): a decision outranks every heuristic. A rejected pair leaves
+    the walks and is never suggested again, either way; a confirmed edge survives tidy. Only the owner or a co-owner
+    of the later file decides, or an administrator in a step-up, audited."""
+
+    PAIRS = {"mine": ("people/user-1/x/notes.txt", "people/user-1/y/notes.txt"),
+             "hers": ("people/user-2/x/list.txt", "people/user-2/y/list.txt"),
+             "shared": ("people/user-1/shared-with-2/a/memo.txt", "people/user-1/shared-with-2/b/memo.txt")}
+
+    def setUp(self):
+        super().setUp()
+        t0 = time.time() - 86400
+        for i, (first, _) in enumerate(self.PAIRS.values()):
+            self.write("server-1", "store", first, os.urandom(1000 + 100 * i), mtime=t0)
+        self.write("server-1", "store", "people/user-1/c/same.bin", b"the same bytes", mtime=t0)
+        self.scan("server-1", "store")
+        for i, (_, second) in enumerate(self.PAIRS.values()):
+            self.write("server-1", "store", second, os.urandom(1010 + 100 * i), mtime=t0 + 1)
+        self.write("server-1", "store", "people/user-1/d/same.bin", b"the same bytes", mtime=t0 + 1)
+        self.scan("server-1", "store")
+        self.ids = {k: (self.file("store", a), self.file("store", b)) for k, (a, b) in self.PAIRS.items()}
+        self.ids["same"] = (self.file("store", "people/user-1/c/same.bin"),
+                            self.file("store", "people/user-1/d/same.bin"))
+        self.assertEqual(self.edges(), {k: [(self.ids[k][0], self.ids[k][1], "possible", None)] for k in self.PAIRS}
+                         | {"same": [(self.ids["same"][0], self.ids["same"][1], "certain", None)]})
+
+    def edges(self):
+        """Every edge, by pair: (from, to, confidence, decision)."""
+        got = {}
+        for k, (a, b) in self.ids.items():
+            got[k] = [tuple(r) for r in self.q(
+                "SELECT from_file_id, to_file_id, confidence, decision FROM pinakes.lineage "
+                "WHERE (from_file_id, to_file_id) IN ((%s, %s), (%s, %s)) ORDER BY 1, 2, kind", (a, b, b, a))]
+        return got
+
+    def decide(self, person, pair, decision, step_up=False):
+        with self.as_person(person) as c:
+            if step_up:
+                c.execute("SELECT pinakes.begin_step_up('checking lineage', 15)")
+            n = queries.decide_lineage(c, *self.ids[pair], decision)
+            c.commit()
+        return n
+
+    def test_rejected_leaves_the_walks_and_is_never_suggested_again(self):
+        a, b = self.ids["mine"]
+        self.assertEqual(self.decide("user-1", "mine", "rejected"), 1)
+        self.assertEqual(self.edges()["mine"], [(a, b, "possible", "rejected")])
+        with self.as_person("user-1") as c:
+            self.assertEqual(queries.lineage(c, b, "up"), [])
+            self.assertEqual(queries.lineage(c, a, "down"), [])
+            (r,) = queries.relatives(c, b)                      # still listed where it can be cleared
+            self.assertEqual((r["direction"], r["file_id"], r["decision"], r["decided_by"]),
+                             ("up", a, "rejected", "User One"))
+        # lineage worked out again for both, as a later scan would, and tidy: nothing comes back
+        with self.conn.transaction():
+            self.ing.lineage_many([a, b], queries.today())
+            self.ing.tidy(queries.today())
+        self.assertEqual(self.edges()["mine"], [(a, b, "possible", "rejected")])
+        # nor the other way round: with only b -> a rejected, a -> b, which the heuristics find, isn't added
+        self.q("DELETE FROM pinakes.lineage WHERE to_file_id = %s RETURNING 1", (b,))
+        with self.conn.transaction():
+            self.ing.lineage_many([b], queries.today())
+        self.assertEqual(self.edges()["mine"], [(a, b, "possible", None)])      # found again once nothing says no
+        self.q("DELETE FROM pinakes.lineage WHERE to_file_id = %s RETURNING 1", (b,))
+        self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, decision) "
+               "VALUES (%s, %s, 'derived_from', 'similar name', 'possible', 'rejected') RETURNING 1", (b, a))
+        with self.conn.transaction():
+            self.ing.lineage_many([b], queries.today())
+        self.assertEqual(self.edges()["mine"], [(b, a, "possible", "rejected")])
+        # a move of the later file, scanned: still nothing
+        os.rename(self.path("server-1", "store", self.PAIRS["mine"][1]),
+                  self.path("server-1", "store", "people/user-1/x/notes v2.txt"))
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges()["mine"], [(b, a, "possible", "rejected")])
+        # cleared: back to a suggestion like any other (the walk shows it again)
+        self.ids["mine"] = (b, a)
+        self.assertEqual(self.decide("user-1", "mine", None), 1)
+        self.assertEqual(self.edges()["mine"], [(b, a, "possible", None)])
+        self.assertEqual(self.q("SELECT decided_by, decided_at FROM pinakes.lineage WHERE from_file_id = %s", (b,)),
+                         [(None, None)])
+
+    def test_a_confirmed_edge_survives_tidy_and_outranks_heuristics(self):
+        a, b = self.ids["mine"]
+        # as an older release wrote it: evidence the current rules don't bear out, so tidy would drop it undecided
+        self.q("UPDATE pinakes.lineage SET evidence = 'similar name' WHERE to_file_id = %s RETURNING 1", (b,))
+        self.q("UPDATE pinakes.files SET size = 90000 WHERE file_id = %s RETURNING 1", (b,))
+        undecided = self.ids["shared"][1]
+        self.q("UPDATE pinakes.lineage SET evidence = 'similar name' WHERE to_file_id = %s RETURNING 1", (undecided,))
+        self.q("UPDATE pinakes.files SET size = 90000 WHERE file_id = %s RETURNING 1", (undecided,))
+        self.assertEqual(self.decide("user-1", "mine", "confirmed"), 1)
+        (at,) = self.q("SELECT decided_at FROM pinakes.lineage WHERE to_file_id = %s", (b,))[0]
+        self.assertIsNotNone(at)
+        with self.conn.transaction():
+            n = self.ing.tidy(queries.today())
+        self.assertEqual(n["name edges removed"], 1)                           # the undecided one
+        self.assertEqual(self.edges()["shared"], [])
+        self.assertEqual(self.edges()["mine"], [(a, b, "possible", "confirmed")])
+        with self.as_person("user-1") as c:
+            (up,) = queries.lineage(c, b, "up")
+            self.assertEqual((up["file_id"], up["decision"]), (a, "confirmed"))
+        # worked out again: the confirmed source stands, no other is looked for
+        with self.conn.transaction():
+            self.ing.lineage_many([b], queries.today())
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage WHERE to_file_id = %s", (b,)), [(1,)])
+
+    def test_only_the_later_files_owner_decides_and_an_administrator_in_a_step_up(self):
+        self.assertEqual(self.decide("user-2", "mine", "rejected"), 0)         # not hers, not even visible
+        self.assertEqual(self.decide("user-2", "shared", "rejected"), 0)       # a reader sees it, can't decide
+        self.assertEqual(self.decide("user-1", "hers", "rejected"), 0)         # an administrator, not stepped up
+        self.assertEqual(self.decide("user-1", "same", "rejected"), 0)         # the hash decides
+        self.assertEqual({k: [e[3] for e in v] for k, v in self.edges().items()},
+                         {k: [None] for k in self.ids})
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'lineage'"), [(0,)])
+        self.assertEqual(self.decide("user-2", "hers", "confirmed"), 1)        # her own: no audit
+        self.assertEqual(self.decide("user-1", "mine", "confirmed"), 1)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'lineage'"), [(0,)])
+        self.assertEqual(self.decide("user-1", "hers", "rejected", step_up=True), 1)
+        two = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]
+        self.assertEqual(self.q("SELECT affects, detail FROM pinakes.audit WHERE action = 'lineage'"),
+                         [([two], {"decision": "rejected", "edges": 1})])
+        self.assertEqual(self.edges()["hers"][0][3], "rejected")
+        with self.as_person("user-1") as c:
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "confirmed or rejected"):
+                c.execute("SELECT pinakes.decide_lineage(%s, %s, 'maybe')", self.ids["mine"])
+        c = psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)       # no person
+        try:
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "no person set"):
+                c.execute("SELECT pinakes.decide_lineage(%s, %s, 'rejected')", self.ids["mine"])
+        finally:
+            c.close()
+        # the table itself is not the application's to write
+        with self.as_person("user-1") as c:
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("UPDATE pinakes.lineage SET decision = 'rejected'")
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT pg_get_functiondef('pinakes.decide_lineage(bigint, bigint, text)'::regprocedure), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = 'decide_lineage'), "
+                "(SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable ORDER BY ordinal_position) "
+                " FROM information_schema.columns WHERE table_schema = 'pinakes' AND table_name = 'lineage')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP FUNCTION pinakes.decide_lineage(bigint, bigint, text); "
+                      "ALTER TABLE pinakes.lineage DROP COLUMN decided_at")
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["lineage-decisions.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "lineage-decisions.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["lineage-decisions.sql"]).fetchone()[0])
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertIn("pinakes_app:EXECUTE", fresh[1])
+
+
 class TestEmptyFiles(ServerCase):
     """Every empty file has the same hash: not a duplicate, and no line of descent."""
 

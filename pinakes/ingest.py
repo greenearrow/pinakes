@@ -131,6 +131,7 @@ class _LineageState:
         self.keys = set()            # (from, to, kind) present in the table or queued
         self.has_source = set()      # files with an edge in that isn't rejected
         self.has_copy_source = set()  # ... of evidence 'same sha256'
+        self.rejected = set()        # {a, b}: a person rejected these two as relatives, either way (ROADMAP 9)
         self.queue = []              # edges to write at the end of the round
 
 
@@ -1205,11 +1206,15 @@ class Ingester:
         if not ids:
             return
         st.loaded.update(ids)
+        # incoming edges, and outgoing ones rejected: a rejected pair is never suggested again, either way
         for frm, to, kind, evidence, decision in self.q(
                 "SELECT from_file_id, to_file_id, kind, evidence, decision FROM pinakes.lineage "
-                "WHERE to_file_id = ANY(%s)", (ids,)).fetchall():
+                "WHERE to_file_id = ANY(%s) OR (from_file_id = ANY(%s) AND decision = 'rejected')",
+                (ids, ids)).fetchall():
             st.keys.add((frm, to, kind))
-            if decision != "rejected":
+            if decision == "rejected":
+                st.rejected.add(frozenset((frm, to)))
+            else:
                 st.has_source.add(to)
                 if evidence == "same sha256":
                     st.has_copy_source.add(to)
@@ -1232,6 +1237,8 @@ class Ingester:
     def _edge(self, st, src, dst, kind, evidence, confidence, on):
         if src == dst or (src, dst, kind) in st.keys:
             return  # the table already has it, perhaps rejected: as ON CONFLICT DO NOTHING would leave it
+        if confidence != "certain" and frozenset((src, dst)) in st.rejected:
+            return  # a person said these two aren't relatives: a heuristic doesn't overrule them (the hash does)
         st.keys.add((src, dst, kind))
         st.has_source.add(dst)
         if evidence == "same sha256":
@@ -1299,7 +1306,8 @@ class Ingester:
         their history rows, gone rows and any lineage edges go. Undecided edges to or from an empty file go (it
         descends from nothing). Name keys are recomputed by the current patterns. Name lineage: every undecided edge
         by name is worked out again by NAME_CANDIDATE (the same source kept, another taken, or none). Decided edges
-        stay. Run it again after an upgrade; a second run changes nothing."""
+        stay, and a rejected pair isn't linked again (ROADMAP 9). Run it again after an upgrade; a second run changes
+        nothing."""
         n = {}
         backup = "SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) WHERE r.kind = 'backup'"
         n["backup history rows"] = self.q("DELETE FROM pinakes.history WHERE file_id IN (%s)" % backup).rowcount
@@ -1355,10 +1363,12 @@ class Ingester:
                         self.q("DELETE FROM pinakes.lineage WHERE from_file_id = %s AND to_file_id = %s "
                                "AND evidence LIKE 'similar name%%' AND decision IS NULL", (frm, to))
                 if src is not None and src not in old[to]:
-                    self.q("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, found_on) "
-                           "VALUES (%s, %s, 'derived_from', %s, 'possible', %s) ON CONFLICT DO NOTHING",
-                           (src, to, ev, on))
-                    moved += 1
+                    moved += self.q(
+                        "INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, found_on) "
+                        "SELECT %s, %s, 'derived_from', %s, 'possible', %s WHERE NOT EXISTS (SELECT 1 FROM "
+                        "pinakes.lineage r WHERE r.decision = 'rejected' AND ((r.from_file_id, r.to_file_id) = "
+                        "(%s, %s) OR (r.from_file_id, r.to_file_id) = (%s, %s))) ON CONFLICT DO NOTHING",
+                        (src, to, ev, on, src, to, to, src)).rowcount
                 elif src is None:
                     dropped += 1
         n["name edges kept"], n["name edges to another source"], n["name edges removed"] = kept, moved, dropped
