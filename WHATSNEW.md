@@ -2,6 +2,31 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 11
+
+Not cut. Affects the server only. Protocol 6, as release 10: no change to the schema, the batches or the agent, so
+nothing else needs updating.
+
+### Before you update
+
+1. No upgrade file (`tools/latest-release --upgrades-after 10` lists none). Update the server.
+2. Run `pinakes-ingest tidy` once, if release 10's run didn't finish.
+
+### `pinakes-ingest tidy` finishes on a large catalog
+
+- Removing the lineage edges from or to a file in a backup root ran as a subquery over every backup file, rescanned
+  for each lineage row: on a catalog of 3.5 M files, most of them in backup roots, it didn't finish in an hour. Each
+  edge column now has its own DELETE, a join on its index; the empty-file edges likewise. On a generated catalog of
+  that size each takes under a second.
+- A test checks that no plan of tidy's set-wide statements has a subquery rescanned per row.
+
+### Not yet
+
+Tested: 486 tests on Python 3.12.3 with PostgreSQL 16.15 (Linux x86-64), and on the installed wheel (Python 3.12.3;
+one test skipped there by design, as it needs git). Python 3.10, 3.11, 3.13, 3.14 and 3.15 not run (their test
+environments weren't usable on the machine that tested it); PostgreSQL 15, 17 and 18 not run; aarch64 not run. Not run
+against a real catalog; not deployed.
+
 ## Release 10
 
 Cut 2026-11-21 (tag `release-10`). Affects the server, the agents and the CLI. Protocol 6, a change to the schema only: agents of protocol 0 to
