@@ -185,12 +185,14 @@ def links_into(conn, loc, limit=None, offset=0):
 
 def backed_up(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
     """Per file: physical backup copies (distinct host, device and inode: hard-linked snapshots are one copy), the
-    snapshots that hold the current version, and the newest of them."""
+    snapshots that hold the current version, and the newest of them. `with_backup`: how many of all the files (not
+    only the page's) have at least one copy, since the page is sorted unbacked first."""
     root, path = split_location(loc)
     return rows(conn, """SELECT f.file_id, f.relpath,
                                 count(DISTINCT (br.host_id, b.dev, b.ino)) FILTER (WHERE b.file_id IS NOT NULL)
                                     AS backup_copies,
-                                count(b.file_id) AS snapshots, max(b.snapshot) AS newest, """ + TOTAL + """
+                                count(b.file_id) AS snapshots, max(b.snapshot) AS newest,
+                                sum((count(b.file_id) > 0)::int) OVER () AS with_backup, """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
                          LEFT JOIN pinakes.present b ON b.backup_of = f.file_id AND b.content_id = f.content_id
                                                      AND b.unreadable_on IS NULL

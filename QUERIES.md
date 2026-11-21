@@ -176,7 +176,8 @@ copy of an unchanged file however many snapshots list it, so a file in 22 such s
 SELECT f.relpath,
        count(DISTINCT (br.host_id, b.dev, b.ino)) FILTER (WHERE b.file_id IS NOT NULL) AS backup_copies,
        count(b.file_id) AS snapshots,                -- snapshots holding the current version
-       max(b.snapshot)  AS newest_snapshot
+       max(b.snapshot)  AS newest_snapshot,
+       sum((count(b.file_id) > 0)::int) OVER () AS with_backup   -- of all the files, not the page's
 FROM present f
 JOIN roots r USING (root_id)
 LEFT JOIN present b ON b.backup_of = f.file_id AND b.content_id = f.content_id

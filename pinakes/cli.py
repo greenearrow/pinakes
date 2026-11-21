@@ -565,6 +565,8 @@ def run(api, a, cfg):
         got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None, **page)
     elif a.cmd in FOLDER:
         got = api.get(a.cmd, loc=loc("any"), **page)
+        if a.cmd == "backed-up" and not a.json and got.get("with_backup") is not None:   # a server before: none
+            print("%d of %d have a backup; %d have none" % (got["with_backup"], count(got), got["without_backup"]))
     elif a.cmd == "changes":
         # --host is a filter here, not this machine's name; no folder outside every root: everything
         try:

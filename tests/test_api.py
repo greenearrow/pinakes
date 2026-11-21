@@ -579,6 +579,26 @@ class TestCli(ServerCase):
         self.cli = CliRun(self, "user-1")
         self.addCleanup(self.cli.close)
 
+    def test_backed_up_says_how_many_have_a_backup(self):
+        """The page is sorted unbacked first, so page 1 of a mostly backed-up folder can be all zeros: the answer
+        counts every file with a backup and without, above the rows and in --json; under row-level security."""
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/taxes.txt", b"his")
+        self.scan("server-2", "snapshots")
+        cli, mine = self.cli, "store:people/user-1/"
+        self.assertEqual(cli("backed-up", mine).splitlines()[0], "1 of 2 have a backup; 1 have none")
+        first = cli("backed-up", mine, "--limit", "1").splitlines()
+        self.assertEqual((first[0], first[-1]), ("1 of 2 have a backup; 1 have none", "1 of 2; the next: --offset 1"))
+        self.assertIn("plan.txt", "\n".join(first))                     # the unbacked one first
+        got = json.loads(cli("backed-up", mine, "--limit", "1", "--json"))
+        self.assertEqual((got["total"], got["with_backup"], got["without_backup"]), (2, 1, 1))
+        self.assertNotIn("with_backup", got["rows"][0])
+        past = json.loads(cli("backed-up", mine, "--offset", "5", "--json"))
+        self.assertEqual((past["rows"], past["total"], past["with_backup"], past["without_backup"]), ([], 2, 1, 1))
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))   # she sees only what's shared
+        got = json.loads(cli("backed-up", mine, "--json"))
+        self.assertEqual((got["total"], got["with_backup"], got["without_backup"]), (1, 0, 1))
+
     def test_every_query_through_the_api(self):
         """Each query of DESIGN.md "Queries", and roots, as the token's person."""
         cli = self.cli
@@ -1883,8 +1903,9 @@ class TestCliPages(ServerCase):
                 self.assertEqual(cli(cmd, *args, "--offset", str(total)).splitlines()[-1],
                                  "none of %d: --offset %d is past the end" % (total, total))
                 got = json.loads(cli(cmd, *args, "--limit", "2", "--offset", "1", "--json"))
+                counts = ["with_backup", "without_backup"] if cmd == "backed-up" else []   # of the whole list
                 self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
-                                 (["limit", "offset", "rows", "total"], total, 2, 2, 1))
+                                 (["limit", "offset", "rows", "total"] + counts, total, 2, 2, 1))
                 self.assertNotIn("total_rows", got["rows"][0])
                 # the pages are the whole list, in order, with nothing twice
                 pages = [r for o in range(0, total, 2)

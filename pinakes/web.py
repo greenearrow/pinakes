@@ -518,7 +518,13 @@ def create_app(cfg, connect=None):
 
     @api("backed-up")
     def api_backed_up():
-        return page(queries.backed_up, arg("loc", "loc=ROOT:PATH"))
+        loc = arg("loc", "loc=ROOT:PATH")
+        got = page(queries.backed_up, loc)
+        first = got["rows"][:1] or queries.backed_up(g.db, loc, limit=1, offset=0)   # a page past the end
+        n = int(first[0]["with_backup"]) if first else 0
+        for r in got["rows"]:
+            del r["with_backup"]
+        return dict(got, with_backup=n, without_backup=got["total"] - n)    # of every file, not only the page's
 
     @api("manifests")
     def api_manifests():
