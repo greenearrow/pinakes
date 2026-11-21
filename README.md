@@ -1,111 +1,205 @@
 # pinakes
 
-A catalog of every file on every machine in a home lab, and of who owns it: path, size, times, SHA-256 and metadata,
-kept current by cheap incremental scans, with a web UI. Questions like "where are all copies of this", "what exists
-only on this laptop", "is this folder backed up" and "is it safe to delete" become one indexed query instead of a
-one-off hashing script.
+**Know where every file in the house is, how many copies it has, and whose it is, without hashing a disk again.**
 
-The name is the *Pinakes*, the catalogue Callimachus compiled of the Library of Alexandria's holdings:
-who wrote what, how long it was, where it was shelved. It held none of the scrolls; this holds none of the files.
+A home lab ends up with files everywhere: a storage server, a backup server, a desktop, a laptop that is mostly off,
+and the `Downloads` folders where things get dropped "for now". The same questions keep coming back. Is this folder
+safe to delete? What exists only on this laptop? Is any of this backed up? Where did that file go? Each answer
+usually means a one-off script that hashes a tree, compares, prints, and throws the result away.
 
-**Status: early.** The agent, ingester, queries, CLI, a read-only web UI with sign-in, and a JSON API with
-per-person tokens are built and tested; so are the metadata schemas, EXIF and XMP from JPEGs (sensitive fields for
-owners only) and hidden files. Other extractors, person-entered metadata, file operations and more are not
-(REARVIEW.md, ROADMAP.md).
+Pinakes keeps the result. A small agent on each machine scans its own disks, read-only, and rehashes only what
+changed; a catalog server keeps every file's path, size, times, SHA-256, metadata and owner in PostgreSQL. Those
+questions become one indexed query, from a web page, a shell on any machine, or SQL, and each person sees only their
+own files.
 
-- [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
-  the web UI, managing files, queries.
-- [SECURITY.md](SECURITY.md): people, roles and ownership; administrators see others' records only by stepping up,
-  audited and visible to the people affected; row-level security; agents; the web UI.
-- [METADATA.md](METADATA.md): metadata on content and on files, enrolled standard schemas (Dublin Core, EXIF, XMP,
-  audio tags, OPF and more), bundles of files that belong together, storage and indexes.
-- [QUERIES.md](QUERIES.md): every query in SQL.
-- [ROADMAP.md](ROADMAP.md): what is left, and what "done" means for each piece.
-- [HORIZON.md](HORIZON.md): over the horizon: not planned, kept only for the day a catalog's size asks for it.
-- [REARVIEW.md](REARVIEW.md): what is built, and how each piece was tested.
-- [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
-- [config.example.toml](config.example.toml) (an agent) and [server.example.toml](server.example.toml) (the server).
+It is a catalog, never a way to reach a file: it holds none of the files, serves no downloads and opens nothing. The
+machine that holds a file, through its own shares and logins, gives access. The name is the *Pinakes*, the catalogue
+Callimachus compiled of the Library of Alexandria's holdings: who wrote what, how long it was, where it was shelved.
+It held none of the scrolls either.
 
-In short:
+**Status: early; running on its first deployment.** Release 10 is being prepared. What is built, and how each piece was
+tested, is in [REARVIEW.md](REARVIEW.md); what is left in [ROADMAP.md](ROADMAP.md). Licence: GPL-3.0
+([LICENSE](LICENSE)).
 
-- One agent per machine scans its own disks, read-only, rehashes only what changed, and sends batches when it can
-  reach the server. Machines that are often off, or that sleep on demand, are fine.
-- Backup servers are first-class: hard-linked snapshots are hashed once per inode, and each backup copy is tied back
-  to its source.
-- Moves and edits are tracked by hash, inode and content-defined chunk overlap, with the evidence recorded.
-- PostgreSQL with row-level security; agents hold no database credentials.
-- Never a way to reach a file: no download, upload or editing. The catalog says where a file is; the machine that
-  holds it, through its own shares and logins, gives access.
-- File operations (move, rename, write a sidecar, trash) only by approved request, carried out and verified by the
-  agent; nothing is ever deleted.
+## What it does
 
-- Owners per folder, changeable in the web UI, with others enrolled as co-owners, readers or annotators.
-- A wish: an MCP server over the queries, review marks and tags, acting as one person, every write undoable.
+Built and tested:
 
-Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.15; 3.10 needs `tomli`, the
-`agent310` extra), PostgreSQL 15+ (tested on 15 to 18); the web UI on Flask and waitress.
+- **Copies and safety.** Every copy and backup of a file, on every machine. What exists only here (no copy on
+  another disk). Whether a folder is safe to delete, and which symlinks elsewhere lead into it. What losing one disk
+  or one machine would cost each person. Duplicates, and whole folders that are copies of another.
+- **Backups as first-class.** Backup servers are scanned like any machine; hard-linked snapshots are hashed once per
+  inode, and each backup copy is tied back to its source, so "is this backed up, and how recently" is a query.
+- **Changes and moves.** What changed, per folder or as a tree. Moves and edits are matched by hash, inode and
+  content-defined chunk overlap, with the evidence and a confidence recorded; a rename that can't be proven is shown
+  as gone plus new, never guessed silently. Gone files and moves can be reviewed (intended, or to restore), with a
+  list of which backup holds each one to restore.
+- **History and lineage.** A file's history (new, changed, moved, gone) and each version it had, with the backups
+  that hold it. Where a file came from and what came from it, across machines, with likely relatives you confirm or
+  reject once.
+- **Metadata.** EXIF and embedded XMP from JPEGs (location and people fields for their owners only), enrolled schemas
+  (Dublin Core, EXIF, XMP: [METADATA.md](METADATA.md)), tags and notes you enter, and search by any field.
+  `SHA256SUMS` files are checked against the agents' own hashes.
+- **People and privacy.** Every file has an owner; folders are given to people or groups by rules. Each person sees
+  their own files and what is shared with them, enforced by PostgreSQL row-level security, not by the application.
+  An administrator sees someone else's records only by stepping up (password, second factor, a reason, a time
+  limit), and the people affected see that it happened on their *Access to your records* page.
+- **Honest scanning.** Agents never write to a scanned tree. Each root is one filesystem; a USB disk or a share
+  mounted inside it is reported, not walked, and nothing under it is reported gone. Hidden files are left out of
+  browsing until shown. Protected roots get hashes only. A scrub reads unchanged files again on a schedule to catch
+  silent corruption.
+- **Machines that are often off.** Agents scan when awake, keep an outbox, and send when the server is reachable;
+  laptops can scan only on mains power. Agents hold no database credentials: batches travel by an SSH key forced to
+  one command, or a shared directory.
+- **Every write is undoable** (from release 10). Review marks, lineage decisions, tags and notes are each kept with
+  who made them, by which token, and the value before; `pinakes edits` lists yours and `pinakes undo` puts the old values back.
 
-Licence: GPL-3.0 ([LICENSE](LICENSE)).
+Not yet (ROADMAP.md): extractors beyond JPEG (audio tags, PDF, office, video, XMP sidecars), bundles (RAW with JPEG,
+a photo with its sidecar), changing owners in the web UI, file operations by approved request (move, rename, trash;
+nothing is ever deleted), WebAuthn and OpenID Connect sign-in, and the MCP server below.
+
+## How you use it
+
+Three ways in, one catalog. The web UI and the command line go through the same API, as one person at a time, under
+the same rules. SQL is underneath both.
+
+The examples use placeholder machines (`server-1`, `laptop-1`), people (`user-1`, `user-2`) and roots (`store`,
+`downloads`).
+
+### The web UI
+
+`pinakes-web` serves it behind the site's HTTPS reverse proxy. Sign in with your password and, if you set one, a
+second factor (TOTP).
+
+- **Find** by name (with `*` and `?`), by who made a file (author, artist, photographer) and by date, and
+  **browse** each root as a folder tree.
+- **A file's page:** every copy and backup with its age, its history and versions, its lineage and direct
+  relatives (confirm, reject or clear a suggested link), and its metadata by schema with where each value came from.
+  Enter your own values (tags, notes, any field of a schema that fits), and share its sensitive fields with one of
+  its readers.
+- **Reports**, along the top: *Changes* (with the review: mark gone files and moves intended or to restore),
+  *Duplicates*, *Safe to delete?*, *Only here*, *Folder copies*, *If a disk failed*, *Growth* and *Manifests*.
+- **Access to your records:** who saw them (an administrator's step-up, with its reason) and every call made with
+  your tokens.
+- **Your account:** password, second factor, and tokens for the command line and assistants: each one named, with
+  its scopes (`read`, `review`, `tag`), optionally limited to some roots, its last use shown, revocable.
+- An administrator's **Step up**, and an operator's **Operator** page (per-root totals, never file names).
+
+The web UI never serves a file's content.
+
+### The command line
+
+`pinakes` runs on any machine and answers as the person whose token it holds. Inside a scanned folder it works on
+where you are: no root to name.
+
+```bash
+cd /mnt/store/projects
+pinakes                              # this folder in numbers: files, backups, copies, changes
+pinakes safe-to-delete old-drafts    # files with no kept copy on another disk (none listed: safe)
+pinakes where report.pdf             # every copy and backup of it
+pinakes changes --days 7 --tree      # what changed this week, per folder
+pinakes tag trip-photos --add trip   # tag every file under the folder: shown first, then asked
+```
+
+| To know | Ask |
+|---|---|
+| Where files with this name are | `pinakes find NAME-OR-GLOB` |
+| Every copy and backup of a file | `pinakes where FILE` |
+| What exists only here | `pinakes only-here [PATH]` |
+| Whether a folder is safe to delete | `pinakes safe-to-delete [PATH]` |
+| How well a folder is backed up | `pinakes backed-up [PATH]`, `pinakes backups [FOLDER]` |
+| What losing a disk or machine would cost | `pinakes at-risk` |
+| Duplicates, and folders that copy others | `pinakes dupes`, `pinakes folder-copies [FOLDER]` |
+| What changed | `pinakes changes [PATH] [--days N] [--what KIND] [--tree]` |
+| A file's history, versions, origins | `pinakes history FILE`, `versions FILE`, `lineage FILE [--down]` |
+| What to restore, from which backup | `pinakes restores [PATH]` |
+| Growth per folder and week | `pinakes growth [FOLDER] [--weeks N]` |
+| Files by metadata | `pinakes meta SCHEMA.FIELD=VALUE` |
+| What `SHA256SUMS` files say that the hashes don't | `pinakes manifests [PATH]` |
+| Machines that haven't scanned on time; the roots | `pinakes stale`, `pinakes roots` |
+| Who saw your records; what your tokens did | `pinakes access`, `pinakes edits` |
+| Your own records, to keep | `pinakes export [PART] [--csv]` |
+
+And to act: `pinakes review intended|restore [PATH]` marks gone files and moves reviewed, `pinakes tag` adds or
+removes tags and a note, `pinakes relatives FILE --confirm|--reject OTHER` decides a link, and `pinakes undo EDIT`
+takes any of them back. `review` and `tag` on a folder show what they would change and ask first (`--yes` skips the
+question). Review marks and decisions change only what you own or co-own, tags also what you annotate; each needs
+the token's `review` or `tag` scope.
+
+FILE and PATH are a path on this machine (none: the current folder) or `ROOT:PATH`. Lists come a page at a time (100
+rows, `--limit` and `--offset`) with the total; `--json` for scripts; `--as NAME` to ask as another person, with their
+password at a prompt. `pinakes --help` has the rest.
+
+Setting it up on a machine: `~/.config/pinakes/client.toml` names the catalog
+([client.example.toml](client.example.toml)), and a token made on the web UI's account page goes in
+`~/.config/pinakes/token` (mode 600).
+
+### The SQL database
+
+The catalog is a PostgreSQL schema, `pinakes`: `hosts`, `roots`, `contents` (one row per SHA-256), `files` (every
+file ever seen, with `present` as the view of what exists now), `history`, `lineage` and `metadata` (JSON per
+schema). [QUERIES.md](QUERIES.md) shows every `pinakes` command as the one SQL statement it is, with the columns it
+assumes, and every block there runs as a test against a catalog built by real scans. It is the place to start a
+query of your own, or a report the command line doesn't have:
+
+```sql
+-- the 20 biggest files that exist on one machine only (search_path = pinakes)
+SELECT h.name AS host, r.label AS root, f.relpath, f.size
+FROM present f JOIN roots r USING (root_id) JOIN hosts h USING (host_id)
+WHERE r.kind <> 'backup'
+  AND NOT EXISTS (SELECT 1 FROM present o JOIN roots ro USING (root_id)
+                  WHERE o.content_id = f.content_id AND ro.host_id <> r.host_id)
+ORDER BY f.size DESC LIMIT 20;
+```
+
+Who may run SQL, and as whom: row-level security, not the query, decides what a session sees. The web UI's role,
+`pinakes_app`, is under it and sees only the person a session names (`set_config('pinakes.person', ...)`, as the
+tests do); the ingester's role bypasses it. Both trust whoever connects, so direct SQL is for whoever already runs
+the catalog server, never a way to give a person access: people reach the catalog through the web UI, the API and
+`pinakes`, which the database ties to their own sign-in or token and records. [SECURITY.md](SECURITY.md) has the
+policies.
+
+### An assistant (planned: the MCP server)
+
+The way pinakes is meant to be used most, once built (ROADMAP 24): you ask an assistant "is this folder safe to
+delete?" or "where are the photos from that trip?", and it answers from the catalog instead of walking disks.
+`pinakes-mcp` will offer the queries above, and review marks, tags and lineage decisions, as Model Context Protocol
+tools, over the same API and a token you make for it. It acts as you and never as anyone else, can't step up, fetch a
+file or make tokens, asks before each write, and every call shows in `pinakes access` and every write in `pinakes
+edits`, undoable. A local model keeps everything on the LAN; a hosted assistant receives whatever names and
+metadata its answers return, so the token can be limited to some roots. Design: DESIGN.md "Wish: an MCP server".
 
 ## Installing
 
-A machine running pinakes needs only the package: `pip install pinakes` for an agent or the `pinakes` command
-(`pinakes[agent310]` on Python 3.10), `pinakes[server]` for the catalog server and web UI. The command needs the
-catalog's address (`client.example.toml`) and a token from the web UI's account page in `~/.config/pinakes/token`
-(mode 600). No tests, test tools or extra PostgreSQL versions; the
-wheel holds the package alone, and `tools/test --wheel` fails if anything else gets in.
+Target: Debian-family Linux with systemd, Python 3.10+ (tested on 3.10 to 3.15; 3.10 needs `tomli`, the `agent310`
+extra), PostgreSQL 15+ (tested on 15 to 18); the web UI on Flask and waitress.
 
-## Contributing
+Pinakes is not on PyPI; install it from a clone or a wheel built from one (`python -m build`). An agent machine, or
+one that only runs the `pinakes` command, needs the package alone, standard library only: `pip install .`
+(`'.[agent310]'` on Python 3.10). The catalog server needs `pip install '.[server]'`. The wheel holds the package
+alone (`tools/test --wheel` fails if anything else gets in).
 
-Development needs more: `pip install -e '.[dev]'` (the server's packages, `build`, `uv`), and a PostgreSQL for the
-tests. When to run what:
+Configuration, all of it site-specific and none in the code:
 
-- Every commit: the hooks run `tools/leak-scan`, and, when the commit touches code or tests, the agent's tests
-  (`tools/test --agent-only`, about 3 s; `PINAKES_SKIP_TESTS=1` skips them once). Run the full `tools/test` yourself
-  (about 75 s).
-- A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
-- A change to a query, a policy or an API list call: `tools/bench-pages` (about 5 minutes), which builds a catalog of
-  500,000 files by real scans in a throwaway PostgreSQL and times each read call's first page, failing one over 2 s.
-- Before a release: `tools/test --matrix` and `tools/test --wheel` ("Cutting a release" below).
-- Preparing a release: its entry in `RELEASES.toml` (what it affects, its protocol, the `upgrades/*.sql` it needs)
-  and the same numbers in `pinakes/compat.py`. Cutting it is a deliberate step, never implied by a commit: tag the
-  commit `release-N` when the owner says so; until then nothing counts it. A change to the batch fields, the
-  agent's state or the schema raises the protocol (`tests/test_releases.py` fails otherwise). `tools/latest-release
-  ROLE` prints the newest cut release that changes `server`, `agent` or `cli`, from the tags only, never HEAD;
-  `--upgrades-after N` the upgrade files of the cut releases after N.
+- [config.example.toml](config.example.toml): an agent, its roots and how it sends batches.
+- [server.example.toml](server.example.toml): the catalog server: database, web, people, groups, hosts and
+  ownership rules.
+- [client.example.toml](client.example.toml): the `pinakes` command.
 
-The matrix needs each PostgreSQL major version side by side (PGDG's apt packages, with `create_main_cluster =
-false` so none starts a cluster of its own) and `tools/test --setup` once.
+On the server, `pinakes-ingest --config FILE setup` seeds people, hosts and schemas once the schema is applied, and
+`pinakes-ingest --config FILE passwd NAME` sets a person's first password. A step-by-step install guide is not
+written yet.
 
-Tests: `tools/test` starts a throwaway PostgreSQL (from `/usr/lib/postgresql/N/bin`; `--pg N` picks one), runs
-every test with `.venv`'s Python, removes the cluster, and fails if anything was skipped for lack of a database or a
-dependency; `tools/test --agent-only` needs neither. Its last line says what it ran on. Across versions:
-`tools/test --setup` makes an environment per Python under `.matrix/` (with [uv](https://docs.astral.sh/uv/)),
-then `tools/test --matrix --jobs 4` runs each Python and each PostgreSQL installed once, paired oldest with oldest
-(PGDG's packages put several side by side; `--matrix full` runs every pair). `tools/test --wheel` tests what a release would ship: the wheel, built from a clean copy and
-installed in a new environment.
+## Documentation
 
-Run `git config core.hooksPath githooks` once. The hooks run `tools/leak-scan`, which blocks addresses, MACs, LAN
-host names, email addresses, keys and your own private terms (`leak-patterns.example`) from being committed.
-
-### Cutting a release
-
-Only when the owner says to cut it. In order:
-
-1. **Ready:** its `RELEASES.toml` entry (what it affects, protocol, upgrade files, fingerprint, a note) and
-   `pinakes/compat.py` agree, and `tests/test_releases.py` passes. `affects` names every role whose code changed
-   since the last cut (`git diff release-N-1 --stat`): the CLI counts. A release that affects `cli` must reach
-   every machine with the `pinakes` command, not only the catalog server: one where it is installed with an agent
-   is updated by `agent` and `cli` together, so *Before you update* says so whenever `cli` is in and `agent` isn't.
-2. **Tested:** `tools/test --matrix` and `tools/test --wheel`, both on the commit to be cut, both OK. A run that
-   wasn't made is said to be not run, in step 3 and in the commits.
-3. **What's new:** a `## Release N` section at the top of `WHATSNEW.md`: a first line that begins `Not cut.`, then
-   what it affects, its protocol and which side may be updated first; *Before you update* (upgrade files in order,
-   `tools/latest-release --upgrades-after N-1`, and the order of server, agents and CLI); one heading per change;
-   *Not yet*, with what was tested (tests, Pythons, PostgreSQL, OS) and what wasn't (the wheel, other PostgreSQL, a
-   real catalog, a deployment). Commit: `Release N: What's new (ROLES; protocol P; UPGRADES; not cut, not
-   deployed)`, its body the test runs and the commit they ran on.
-4. **Cut:** `Not cut.` becomes "Cut DATE (tag `release-N`)."; any "not cut" about release N in `REARVIEW.md` goes.
-   Commit: `Release N: cut (WHATSNEW says so)`, the same test lines. Then `git tag release-N` on that commit.
-5. **Check:** `tools/latest-release server`, `agent` and `cli` each print what they now should. No push, no
-   deployment: that is the site's.
+- [DESIGN.md](DESIGN.md): the parts, what is recorded, roots and policies, backup servers, move and change matching,
+  the web UI, managing files, queries, the MCP server.
+- [SECURITY.md](SECURITY.md): people, roles and ownership; stepping up; row-level security; agents; tokens.
+- [METADATA.md](METADATA.md): metadata on content and on files, the enrolled schemas, bundles, storage and indexes.
+- [QUERIES.md](QUERIES.md): every query in SQL.
+- [WHATSNEW.md](WHATSNEW.md): each release, and what to do before updating to it.
+- [ROADMAP.md](ROADMAP.md): what is left, and what "done" means for each piece. [HORIZON.md](HORIZON.md): not
+  planned, kept for the day a catalog's size asks for it.
+- [REARVIEW.md](REARVIEW.md): what is built, and how each piece was tested.
+- [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
+- [CONTRIBUTING.md](CONTRIBUTING.md): tests, hooks, and cutting a release.
