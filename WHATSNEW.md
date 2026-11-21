@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 11
 
-Not cut. Affects the server only. Protocol 6, as release 10: no change to the schema, the batches or the agent, so
+Cut 2026-11-21 (tag `release-11`). Affects the server only. Protocol 6, as release 10: no change to the schema, the batches or the agent, so
 nothing else needs updating.
 
 ### Before you update
