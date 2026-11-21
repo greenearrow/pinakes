@@ -14,7 +14,8 @@ PROTOCOL = 6                # 1: check-in, and the protocol in each batch's head
                             # and extraction outcomes in a file's meta (METADATA.md "Extraction", ROADMAP 44)
                             # 5: the schema's operator functions (ROADMAP 10, 42); batches as at 4
                             # 6: lineage decisions (ROADMAP 9, decide_lineage()), person-entered metadata and
-                            # shared sensitive fields (ROADMAP 16); batches as at 4
+                            # shared sensitive fields (ROADMAP 16), the history of the catalog's own writes
+                            # (ROADMAP 62, edits and undo_edits()); batches as at 4
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
@@ -74,6 +75,7 @@ UPGRADE_PROBES = {
     "operator.sql": "to_regprocedure('pinakes.operator_at_risk()') IS NOT NULL",
     "lineage-decisions.sql": "to_regprocedure('pinakes.decide_lineage(bigint, bigint, text)') IS NOT NULL",
     "person-metadata.sql": "to_regprocedure('pinakes.share_sensitive(bigint, int, boolean)') IS NOT NULL",
+    "edits.sql": "to_regprocedure('pinakes.undo_edits(bigint[])') IS NOT NULL",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

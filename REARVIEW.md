@@ -905,3 +905,39 @@ CLI's limit). The new folder-copies query compared with the old on 15 random cat
 same, inside, nearly, nested and empty folders; every folder as each of three viewers) and on the benchmark's
 catalog: the same rows. All 477 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not run on a
 real catalog; not deployed.
+
+## 62. A history of the catalog's own writes
+
+Design: DECISIONS.md "The catalog's own writes". With this, ROADMAP 62 is built and no longer listed.
+
+**Built:** Every review mark, lineage decision and person-entered value (tags and notes, and any other field entered
+on a file's page) is kept as an edit: who made it (a person, or a group by its token), by which token or on the web,
+when, and each value it changed, before and after (`edits` and `edit_items`, written only by `mark_changes()`,
+`decide_lineage()`, `set_file_metadata()` and the new `undo_edits()`, never updated or deleted). `pinakes edits
+[--token CLIENT] [--days N]` lists a person's edits, the newest first, their own and their tokens' and their groups':
+who and by what, what kind, how many values, the first of them with its value before and after, and what undid it;
+paged like every list (`--limit`, `--offset`, "N of TOTAL"), `--json` the API's answer. `pinakes undo EDIT...` puts back
+the values before, the newest edit first, each edit whole or refused with a reason: not theirs, the token's scope,
+changed since (naming the newest later edit, and whose), a link no longer in the catalog, or no longer theirs to
+change; it exits 1 if any was refused. New API calls `GET edits` (scope `read`, `review` or `tag`; `days=`, `token=`)
+and `POST undo` (`{"edits": [...]}`, scope `review` or `tag`, and the database asks the scope of each edit's kind).
+An undo is an edit, audited for the other owners and co-owners its values touch (a mark's: only where the person
+undid as no owner, in a step-up) and for a group's members. `schema.sql` and `upgrades/edits.sql` (release 10, not
+cut; protocol 6's fingerprint updated).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestEdits`, the CLI against
+a real HTTP server on 127.0.0.1): a review of a folder, a tag, a rejection by a token and a mark on the web listed with
+their token or "on the web", a write unchanged leaving no edit; `--token` and `--days`; three edits undone in one
+command, newest first; the same undo again refused, naming the undo; the undo undone, giving back the marks with their
+times; two tags of one file, the earlier refused until both go together; a second person seeing none of them and
+refused each, by the API; a co-owner's later mark refusing the owner's undo, named as another person's edit; a
+decision decided again, and its link dropped, refused; a group token's mark listed for both members and not for a
+third person, undone by a member, shown to the other as the group's, audited; a read token listing but not undoing, a
+review token refused a tag's undo, a token limited to another root seeing none of the store's edits and undoing
+none; an ops token refused; neither the application nor the ingester able to update or delete an edit, nor the
+application to add one or call `edit_now()`; a file's row deleted leaving its edit, unlisted; `edits.sql` on a catalog
+as release 10's earlier upgrades left it gives what `schema.sql` gives, and the writes record after it. The upgrade
+chains of `mark_changes()`, `decide_lineage()` and `set_file_metadata()` in the older upgrade tests end with
+`edits.sql`'s. Four checks checked to fail with each undone (the value changed since, whose edit it is, the listing's
+policy, the right to write metadata now). All 484 tests pass (tools/test). PostgreSQL 15, 17 and 18 and other Pythons
+not run; not run on a real catalog; not deployed.

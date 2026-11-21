@@ -63,6 +63,10 @@ application code. A policy allows a row when:
 - the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
   check also writes the audit row).
 
+The history of the catalog's own writes (`edits`, `edit_items`, ROADMAP 62) is narrower: a person sees only their own
+edits and their groups', never another person's, not in a step-up either; and of an edit only the values on files
+they can still see (under a token, in its roots).
+
 The web service connects as one unprivileged role that is subject to these policies, and sets the signed-in person
 for each transaction. This guards against bugs (a forgotten filter, a crafted query parameter). It does not guard
 against a compromised web service, which could claim to be anyone: that is the line where "root on the catalog

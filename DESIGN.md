@@ -355,6 +355,8 @@ pinakes versions FILE                  each known version (hash, dates) and whic
 pinakes changes [PATH] [--days N] [--host]     what changed; --what KIND, --review; --tree: per folder
 pinakes review intended|restore [PATH]  mark the gone files and moves under it reviewed (shown, then confirmed)
 pinakes tag [PATH] [--add|--remove TAG] [--note TEXT]   your tags and note on the files under it (shown, then confirmed)
+pinakes edits [--token CLIENT]         your own writes (marks, decisions, tags, notes), on the web and by token, newest first
+pinakes undo EDIT...                   put back the values before those edits, unless changed since
 pinakes restores [PATH] [--back]       the changes marked restore, and the backup copies holding their content
 pinakes growth [FOLDER] [--weeks N]    per folder and week, the files and bytes that came and went
 pinakes at-risk                        what losing a disk or a machine would cost you, by disk, host and folder

@@ -558,3 +558,21 @@ were made while building, to keep going, and are open to change.
   last. Offsets, not keysets: the web already pages by them, and a person reads the first pages; an export of
   hundreds of thousands of rows asks 10,000 at a time. roots, stale, host-roots, lineage and relatives aren't paged:
   a site's roots and hosts, and one file's relatives, are short.
+- **The catalog's own writes (ROADMAP 62).** An edit is one write call: everything one of `mark_changes()`,
+  `decide_lineage()` or `set_file_metadata()` changed in one transaction, by one person, group and token. So a
+  `pinakes review` of a folder is one edit to undo, not hundreds; `pinakes tag` of more than 1,000 files is one edit per
+  1,000 (one API call each). Its items are only the values that changed, each with the value before and after: a
+  mark or decision written again unchanged, or the same tags sent twice, leave nothing to undo. The functions record
+  it themselves, as they already check who may write: triggers would have seen a metadata write as a delete and an
+  insert, and a call's grouping only with more machinery. Nothing changes an edit after: the application only reads
+  the tables, and the ingester may add but never update or delete; the items keep no foreign key, so a file's row
+  going (tidy, a backup's gone files) leaves them, out of sight. An undo is an edit too, naming the one it undoes,
+  and can be undone in turn. It is refused, whole, when a value it would put back over has changed since (it
+  compares the value now with the edit's own, times aside) and names the newest later edit of that value; with
+  `pinakes undo NEW OLD`, the newest goes first, so a run of edits undoes in one command. It puts back exactly the
+  value before, another person's mark (and its time) too, and only where the person may write now, by the write's
+  own rules and the token's scope of that kind: the right to undo is the right to write, not a right of its own. A
+  person sees their own edits, on the web and by every token of theirs (a token limited to some roots shows only
+  those roots' values), and their groups'; an undo of a group's edit by a member is the group's too, so the other
+  members see it was undone. No one else, an administrator in a step-up neither: the audit already tells an owner
+  who changed their records. Writes before the upgrade have no history.

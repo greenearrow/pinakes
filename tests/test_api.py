@@ -15,9 +15,9 @@ import time
 import unittest
 from unittest import mock
 
-from pinakes import queries
+from pinakes import compat, queries
 from pinakes.ingest import Ingester, schema_missing
-from tests.test_server import PGHOST, SERVER, UPGRADES, ServerCase, admin_conn, psycopg
+from tests.test_server import PGHOST, SERVER, UPGRADES, ServerCase, admin_conn, psycopg, replaced_function
 
 TOP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -140,6 +140,8 @@ class ApiCase(ServerCase):
                 scrub = f.read()
             start = scrub.index("CREATE OR REPLACE FUNCTION mark_changes")
             c.execute("SET search_path = pinakes; " + scrub[start:scrub.index("END $$;", start) + len("END $$;")])
+            # and as edits.sql, last, replaces it again (each mark kept, ROADMAP 62)
+            c.execute(replaced_function("edits.sql", "mark_changes"))
             c.execute("RESET search_path")
             # and the files policy as files-policy.sql, last in the order, wraps visible_acls() (ROADMAP 48)
             with open(os.path.join(UPGRADES, "files-policy.sql")) as f:
@@ -284,12 +286,12 @@ class TestApi(ApiCase):
         self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
         # GET only, but for signing in and out (pinakes --as), the review marks and lineage decisions a token's
-        # review scope allows and the tags its tag scope allows (the database checks the scope again)
+        # review scope allows, the tags its tag scope allows, and undoing either (the database checks the scope again)
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
         posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
         self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review", "/api/v1/decide",
-                                 "/api/v1/tag"})
+                                 "/api/v1/tag", "/api/v1/undo"})
         for rule in api:
             self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
@@ -1242,6 +1244,360 @@ def make_kind_token(case, person, scopes=("read",), roots=None, client="laptop-1
         c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, NULL, %s)",
                   (client, hashlib.sha256(secret.encode()).digest(), list(scopes), roots, gid))
     return secret
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestEdits(ServerCase):
+    """pinakes edits and pinakes undo (ROADMAP 62): every review mark, tag and note, and lineage decision kept as an
+    edit with who made it, by which token or on the web, and the values before; an undo puts them back, refused
+    where a value changed since. user-2 co-owns people/user-1/team; the household owns household/; user-3 is no
+    member of it."""
+
+    U = "people/user-1/"
+    X, Y = U + "x/notes.txt", U + "y/notes.txt"
+    P = U + "trip/p.jpg"
+    server_toml = SERVER + """
+[people.user-3]
+display = "User Three"
+roles = ["person"]
+[[ownership.rule]]
+root = "store"
+folder = "household"
+owner = "household"
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/team"
+person = "user-2"
+as = "co-owner"
+"""
+    GONE = (U + "cleanup/a.txt", U + "cleanup/b.txt", U + "team/t.txt", "household/old.txt")
+
+    def setUp(self):
+        super().setUp()
+        t0 = time.time() - 86400
+        for rel in self.GONE + (self.P,):
+            self.write("server-1", "store", rel, b"content of " + rel.encode())
+        self.write("server-1", "store", self.X, os.urandom(1000), mtime=t0)
+        self.write("laptop-1", "downloads", "d.txt", b"downloads")
+        self.scan("server-1", "store")
+        self.scan("laptop-1", "downloads")
+        self.write("server-1", "store", self.Y, os.urandom(1010), mtime=t0 + 1)
+        for rel in self.GONE:
+            os.remove(self.path("server-1", "store", rel))
+        self.scan("server-1", "store")
+        self.cli = None
+
+    def as_(self, person, scopes=("read", "review", "tag"), roots=None, secret=None):
+        if self.cli:
+            self.cli.close()
+        self.cli = CliRun(self, person if not secret else None, scopes, roots)
+        if secret:
+            CliRun.save(self.cli.home_token(), secret)
+        self.addCleanup(lambda: self.cli and self.cli.close())
+        return self.cli
+
+    def edits(self, cli, *args):
+        return json.loads(cli("edits", "--json", *args))
+
+    def marks(self):
+        return dict(self.q("SELECT hi.old_relpath, m.mark FROM pinakes.review_marks m "
+                           "JOIN pinakes.history hi USING (history_id)"))
+
+    def tags(self, rel=None):
+        got = self.q("SELECT m.vals->'subject' FROM pinakes.metadata m JOIN pinakes.files f USING (file_id) "
+                     "WHERE f.relpath = %s AND m.source = 'person'", (rel or self.P,))
+        return got[0][0] if got else None
+
+    def decision(self):
+        return self.q("SELECT decision FROM pinakes.lineage WHERE to_file_id = %s", (self.file("store", self.Y),))[0][0]
+
+    def gone_id(self, rel):
+        return self.q("SELECT history_id FROM pinakes.history WHERE kind = 'gone' AND old_relpath = %s", (rel,))[0][0]
+
+    def post(self, cli, call, body):
+        with open(cli.home_token()) as f:
+            token = f.read().strip()
+        r = cli.app.test_client().post("/api/v1/" + call, json=body, headers={"Authorization": "Bearer " + token})
+        return r.status_code, r.get_json()
+
+    def web_mark(self, cli, person, rel, mark):
+        """A mark made on the web's Changes page, signed in as the person."""
+        self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) SELECT person_id, %s "
+                          "FROM pinakes.people WHERE name = %s ON CONFLICT DO NOTHING",
+                          (auth.hash_password(PASSWORDS[person]), person))
+        c = cli.app.test_client()
+        csrf = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").get_data(as_text=True)).group(1)
+        c.post("/login", data={"csrf": csrf, "name": person, "password": PASSWORDS[person]})
+        csrf = re.search(r'name="csrf" value="([^"]+)"', c.get("/reports/changes").get_data(as_text=True)).group(1)
+        r = c.post("/reports/changes/mark", data={"csrf": csrf, "mark": mark, "id": self.gone_id(rel)})
+        self.assertEqual(r.status_code, 302)
+
+    def test_each_write_is_listed_with_its_token_and_undone(self):
+        cli = self.as_("user-1")
+        self.assertEqual(self.edits(cli), {"rows": [], "total": 0, "limit": 100, "offset": 0})
+        cli("review", "intended", "store:" + self.U + "cleanup/", "--yes", cwd=self.tmp)
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)             # the same again: no edit
+        cli("relatives", "store:" + self.Y, "--reject", "store:" + self.X, cwd=self.tmp)
+        self.web_mark(cli, "user-1", self.U + "team/t.txt", "restore")
+        self.web_mark(cli, "user-1", self.U + "team/t.txt", "restore")              # unchanged: no edit
+        got = self.edits(cli)
+        self.assertEqual(got["total"], 4)
+        rows = got["rows"]
+        self.assertEqual([(r["action"], r["changes"], r["token"], r["mine"], r["before"], r["undone_by"])
+                          for r in rows],
+                         [("review", 1, None, True, None, None), ("lineage", 1, "laptop-1", True, None, None),
+                          ("metadata", 1, "laptop-1", True, None, None), ("review", 2, "laptop-1", True, None, None)])
+        self.assertEqual(rows[0]["after"]["mark"], "restore")
+        self.assertEqual((rows[1]["other_relpath"], rows[1]["relpath"], rows[1]["after"]["decision"]),
+                         (self.X, self.Y, "rejected"))
+        self.assertEqual(rows[2]["after"], {"plain": {"subject": ["holiday"]}, "hidden": {}})
+        review, lineage, tagged, web = rows[3]["edit"], rows[1]["edit"], rows[2]["edit"], rows[0]["edit"]
+        out = cli("edits", cwd=self.tmp)
+        self.assertIn("your edits in the last 7 days:", out)
+        self.assertRegex(out, r"you, on the web +review +1 +store:%steam/t.txt +none -> restore" % self.U)
+        self.assertRegex(out, r"you, laptop-1 +lineage +1 +store:%s \(from notes.txt\) +none -> rejected" % self.Y)
+        self.assertRegex(out, r"you, laptop-1 +metadata +1 +store:%s +none -> subject holiday" % self.P)
+        self.assertIn("4 of 4", out)
+        # --token: that token's only; --days: an older edit only when asked
+        self.assertEqual(self.edits(cli, "--token", "laptop-1")["total"], 3)
+        self.assertEqual(self.edits(cli, "--token", "workstation-1")["total"], 0)
+        with admin_conn(self.db) as c:
+            c.execute("UPDATE pinakes.edits SET at = now() - interval '10 days' WHERE edit_id = %s", (review,))
+        self.assertEqual(self.edits(cli)["total"], 3)
+        self.assertEqual(self.edits(cli, "--days", "30")["total"], 4)
+        # undo puts each value back, as an edit of its own, which can be undone in turn
+        self.assertEqual(self.marks(), {self.U + "cleanup/a.txt": "intended", self.U + "cleanup/b.txt": "intended",
+                                        self.U + "team/t.txt": "restore"})
+        before = self.q("SELECT history_id, mark, marked_by, marked_at FROM pinakes.review_marks ORDER BY 1")
+        out = cli("undo", str(review), str(lineage), str(tagged), cwd=self.tmp)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertRegex(lines[0], r"undid edit %d: 1 value\(s\) put back, as edit \d+" % lineage)  # newest first
+        self.assertRegex(lines[2], r"undid edit %d: 2 value\(s\) put back, as edit \d+" % review)
+        self.assertEqual(self.marks(), {self.U + "team/t.txt": "restore"})
+        self.assertIsNone(self.decision())
+        self.assertIsNone(self.tags())
+        got = self.edits(cli, "--days", "30")["rows"]
+        undone = {r["edit"]: r["undone_by"] for r in got}
+        undo_review = undone[review]
+        self.assertEqual([r for r in got if r["edit"] == undo_review][0]["undoes"], review)
+        self.assertIn("undo %d (review)" % review, cli("edits", "--days", "30", cwd=self.tmp))
+        # the same undo again: its values changed since, by the undo
+        msg = cli("undo", str(review), cwd=self.tmp, code=1)
+        self.assertEqual(msg, "pinakes: 1 of 1 edit(s) not undone")
+        self.assertRegex(cli.out, r"edit %d not undone: store:%scleanup/\w.txt changed since, by edit %d \("
+                                  r"\d{4}-\d\d-\d\d \d\d:\d\d UTC, you, token laptop-1\)" % (review, self.U, undo_review))
+        cli("undo", str(undo_review), cwd=self.tmp)                                 # the undo undone: back again
+        self.assertEqual(self.q("SELECT history_id, mark, marked_by, marked_at FROM pinakes.review_marks ORDER BY 1"),
+                         before)                                                    # as it was, its time too
+        # two writes of one value: the earlier is refused until the later is undone, or both at once
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)
+        cli("tag", "store:" + self.P, "--add", "beach", cwd=self.tmp)
+        first, second = [r["edit"] for r in self.edits(cli, "--token", "laptop-1")["rows"][:2]][::-1]
+        self.assertIn("changed since, by edit %d" % second, cli("undo", str(first), cwd=self.tmp, code=1) + cli.out)
+        self.assertEqual(self.tags(), ["holiday", "beach"])
+        got = json.loads(cli("undo", str(first), str(second), "--json", cwd=self.tmp))
+        self.assertEqual([(r["edit"], r["changes"]) for r in got["undone"]], [(second, 1), (first, 1)])
+        self.assertEqual((got["asked"], got["refused"]), (2, []))
+        self.assertIsNone(self.tags())
+        self.assertIn("needs edit numbers", cli("undo", cwd=self.tmp, code=1))
+        self.assertIn("x is not one", cli("undo", "x", cwd=self.tmp, code=1))
+
+    def test_another_person_neither_sees_nor_undoes_them(self):
+        cli = self.as_("user-1")
+        cli("review", "restore", "store:" + self.U + "team/", "--yes", cwd=self.tmp)
+        cli("tag", "store:" + self.U + "team/", "--add", "x", "--yes", cwd=self.tmp)   # a gone file: nothing tagged
+        cli("tag", "store:" + self.P, "--note", "mine", cwd=self.tmp)
+        mine = [r["edit"] for r in self.edits(cli)["rows"]]
+        self.assertEqual(len(mine), 2)
+        her = self.as_("user-2")
+        self.assertEqual(self.edits(her)["total"], 0)
+        status, body = self.post(her, "undo", {"edits": mine})
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted((r["edit"], r["refused"], r["message"]) for r in body["refused"]),
+                         sorted((e, "not_yours", "no edit %d of yours" % e) for e in mine))
+        self.assertEqual(body["undone"], [])
+        self.assertEqual((self.marks(), self.tags()), ({self.U + "team/t.txt": "restore"}, None))
+        self.assertEqual(self.q("SELECT m.vals FROM pinakes.metadata m WHERE m.source = 'person'"),
+                         [({"description": "mine"},)])
+        # as a co-owner she marks the change again: his undo is refused, naming her edit without showing it
+        self.assertEqual(self.post(her, "review", {"mark": "intended", "ids": [self.gone_id(self.U + "team/t.txt")]}),
+                         (200, {"asked": 1, "marked": 1}))
+        (hers,) = [r["edit"] for r in self.edits(her)["rows"]]
+        cli = self.as_("user-1")
+        self.assertNotIn(hers, [r["edit"] for r in self.edits(cli)["rows"]])
+        cli("undo", str(mine[-1]), cwd=self.tmp, code=1)
+        self.assertIn("store:%steam/t.txt changed since, by another person's edit %d" % (self.U, hers), cli.out)
+        self.assertEqual(self.marks(), {self.U + "team/t.txt": "intended"})
+        # and the database itself shows no one else's, and undoes none for no one
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            c.execute("SELECT set_config('pinakes.person', person_id::text, true) FROM pinakes.people "
+                      "WHERE name = 'user-3'")
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.edits").fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.edit_items").fetchone()[0], 0)
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "no person set"):
+                c.execute("SELECT * FROM pinakes.undo_edits(%s)", (mine,))
+
+    def test_a_groups_writes_are_listed_for_its_members(self):
+        grp = make_kind_token(self, "user-1", scopes=("read", "review"), group="household", client="tidy")
+        cli = self.as_("user-1", secret=grp)
+        out = cli("review", "intended", "store:household/", "--yes", cwd=self.tmp)
+        self.assertIn("marked 1 of 1", out)
+        (g,) = self.edits(cli)["rows"]
+        self.assertEqual((g["group"], g["person"], g["token"], g["mine"]), ("household", None, "tidy", None))
+        for person, sees in (("user-2", True), ("user-3", False)):
+            got = self.edits(self.as_(person))["rows"]
+            self.assertEqual([r["edit"] for r in got], [g["edit"]] if sees else [], person)
+        self.assertIn("household, tidy", self.as_("user-2")("edits", cwd=self.tmp))
+        status, body = self.post(self.as_("user-3"), "undo", {"edits": [g["edit"]]})
+        self.assertEqual(body["refused"][0]["refused"], "not_yours")
+        her = self.as_("user-2")                                    # a member undoes the group's mark
+        self.assertIn("undid edit %d: 1 value(s) put back" % g["edit"], her("undo", str(g["edit"]), cwd=self.tmp))
+        self.assertEqual(self.marks(), {})
+        (undo,) = [r for r in self.edits(self.as_("user-1"))["rows"] if r["undoes"]]
+        self.assertEqual((undo["person"], undo["group"], undo["mine"]), ("User Two", "household", False))
+        self.assertIn("User Two for household, laptop-1", self.cli("edits", cwd=self.tmp))
+        self.assertEqual(self.q("SELECT affects, detail FROM pinakes.audit WHERE action = 'undo'"),
+                         [([self.pid("user-1"), self.pid("user-2")],
+                           {"edit": g["edit"], "undone_by": undo["edit"], "action": "review", "changes": 1,
+                            "token": "laptop-1", "group": "household"})])
+
+    def pid(self, name):
+        return self.q("SELECT person_id FROM pinakes.people WHERE name = %s", (name,))[0][0]
+
+    def test_a_token_undoes_only_with_its_scopes_and_in_its_roots(self):
+        cli = self.as_("user-1")
+        cli("review", "intended", "store:" + self.U + "cleanup/", "--yes", cwd=self.tmp)
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)
+        tagged, review = [r["edit"] for r in self.edits(cli)["rows"]]
+        cli = self.as_("user-1", scopes=("read",))
+        self.assertEqual(self.edits(cli)["total"], 2)                              # listed, yes
+        self.assertEqual(cli("undo", str(review), cwd=self.tmp, code=1),
+                         "pinakes: this token has neither the review nor the tag scope")
+        cli = self.as_("user-1", scopes=("read", "review"))
+        cli("undo", str(tagged), str(review), cwd=self.tmp, code=1)
+        self.assertIn("edit %d not undone: this token doesn't have the tag scope" % tagged, cli.out)
+        self.assertIn("undid edit %d" % review, cli.out)
+        self.assertEqual((self.marks(), self.tags()), ({}, ["holiday"]))
+        # limited to downloads: the store's edits are out of sight, and out of reach
+        cli = self.as_("user-1", roots=[self.q("SELECT root_id FROM pinakes.roots WHERE label = 'downloads'")[0][0]])
+        self.assertEqual(self.edits(cli)["total"], 0)
+        cli("undo", str(tagged), cwd=self.tmp, code=1)
+        self.assertIn("edit %d not undone: a file it changed is no longer yours to change, or outside this token's "
+                      "roots" % tagged, cli.out)
+        self.assertEqual(self.tags(), ["holiday"])
+        cli("tag", "downloads:d.txt", "--add", "x", cwd=self.tmp)
+        (d,) = [r for r in self.edits(cli)["rows"]]
+        self.assertEqual((d["root"], d["relpath"]), ("downloads", "d.txt"))
+        # an ops token has no edits
+        ops = make_kind_token(self, "user-1", scopes=("ops",))
+        cli = self.as_("user-1", secret=ops)
+        self.assertEqual(cli("edits", cwd=self.tmp, code=1),
+                         "pinakes: this token doesn't have the read or review or tag scope")
+
+    def test_a_decision_on_a_link_gone_or_decided_since(self):
+        cli = self.as_("user-1")
+        cli("relatives", "store:" + self.Y, "--reject", "store:" + self.X, cwd=self.tmp)
+        cli("relatives", "store:" + self.Y, "--confirm", "store:" + self.X, cwd=self.tmp)
+        later, first = [r["edit"] for r in self.edits(cli)["rows"]]
+        cli("undo", str(first), cwd=self.tmp, code=1)
+        self.assertRegex(cli.out, r"edit %d not undone: store:%s changed since, by edit %d \(.*, you, token laptop-1\)"
+                         % (first, self.Y, later))
+        self.assertEqual(self.decision(), "confirmed")
+        self.conn.execute("DELETE FROM pinakes.lineage")                # as tidy drops an edge
+        cli("undo", str(later), cwd=self.tmp, code=1)
+        self.assertIn("edit %d not undone: the link to store:%s is no longer in the catalog" % (later, self.Y),
+                      cli.out)
+
+    def test_nothing_overwrites_an_edit(self):
+        cli = self.as_("user-1")
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)
+        for role in ("pinakes_app", "pinakes_ingest"):
+            for sql in ("UPDATE pinakes.edits SET at = now()", "DELETE FROM pinakes.edit_items",
+                        "UPDATE pinakes.edit_items SET after = NULL", "DELETE FROM pinakes.edits"):
+                with psycopg.connect(host=PGHOST, user=role, dbname=self.db) as c:
+                    with self.assertRaises(psycopg.errors.InsufficientPrivilege, msg=(role, sql)):
+                        c.execute(sql)
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("INSERT INTO pinakes.edits (person_id, action) VALUES (1, 'review')")
+            c.rollback()
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("SELECT pinakes.edit_now('review')")
+        # a file's row going (as tidy deletes a backup's gone ones) leaves its edits, out of sight
+        self.conn.execute("DELETE FROM pinakes.files WHERE file_id = %s", (self.file("store", self.P),))
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.edit_items")[0][0], 1)
+        self.assertEqual(self.edits(cli)["total"], 0)
+
+    def test_upgrade_file_matches_the_schema(self):
+        tables = ["edits", "edit_items"]
+        fns = ["review_value", "lineage_value", "metadata_value", "same_value", "edit_now", "my_edit", "undo_edits",
+               "mark_changes", "decide_lineage", "set_file_metadata"]
+        defs = ("SELECT (SELECT array_agg(table_name || ':' || column_name || ':' || data_type || ':' || is_nullable "
+                "        || ':' || coalesce(column_default, '') ORDER BY table_name, ordinal_position) "
+                "        FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = ANY (%(tables)s)), "
+                "(SELECT array_agg(conrelid::regclass || ':' || pg_get_constraintdef(oid) "
+                "                  ORDER BY conrelid::regclass::text, pg_get_constraintdef(oid)) FROM pg_constraint "
+                " WHERE conrelid = ANY (SELECT to_regclass('pinakes.' || t) FROM unnest(%(tables)s::text[]) t)), "
+                "(SELECT array_agg(indexdef ORDER BY indexdef) FROM pg_indexes "
+                " WHERE schemaname = 'pinakes' AND tablename = ANY (%(tables)s)), "
+                "(SELECT array_agg(tablename || ':' || policyname || ':' || cmd || ':' || qual ORDER BY policyname) "
+                " FROM pg_policies WHERE schemaname = 'pinakes' AND tablename = ANY (%(tables)s)), "
+                "(SELECT array_agg(relname || ':' || relrowsecurity ORDER BY relname) FROM pg_class "
+                " WHERE relnamespace = 'pinakes'::regnamespace AND relname = ANY (%(tables)s)), "
+                "(SELECT array_agg(pg_get_functiondef(p.oid) ORDER BY p.proname) FROM pg_proc p "
+                " WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname = ANY (%(fns)s)), "
+                "(SELECT array_agg(grantee || ':' || routine_name || ':' || privilege_type "
+                "                 ORDER BY grantee, routine_name, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = ANY (%(fns)s)), "
+                "(SELECT array_agg(table_name || ':' || grantee || ':' || privilege_type "
+                "                  ORDER BY table_name, grantee, privilege_type) "
+                " FROM information_schema.table_privileges "
+                " WHERE table_schema = 'pinakes' AND table_name = ANY (%(tables)s)), "
+                "(SELECT array_agg(sequence_name::text ORDER BY sequence_name) FROM information_schema.sequences "
+                " WHERE sequence_schema = 'pinakes' AND sequence_name LIKE 'edit%%'), "
+                "(SELECT array_agg(c.relname || ':' || has_sequence_privilege(r, c.oid, 'USAGE') ORDER BY c.relname, r) "
+                " FROM pg_class c, unnest(ARRAY['pinakes_app', 'pinakes_ingest']) r "
+                " WHERE c.relnamespace = 'pinakes'::regnamespace AND c.relkind = 'S' AND c.relname LIKE 'edit%%')")
+        args = {"tables": tables, "fns": fns}
+
+        def older(upgrade, name):
+            with open(os.path.join(UPGRADES, upgrade)) as f:
+                text = f.read()
+            start = re.search(r"^CREATE (OR REPLACE )?FUNCTION %s\(" % name, text, re.M).start()
+            fn = text[start:text.index("END $$;", start) + len("END $$;")]
+            return "SET search_path = pinakes; " + re.sub(r"^CREATE (OR REPLACE )?FUNCTION",
+                                                          "CREATE OR REPLACE FUNCTION", fn)
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs, args).fetchone()
+            # back to the catalog before it: the writes as release 10's upgrades before this one left them
+            c.execute(older("scrub.sql", "mark_changes"))
+            c.execute(older("lineage-decisions.sql", "decide_lineage"))
+            c.execute(older("person-metadata.sql", "set_file_metadata"))
+            c.execute("DROP FUNCTION pinakes.undo_edits(bigint[]), pinakes.edit_now(text), "
+                      "pinakes.review_value(bigint), pinakes.lineage_value(bigint, bigint, text), "
+                      "pinakes.metadata_value(bigint, text, int), pinakes.same_value(jsonb, jsonb)")
+            c.execute("DROP TABLE pinakes.edit_items, pinakes.edits")
+            c.execute("DROP FUNCTION pinakes.my_edit(int, int)")
+            c.execute("RESET search_path")
+            self.assertNotEqual(c.execute(defs, args).fetchone(), fresh)
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["edits.sql"]).fetchone()[0])
+            self.assertEqual(schema_missing(c), ["edits.sql"])
+            with open(os.path.join(UPGRADES, "edits.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertEqual(schema_missing(c), [])
+            self.assertEqual(c.execute(defs, args).fetchone(), fresh)
+        self.assertIn("pinakes_app:undo_edits:EXECUTE", fresh[6])
+        self.assertNotIn("pinakes_app:edit_now:EXECUTE", fresh[6])
+        # and the writes work as before, kept now
+        cli = self.as_("user-1")
+        cli("tag", "store:" + self.P, "--add", "holiday", cwd=self.tmp)
+        self.assertEqual(self.edits(cli)["total"], 1)
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")

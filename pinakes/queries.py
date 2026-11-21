@@ -1070,6 +1070,80 @@ def audit_mine(conn, limit=None, offset=0, sort=None, direction="asc"):
                 + order(AUDIT_SORT, sort, direction, "a.at DESC, a.audit_id DESC") + PAGE, (limit, offset))
 
 
+# The catalog's own writes (ROADMAP 62): review marks, lineage decisions and person-entered metadata, each write call
+# an edit, kept with the values before. Written only by the database's functions; row-level security shows a person
+# their own and their groups', and of each only the values on files they still see.
+def edits(conn, days=7, client=None, limit=None, offset=0):
+    """The person's edits of the last `days`, the newest first: their own (on the web and by each of their tokens;
+    `client`: by that token only, by its name) and their groups'. Each with how many values it changed that they can
+    still see, the first of those (its file, and an edge's other end), the edit it undoes and the one that undid it."""
+    return rows(conn, """SELECT e.edit_id AS edit, e.at, e.action, p.display AS person, g.name AS "group",
+                                e.person_id = pinakes.current_person() AS mine, e.client AS token, e.undoes,
+                                (SELECT min(u.edit_id) FROM pinakes.edits u WHERE u.undoes = e.edit_id) AS undone_by,
+                                i.changes, r.label AS root, f.relpath, ro.label AS other_root,
+                                fo.relpath AS other_relpath, fi.kind, fi.schema, fi.before, fi.after, """ + TOTAL + """
+                         FROM pinakes.edits e
+                         LEFT JOIN pinakes.people p ON p.person_id = e.person_id
+                         LEFT JOIN pinakes.groups g ON g.group_id = e.group_id
+                         CROSS JOIN LATERAL (SELECT count(*) AS changes, min(it.item_id) AS first
+                                             FROM pinakes.edit_items it WHERE it.edit_id = e.edit_id) i
+                         JOIN pinakes.edit_items fi ON fi.item_id = i.first
+                         JOIN pinakes.files f ON f.file_id = fi.file_id JOIN pinakes.roots r ON r.root_id = f.root_id
+                         LEFT JOIN pinakes.files fo ON fo.file_id = fi.other_file_id
+                         LEFT JOIN pinakes.roots ro ON ro.root_id = fo.root_id
+                         WHERE e.at > now() - make_interval(days => %s) AND (%s::text IS NULL OR e.client = %s)
+                         ORDER BY e.edit_id DESC""" + PAGE, (days, client, client, limit, offset))
+
+
+UNDO_LIMIT = 1000           # edits one undo names
+
+
+def undo_edits(conn, ids):
+    """Undo the person's edits (the database decides what they may, edit by edit, the newest first): one row per
+    edit asked, the undo's own edit and how many values it put back, or why not, in words for a person (`message`)
+    with the file it concerns (ROOT:PATH, if they still see it) and the later edit that changed it since."""
+    out = []
+    for r in rows(conn, "SELECT * FROM pinakes.undo_edits(%s::bigint[])", (list(ids),)):
+        if not r["refused"]:
+            out.append({"edit": r["edit"], "undone_by": r["undone_by"], "changes": r["changes"]})
+            continue
+        f = file_by_id(conn, r["refused_file"]) if r["refused_file"] else None
+        where = "%s:%s" % (f["root"], f["relpath"]) if f else None
+        action = conn.execute("SELECT action FROM pinakes.edits WHERE edit_id = %s", (r["edit"],)).fetchone()
+        message = {
+            "not_yours": "no edit %d of yours" % r["edit"],
+            "no_scope": "this token doesn't have the %s scope" % ("tag" if action and action[0] == "metadata"
+                                                                  else "review"),
+            "gone": "the link to %s is no longer in the catalog" % (where or "a file"),
+            "not_now": "%s is no longer yours to change, or outside this token's roots" % (where or "a file it changed"),
+        }.get(r["refused"])
+        if r["refused"] == "changed":
+            message = "%s changed since" % (where or "a value it wrote")
+            later = rows(conn, """SELECT e.at, e.person_id = pinakes.current_person() AS mine, p.display AS person,
+                                         g.name AS "group", e.client AS token
+                                  FROM pinakes.edits e LEFT JOIN pinakes.people p ON p.person_id = e.person_id
+                                  LEFT JOIN pinakes.groups g ON g.group_id = e.group_id
+                                  WHERE e.edit_id = %s""", (r["later"],)) if r["later"] else []
+            if later:
+                message += ", by edit %d (%s, %s)" % (r["later"], later[0]["at"].astimezone(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+                                                      edit_by(later[0]))
+            elif r["later"]:
+                message += ", by another person's edit %d" % r["later"]
+            else:
+                message += ", not by an edit"
+        out.append({"edit": r["edit"], "refused": r["refused"], "message": message, "file": where,
+                    "later": r["later"]})
+    return out
+
+
+def edit_by(e):
+    """Who made an edit, for a person reading it: you, or the group, by token or on the web."""
+    who = "you" if e["mine"] else e["person"] or ""
+    if e["group"]:
+        who = "%s for %s" % (who, e["group"]) if who else "group " + e["group"]
+    return "%s, %s" % (who, "token " + e["token"] if e["token"] else "on the web")
+
+
 def owners_of(conn, file_ids):
     """Owner person ids of these files (for the step-up audit)."""
     if not file_ids:

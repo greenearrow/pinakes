@@ -32,6 +32,13 @@
                                        the file, or on every file under the folder: shown, then changed once you say
                                        yes (a file: at once). Without an option: the tags and notes there. Only where
                                        you own, co-own or annotate; the token needs the tag scope. --note "" removes it
+  pinakes edits [--token CLIENT]       your own writes in the last --days (7), the newest first: review marks,
+                                       lineage decisions, tags, notes and other metadata, on the web and by each of
+                                       your tokens (--token: that one's, by its name), and your groups'; each with
+                                       how many values it changed, the first, and what undid it
+  pinakes undo EDIT...                 put back the values before those edits (numbers as edits lists them), the
+                                       newest first; an edit whose value changed since is refused, naming the later
+                                       one. An undo is an edit too. The token needs the scope the edit needed
   pinakes restores [PATH] [--back]     the changes marked restore and the backup copies holding their content;
                                        --back: also those whose content is back where it was
   pinakes growth [FOLDER] [--weeks N]  per folder under FOLDER (none, outside every root: each root's top
@@ -53,7 +60,7 @@
                                        token, which an operator makes on the account page, and sees nothing else
                                        but `stale`; on the catalog server, [client] url can be http://127.0.0.1.
   A list (find, where, history, versions, only-here, safe-to-delete, backed-up, folder-copies, dupes, changes,
-  manifests, meta, restores, access) is one page: 100 rows, or --limit N (at most 10000), from --offset N; under it,
+  manifests, meta, restores, access, edits) is one page: 100 rows, or --limit N (at most 10000), from --offset N; under it,
   "N of TOTAL" and the next page's --offset.
   Add --json for JSON (a list: {"rows", "total", "limit", "offset"}), --as NAME to ask as another person (their
   password and second factor, or a token of theirs, at a hidden prompt; the command then sees only what they may see).
@@ -421,9 +428,9 @@ FILE = ("where", "history", "versions", "lineage")                  # take one f
 FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
-                                         "restores", "relatives", "tag")
+                                         "restores", "relatives", "tag", "edits", "undo")
 PAGED = ("find", "where", "history", "versions", "only-here", "backed-up", "folder-copies", "dupes", "changes",
-         "manifests", "meta", "restores", "access")    # lists the API answers a page of, with the total (ROADMAP 61)
+         "manifests", "meta", "restores", "access", "edits")    # lists the API answers a page of, with the total (61)
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -514,6 +521,9 @@ def run(api, a, cfg):
 
     if a.cmd == "review":
         review(api, a, cfg)
+        return
+    if a.cmd == "undo":
+        undo(api, a)
         return
     if a.cmd == "relatives":
         relatives(api, a, cfg)
@@ -609,6 +619,14 @@ def run(api, a, cfg):
             _print(got["rows"], False, ["at", "actor", "action", "detail"])
             _page_line(got)
             return
+    elif a.cmd == "edits":
+        got = api.get("edits", days=a.days, token=a.token, **page)
+        if not a.json:
+            print("your edits in the last %d days%s:" % (a.days, ", by the token " + a.token if a.token else ""))
+            got["rows"] = edit_rows(got["rows"])
+            _print(got["rows"], False, ["edit", "at", "by", "action", "changes", "first", "change", "undone"])
+            _page_line(got)
+            return
     elif a.cmd == "manifests":
         where = loc_or_everywhere("any")
         got = api.get("manifests", loc=where, **page)
@@ -632,6 +650,57 @@ def run(api, a, cfg):
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
         _page_line(got)
+
+
+def edit_rows(rows):
+    """The edits list for reading (ROADMAP 62): who and by what, the first value changed, before and after."""
+    out = []
+    for r in rows:
+        who = "you" if r["mine"] else r["person"] or ""
+        if r["group"]:
+            who = "%s for %s" % (who, r["group"]) if who else r["group"]
+        what = r["action"] if not r["undoes"] else "undo %d (%s)" % (r["undoes"], r["action"])
+        first = "%s:%s" % (r["root"], r["relpath"])
+        if r["kind"]:                                   # the later file, and the name it came from (--json: both)
+            first += " (from %s)" % r["other_relpath"].rsplit("/", 1)[-1]
+        out.append({"edit": r["edit"], "at": r["at"], "by": "%s, %s" % (who, r["token"] or "on the web"),
+                    "action": what, "changes": r["changes"], "first": first,
+                    "change": "%s -> %s" % (_value(r, r["before"]), _value(r, r["after"])),
+                    "undone": "by %d" % r["undone_by"] if r["undone_by"] else ""})
+    return out
+
+
+def _value(r, v):
+    """One value an edit changed, short: a mark, a decision, or the fields entered (sensitive ones with the rest)."""
+    if v is None:
+        return "none"
+    if r["action"] == "review":
+        return v["mark"]
+    if r["action"] == "lineage":
+        return v["decision"]
+    vals = dict(v.get("plain") or {}, **(v.get("hidden") or {}))
+    return "; ".join("%s %s" % (k, _cell(vals[k])) for k in sorted(vals)) or "none"
+
+
+def undo(api, a):
+    """pinakes undo EDIT...: the values before those edits put back, each edit whole or refused (ROADMAP 62)."""
+    ids = []
+    for x in [a.arg] + (a.more or []):
+        try:
+            ids.append(int(x))
+        except (TypeError, ValueError):
+            raise Failed("pinakes undo needs edit numbers, as pinakes edits lists them%s" % (
+                "; %s is not one" % x if x else ""))
+    got = api.post("undo", {"edits": ids})
+    if a.json:
+        print(json.dumps(got, indent=1))
+    else:
+        for r in got["undone"]:
+            print("undid edit %d: %d value(s) put back, as edit %d" % (r["edit"], r["changes"], r["undone_by"]))
+        for r in got["refused"]:
+            print("edit %d not undone: %s" % (r["edit"], r["message"]))
+    if got["refused"]:
+        raise Failed("%d of %d edit(s) not undone" % (len(got["refused"]), got["asked"]))
 
 
 def _page_line(got):
@@ -794,7 +863,7 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     ap.add_argument("cmd", nargs="?", metavar="COMMAND", choices=COMMANDS)
     ap.add_argument("arg", nargs="?")
-    ap.add_argument("path", nargs="?", help=argparse.SUPPRESS)          # review MARK PATH
+    ap.add_argument("more", nargs="*", help=argparse.SUPPRESS)          # review MARK PATH, undo EDIT...
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--down", action="store_true", help="lineage: what came from the file, not where it came from")
     ap.add_argument("--days", type=int, default=7)
@@ -814,6 +883,7 @@ def main(argv=None):
     ap.add_argument("--weeks", type=int, default=8, help="growth: how many weeks, this one counted (8)")
     ap.add_argument("--back", action="store_true", help="restores: also those whose content is back")
     ap.add_argument("--csv", action="store_true", help="export: one part, as CSV")
+    ap.add_argument("--token", metavar="CLIENT", help="edits: only those made by this token (its name)")
     ap.add_argument("--limit", type=int, metavar="N", help="a list: show N rows (the API's page: 100; at most 10000)")
     ap.add_argument("--offset", type=int, metavar="N", help="a list: from the row after the first N (0)")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
@@ -822,8 +892,9 @@ def main(argv=None):
     ap.add_argument("--versions", action="store_true", help=argparse.SUPPRESS)      # before ROADMAP 39
     ap.add_argument("--config", help=argparse.SUPPRESS)
     a = ap.parse_intermixed_args(argv)          # options before or after the command and its argument
-    if a.path and a.cmd != "review":
+    if a.more and a.cmd != "undo" and (a.cmd != "review" or len(a.more) > 1):
         ap.error("pinakes %s takes one argument" % a.cmd)
+    a.path = a.more[0] if a.more and a.cmd == "review" else None
     try:
         if a.versions:
             raise Failed("--versions is now `pinakes releases`, through the API with an ops token (made by an "

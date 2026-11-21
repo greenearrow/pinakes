@@ -70,6 +70,15 @@ chunk_overlap = 0.6
 """
 
 
+def replaced_function(upgrade, name):
+    """The CREATE OR REPLACE FUNCTION name of an upgrade file, to run after an older upgrade that made it: "SET
+    search_path = pinakes; " and the function through its END $$;."""
+    with open(os.path.join(UPGRADES, upgrade)) as f:
+        text = f.read()
+    start = text.index("CREATE OR REPLACE FUNCTION %s(" % name)
+    return "SET search_path = pinakes; " + text[start:text.index("END $$;", start) + len("END $$;")]
+
+
 @contextlib.contextmanager
 def in_time_zone(tz):
     """This process's local time zone set to tz (the server's, as the web and CLI would see it)."""
@@ -733,6 +742,8 @@ class TestReview(ServerCase):
                 scrub = f.read()
             start = scrub.index("CREATE OR REPLACE FUNCTION mark_changes")
             c.execute("SET search_path = pinakes; " + scrub[start:scrub.index("END $$;", start) + len("END $$;")])
+            # and as edits.sql replaces it (each mark kept, ROADMAP 62)
+            c.execute(replaced_function("edits.sql", "mark_changes"))
             c.execute("RESET search_path")                  # the file sets its own; compare as before
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertEqual(fresh[3:], (True, False))
@@ -2253,8 +2264,9 @@ class TestLineageDecisions(ServerCase):
             self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["lineage-decisions.sql"]).fetchone()[0])
             with open(os.path.join(UPGRADES, "lineage-decisions.sql")) as f:
                 c.execute(f.read())
-            c.execute("RESET search_path")
             self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["lineage-decisions.sql"]).fetchone()[0])
+            c.execute(replaced_function("edits.sql", "decide_lineage"))     # each decision kept (ROADMAP 62)
+            c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertIn("pinakes_app:EXECUTE", fresh[1])
 
@@ -3402,6 +3414,7 @@ class TestScrub(ServerCase):
             for name in ("scrub.sql", "unreported-roots.sql"):
                 with open(os.path.join(UPGRADES, name)) as f:
                     c.execute(f.read())
+            c.execute(replaced_function("edits.sql", "mark_changes"))       # and as edits.sql, later, has it (62)
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertTrue(fresh[3])
@@ -3838,7 +3851,8 @@ as = "annotator"
             self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["person-metadata.sql"]).fetchone()[0])
             with open(os.path.join(UPGRADES, "person-metadata.sql")) as f:
                 c.execute(f.read())
-            c.execute("RESET search_path")
             self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["person-metadata.sql"]).fetchone()[0])
+            c.execute(replaced_function("edits.sql", "set_file_metadata"))  # each change kept, as edits.sql has it
+            c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertIn("pinakes_app:share_sensitive:EXECUTE", fresh[1])

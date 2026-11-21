@@ -631,6 +631,28 @@ def create_app(cfg, connect=None):
             ids.append(f["file_id"])
         return api_answer({"files": ids, "decision": decision, "decided": queries.decide_lineage(g.db, *ids, decision)})
 
+    @api("edits", ("read", "review", "tag"))
+    def api_edits():
+        """The person's own writes (ROADMAP 62), on the web and by their tokens, and their groups': a page of edits,
+        the newest first, in the last days= (7), only token=CLIENT's if given. An ops token has none of the scopes."""
+        return page(queries.edits, _int_arg("days", 7, 1, 3650), request.args.get("token") or None)
+
+    @app.route(API + "undo", methods=["POST"])
+    def api_undo():
+        """Undo edits by their numbers (as `edits` listed them): each put back whole or refused, the database
+        deciding by the same rules as the writes (and, under a token, its scope of each edit's kind)."""
+        if not {"review", "tag"} & set(g.scopes):
+            return api_answer({"error": "this token has neither the review nor the tag scope"}, 403)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        ids = body.get("edits")
+        if not isinstance(ids, list) or not ids or len(ids) > queries.UNDO_LIMIT or not all(
+                isinstance(i, int) and not isinstance(i, bool) and 0 < i < 2 ** 62 for i in ids):
+            return api_answer({"error": "edits is a list of 1 to %d edit numbers" % queries.UNDO_LIMIT}, 400)
+        got = queries.undo_edits(g.db, ids)
+        return api_answer({"asked": len(set(ids)), "undone": [r for r in got if "undone_by" in r],
+                           "refused": [r for r in got if "refused" in r]})
+
     @app.route(API + "export")
     def api_export():
         """A person's export of their own records (ROADMAP 45): the files they own and what the catalog holds about

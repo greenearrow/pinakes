@@ -116,15 +116,8 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 
 ## Before the MCP server
 
-The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this comes first, and helps the
-command line and the web UI as much. 61 is built (REARVIEW.md). Left:
-
-62. [Security; also correctness] **A history of the catalog's own writes:** every review mark, tag and note, and
-    lineage decision is kept with who made it, by which token or on the web, when, and the value before; nothing
-    overwrites one. *Done when:* `pinakes edits [--token CLIENT] [--days N]` lists a person's writes, their own and
-    their tokens', and `pinakes undo EDIT...` puts back the value before, both with `--json` and tested through the
-    API; tests show a second person can neither see nor undo another's writes, an undo of a value changed since is
-    refused and names the later write, and a group token's writes are listed for its group's members.
+The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this came first, and helps the
+command line and the web UI as much. 61 and 62 are built (REARVIEW.md); nothing is left here.
 
 ## Soon: add-on modules
 
