@@ -181,6 +181,32 @@ class ApiCase(ServerCase):
 
 @unittest.skipUnless(web is not None, "Flask not installed")
 class TestApi(ApiCase):
+    def test_a_slow_query_is_stopped_and_the_next_answers(self):
+        """[web] statement_timeout: a query running past it is stopped in the database and answered 503, so a call
+        the command gave up on doesn't hold a thread and the database for minutes. Slowed here by a visible_acls()
+        that sleeps; the policy calls it once per query."""
+        cfg = server_config.loads('[web]\nsecure_cookies = false\nsession_key = "test-key"\n'
+                                  'statement_timeout = "1s"\n')
+        app = web.create_app(cfg, connect=self.app_conn)
+        app.testing = True
+        his = self.token("user-1")
+        self.assertEqual(self.get("changes?days=7", his, app.test_client())[0], 200)
+        with admin_conn(self.db) as c:
+            (real,) = c.execute("SELECT pg_get_functiondef('pinakes.visible_acls()'::regprocedure)").fetchone()
+            c.execute("CREATE OR REPLACE FUNCTION pinakes.visible_acls() RETURNS int[] LANGUAGE sql STABLE "
+                      "SECURITY DEFINER SET search_path = pinakes AS "
+                      "$$ SELECT (SELECT '{}'::int[] FROM pg_sleep(3)) $$")
+        try:
+            t0 = time.time()
+            status, body = self.get("changes?days=7", his, app.test_client())
+            self.assertLess(time.time() - t0, 2.5)
+            self.assertEqual((status, body), (503, {"error": "this took longer than 1 s and was stopped: ask for "
+                                                             "less (a folder, fewer days, a smaller page)"}))
+        finally:
+            with admin_conn(self.db) as c:
+                c.execute(real)
+        self.assertEqual(self.get("changes?days=7", his, app.test_client())[0], 200)
+
     # acting as exactly one person ----------------------------------------------------------------------------
     def test_a_token_acts_as_exactly_its_person(self):
         his, hers = self.token("user-1"), self.token("user-2")

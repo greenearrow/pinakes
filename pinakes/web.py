@@ -240,6 +240,9 @@ def create_app(cfg, connect=None):
                       SESSION_COOKIE_SECURE=web.get("secure_cookies", True),
                       PERMANENT_SESSION_LIFETIME=_seconds(web.get("idle_timeout", "30m")))
     step_minutes = _seconds(web.get("step_up_duration", "15m")) // 60
+    # The longest one statement may run (0: no limit). The command gives up at 60 s; a query running on after that
+    # held a thread and the database's time, and one slow call blocked everybody's for minutes.
+    statement_limit = _seconds(web.get("statement_timeout", "55s"))
     failures = {}
     api_failures = {}
 
@@ -260,6 +263,8 @@ def create_app(cfg, connect=None):
         # No JIT: row-level security's subplans make the planner's costs high, so PostgreSQL compiles short queries,
         # and compiling took longer than running them (ROADMAP 61: folder copies 1.6 s, 0.1 s without)
         g.db.execute("SET jit = off")
+        if statement_limit:
+            g.db.execute("SELECT set_config('statement_timeout', %s, false)", (str(statement_limit * 1000),))
         if request.path.startswith(API):
             return api_begin()          # by token only: no session cookie, so no form to forge
         g.person = session.get("person")
@@ -351,6 +356,17 @@ def create_app(cfg, connect=None):
             api_failures[addr] = recent + [time.time()]
             return api_answer({"error": "a valid token is needed (Authorization: Bearer ...)"}, 401)
         g.person, g.scopes, g.kind, g.group = row[0], tuple(row[1]), row[2], row[3]
+
+    @app.errorhandler(psycopg.errors.QueryCanceled)
+    def too_long(e):
+        db = g.get("db")
+        if db is not None:
+            db.rollback()
+        msg = ("this took longer than %d s and was stopped: ask for less (a folder, fewer days, a smaller page)"
+               % statement_limit)
+        if request.path.startswith(API):
+            return api_answer({"error": msg}, 503)
+        return Response(msg + "\n", status=503, mimetype="text/plain")
 
     @app.errorhandler(HTTPException)
     def http_error(e):

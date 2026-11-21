@@ -649,6 +649,74 @@ class TestReview(ServerCase):
             self.assertEqual(self.unreviewed(c), [self.U + "cleanup/%s.txt" % n for n in "ac"]
                              + [self.U + "kept/moved.txt"])
 
+    def test_changes_pages_the_same_as_the_whole_list(self):
+        """The page is cut before the copies are looked up: each sort, each way, page by page, gives the whole
+        list's rows in its order, with its total and its copies."""
+        with self.as_person("user-1") as c:
+            for sort in (None, "seen", "where", "what", "path"):
+                for direction in ("asc", "desc"):
+                    whole = queries.changes(c, 7, sort=sort, direction=direction)
+                    pages = []
+                    for offset in range(0, len(whole), 2):
+                        page = queries.changes(c, 7, limit=2, offset=offset, sort=sort, direction=direction)
+                        self.assertEqual({queries.page_total(page)}, {len(whole)}, (sort, direction))
+                        pages += page
+                    self.assertEqual(pages, whole, (sort, direction))
+            self.assertGreater(len(whole), 4)
+
+    def test_changes_looks_up_copies_for_its_page_only(self):
+        """The total counts every matching row, so a copy lookup under it ran for every gone file in the window (a
+        root with 45 k gone files ran past 300 s). Generated: many gone files, all of one content that many backup
+        files hold; the lookup runs once per row on the page, and still counts every copy."""
+        gone, held = 1500, 2000
+        with self.conn.transaction():
+            (hot,) = self.q("SELECT content_id FROM pinakes.files WHERE relpath LIKE %s",
+                            ("%/" + self.U + "cleanup/c.txt",))[0]
+            self.conn.execute("""INSERT INTO pinakes.files (root_id, relpath, name, content_id, size, dev, ino,
+                                                            acl_id, owner_id, snapshot, backup_of)
+                                 SELECT root_id, 'gen-' || i || '/' || relpath, name, content_id, size, dev,
+                                        1000000 + i, acl_id, owner_id, snapshot, backup_of
+                                 FROM pinakes.files, generate_series(1, %s) i
+                                 WHERE content_id = %s AND gone_on IS NULL
+                                   AND root_id = (SELECT root_id FROM pinakes.roots WHERE label = 'snapshots')""",
+                              (held, hot))
+            self.conn.execute("""WITH f AS (
+                                     INSERT INTO pinakes.files (root_id, relpath, name, content_id, size, acl_id,
+                                                                owner_id, gone_on)
+                                     SELECT root_id, %s || 'gen/' || i || '.txt', i || '.txt', content_id, size,
+                                            acl_id, owner_id, %s::date
+                                     FROM pinakes.files, generate_series(1, %s) i
+                                     WHERE relpath = %s AND root_id = (SELECT root_id FROM pinakes.roots
+                                                                       WHERE label = 'store')
+                                     RETURNING file_id, relpath, content_id)
+                                 INSERT INTO pinakes.history (file_id, kind, old_relpath, old_content_id, seen_after,
+                                                              seen_on)
+                                 SELECT file_id, 'gone', relpath, content_id, %s::date - 1, %s::date FROM f""",
+                              (self.U, self.today, gone, self.U + "cleanup/c.txt", self.today, self.today))
+            self.conn.execute("ANALYZE")
+
+        def loops(node):
+            mine = [node["Actual Loops"]] if node["Node Type"] == "Aggregate" else []   # the lookup's counts
+            return mine + [n for child in node.get("Plans", []) for n in loops(child)]
+
+        class Explain:          # changes()'s own SQL, run and explained: rows() reads the plan as its one row
+            def __init__(self, c):
+                self.c = c
+
+            def execute(self, sql, args=()):
+                return self.c.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, args)
+
+        with self.as_person("user-1") as c:
+            (row,) = queries.changes(Explain(c), 7, kinds=["gone"], limit=20)
+            seen = loops(row["QUERY PLAN"][0]["Plan"])
+            self.assertTrue(seen)
+            self.assertLessEqual(max(seen), 20)          # the page's rows, not the window's 1500
+            page = queries.changes(c, 7, kinds=["gone"], limit=20)
+            self.assertEqual(queries.page_total(page), gone + 4)     # and his a, b, c and plan.txt
+            gen = [r for r in page if "/gen/" in r["path"]]
+            self.assertTrue(gen)
+            self.assertEqual({(r["elsewhere"], r["backups"]) for r in gen}, {(0, held + 1)})
+
     def test_restore_names_the_snapshot_and_clears_when_back(self):
         from pinakes import queries
         with self.as_person("user-1") as c:

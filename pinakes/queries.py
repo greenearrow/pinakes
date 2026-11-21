@@ -66,6 +66,7 @@ BACKED_UP_SORT = {"file": ("f.relpath",), "copies": ("backup_copies",), "snapsho
                   "newest": ("newest",)}
 DUPES_SORT = {"copies": ("copies",), "reclaimable": ("reclaimable",), "where": ("paths",)}
 CHANGES_SORT = {"seen": ("hi.seen_on",), "where": ("h.name", "r.label"), "what": ("hi.kind",), "path": ("path",)}
+CHANGES_PAGE_SORT = {"seen": ("p.seen_on",), "where": ("p.host", "p.root"), "what": ("p.kind",), "path": ("p.path",)}
 HISTORY_SORT = {"between": ("h.seen_on",), "what": ("h.kind",),
                 "path": ("coalesce(h.new_relpath, h.old_relpath)",), "evidence": ("h.evidence",)}
 VERSIONS_SORT = {"sha256": ("c.sha256",), "first_seen": ("v.first_seen_on",), "backup": ("r.label",),
@@ -414,16 +415,34 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
         root, path = split_location(loc)
         pre = _prefix(path)
     rv = _review(review)
-    return rows(conn, """SELECT hi.seen_on, h.name AS host, r.label AS root,
-                                coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
-                                hi.file_id, hi.history_id, hi.kind IN ('gone', 'moved', 'moved_changed', 'mismatch', 'unreadable') AS reviewable,
-                                m.mark, m.marked_at, coalesce(mp.display, mg.name) AS marked_by,
-                                c.elsewhere, c.elsewhere_at, c.backups, """ + TOTAL + """
-                         FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
-                         JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         LEFT JOIN pinakes.review_marks m ON m.history_id = hi.history_id
-                         LEFT JOIN pinakes.people mp ON mp.person_id = m.marked_by
-                         LEFT JOIN pinakes.groups mg ON mg.group_id = m.marked_by_group
+    # The page first, then the copies for its rows only. The total counts every matching row, so with the copy lookup
+    # inside, it ran for every gone file in the window: 193 k rows, cancelled at 300 s on a 3.4 M-file catalog. No sort
+    # reads the copies; `elsewhere` filters by EXISTS, which stops at the first copy.
+    return rows(conn, """SELECT p.seen_on, p.host, p.root, p.path, p.old_relpath, p.kind, p.file_id, p.history_id,
+                                p.reviewable, p.mark, p.marked_at, coalesce(mp.display, mg.name) AS marked_by,
+                                c.elsewhere, c.elsewhere_at, c.backups, p.total_rows
+                         FROM (SELECT hi.seen_on, h.name AS host, r.label AS root,
+                                      coalesce(hi.new_relpath, hi.old_relpath) AS path, hi.old_relpath, hi.kind,
+                                      hi.file_id, hi.history_id, hi.old_content_id,
+                                      hi.kind IN ('gone', 'moved', 'moved_changed', 'mismatch', 'unreadable') AS reviewable,
+                                      m.mark, m.marked_at, m.marked_by, m.marked_by_group, """ + TOTAL + """
+                               FROM pinakes.history hi JOIN pinakes.files f USING (file_id)
+                               JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                               LEFT JOIN pinakes.review_marks m ON m.history_id = hi.history_id
+                               WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
+                                 AND """ + _NOT_FIRST + """
+                                 AND (%s::text IS NULL OR h.name = %s)
+                                 AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
+                                 AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s
+                                                                             OR hi.new_relpath = %s OR hi.old_relpath = %s))
+                                 AND """ + _REVIEW_WHERE + """
+                                 AND (NOT %s OR hi.kind = 'gone' AND EXISTS (
+                                          SELECT 1 FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
+                                          WHERE o.content_id = hi.old_content_id AND o.unreadable_on IS NULL
+                                            AND ro.kind <> 'backup'))"""
+                + order(CHANGES_SORT, sort, direction, "hi.seen_on DESC, path, hi.history_id") + PAGE + """) p
+                         LEFT JOIN pinakes.people mp ON mp.person_id = p.marked_by
+                         LEFT JOIN pinakes.groups mg ON mg.group_id = p.marked_by_group
                          LEFT JOIN LATERAL (
                              SELECT count(*) FILTER (WHERE ro.kind <> 'backup') AS elsewhere,
                                     min(oh.name || ' · ' || ro.label || ':' || o.relpath)
@@ -432,17 +451,9 @@ def changes(conn, days=7, host=None, limit=None, offset=0, sort=None, direction=
                                         AS backups
                              FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
                              JOIN pinakes.hosts oh ON oh.host_id = ro.host_id
-                             WHERE hi.kind = 'gone' AND o.content_id = hi.old_content_id
-                               AND o.unreadable_on IS NULL) c ON true
-                         WHERE hi.seen_on >= %s AND (%s::date IS NULL OR hi.seen_on <= %s)
-                           AND """ + _NOT_FIRST + """
-                           AND (%s::text IS NULL OR h.name = %s)
-                           AND (%s::text[] IS NULL OR hi.kind = ANY (%s::text[]))
-                           AND (%s::text IS NULL OR r.label = %s AND (hi.new_relpath LIKE %s OR hi.old_relpath LIKE %s
-                                                                       OR hi.new_relpath = %s OR hi.old_relpath = %s))
-                           AND """ + _REVIEW_WHERE + """
-                           AND (NOT %s OR hi.kind = 'gone' AND c.elsewhere > 0)"""
-                + order(CHANGES_SORT, sort, direction, "hi.seen_on DESC, path, hi.history_id") + PAGE,
+                             WHERE p.kind = 'gone' AND o.content_id = p.old_content_id
+                               AND o.unreadable_on IS NULL) c ON true"""
+                + order(CHANGES_PAGE_SORT, sort, direction, "p.seen_on DESC, p.path, p.history_id"),
                 (since, until, until, host, host, _kinds(kinds), _kinds(kinds), root, root, pre, pre, path, path,
                  rv, rv, rv,
                  bool(elsewhere), limit, offset))
