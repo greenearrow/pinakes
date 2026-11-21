@@ -240,7 +240,8 @@ can follow it. Lineage is a graph of file ids, built from four kinds of evidence
    that reports a week late still links up.
 2. **Identity fields inside the file.** Formats that keep an id across saves (PDF's `/ID`, XMP's `DocumentID`,
    `InstanceID` and `DerivedFrom`, EPUB's `dc:identifier`; METADATA.md "Identity fields") link versions with no help
-   from names or hashes (certain when the field is present). Not on protected roots: it needs extraction.
+   from names or hashes (certain when the field is present). Not on protected roots: it needs extraction. Built
+   for XMP; PDF and EPUB come with their extractors.
 3. **Chunk overlap**, on roots with `chunks`: a file sharing most of its chunks with another is **derived from** it
    (likely, with the overlap recorded).
 4. **Names**, normalized by a list of patterns before comparing: copy markers (` - Copy`, ` copy`, ` (1)`,

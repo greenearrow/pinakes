@@ -145,6 +145,41 @@ class TestSiteSchemas(RegistryCase):
         self.assertIn("schemas folder", str(cm.exception))
 
 
+class TestIdentityRules(RegistryCase):
+    def test_xmp_parents_first_then_shared_values(self):
+        self.assertEqual(registry.load()["xmp"].identity_rules(), [
+            ("derived_instance_id", "instance_id", "parent"), ("derived_document_id", "document_id", "parent"),
+            ("instance_id", "derived_instance_id", "child"), ("document_id", "derived_document_id", "child"),
+            ("instance_id", "instance_id", "shared"), ("document_id", "document_id", "shared")])
+
+    def test_a_schema_without_identity_fields_has_none(self):
+        self.assertEqual(registry.load()["exif"].identity_rules(), [])
+
+    def test_identity_fields_refused(self):
+        ident = '[fields.document_id]\ntype = "text"\nindex = "exact"\nidentity = true\n'
+        for bad in ('[fields.document_id]\ntype = "number"\nindex = "exact"\nidentity = true\n',
+                    '[fields.document_id]\ntype = "text"\nindex = "trigram"\nidentity = true\n',
+                    '[fields.document_id]\ntype = "text"\nidentity = true\n',
+                    ident + "sensitive = true\n"):
+            self.refused(PHOTO.replace(ident, bad), "field document_id", "an identity field is text")
+        parent = ident + '[fields.parent_id]\ntype = "text"\nindex = "exact"\nidentity = true\n'
+        for target, words in (("nothing", "parent 'nothing' is not an identity field"),
+                              ("note", "parent 'note' is not an identity field"),
+                              ("parent_id", "without a parent of its own")):
+            self.refused(PHOTO.replace(ident, parent + 'parent = "%s"\n' % target), "field parent_id", words)
+        self.refused(PHOTO.replace(ident, ident.replace("identity = true\n", 'parent = "x"\n')),
+                     "field document_id", "parent names another identity field")
+
+    def test_a_site_parent_field_loads(self):
+        ident = '[fields.document_id]\ntype = "text"\nindex = "exact"\nidentity = true\n'
+        text = PHOTO.replace(ident, ident + '[fields.parent_id]\ntype = "text"\nindex = "exact"\nidentity = true\n'
+                             'parent = "document_id"\n')
+        p = registry.load(self.site("photo", text))["photo"]
+        self.assertEqual(p.identity_rules(), [("parent_id", "document_id", "parent"),
+                                              ("document_id", "parent_id", "child"),
+                                              ("document_id", "document_id", "shared")])
+
+
 class TestRefused(RegistryCase):
     def test_not_toml(self):
         self.refused("name = ", "not valid TOML")

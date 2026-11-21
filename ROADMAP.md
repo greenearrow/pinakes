@@ -54,16 +54,15 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
 ## Metadata (METADATA.md)
 
 13. [Feature; also security] **Extractors, one schema at a time:** EXIF and embedded XMP (JPEG) are built (REARVIEW.md);
-    then XMP sidecars (with 14) and extended XMP, audio tags, OPF, PDF and office properties, video. Each optional by
-    its dependency. *Done when, for each:* tests on generated files (made by the test, never real ones) extract the
+    then XMP sidecars (with 14) and extended XMP, audio tags, OPF, PDF and office properties, video; the PDF's `/ID`
+    and the EPUB's `dc:identifier` as identity fields of their schemas (lineage reads them as it does XMP's: 15).
+    Each optional by its dependency. *Done when, for each:* tests on generated files (made by the test, never real ones) extract the
     declared fields; a missing dependency turns the extractor off, not the scan; nothing runs on a protected root (a
     test proves it). Left from the first real run: 717 JPEGs without EXIF, not looked into; extraction outcomes
     (44) are built and in release 7, so once it is deployed, `pinakes-ingest extractions` says which of them hold none
     and which the reader refused.
 14. [Feature; also correctness] **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each
     sidecar form, RAW with JPEG, a book folder, and a bundle moved together counting as one move.
-15. [Correctness] **Identity fields for lineage** (PDF `/ID`, XMP `DocumentID`/`InstanceID`/`DerivedFrom`, EPUB
-    identifier). *Done when:* two renamed, edited files sharing an identity field are linked with certainty in a test.
 16. [Feature; also security] **Person-entered metadata and sensitive fields** in the UI. Sensitive fields are kept
     for owners and co-owners only, and shown on a file's page and in find (built: REARVIEW.md); left: entering
     metadata, and an owner sharing sensitive fields with a reader. *Done when:* a shared file shows its non-sensitive fields to the

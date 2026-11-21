@@ -3,8 +3,10 @@
 # Sidecar .xmp files come with bundles (ROADMAP 14).
 #
 # The ids are identity fields (METADATA.md "Identity fields"): DocumentID stays for a document's life, InstanceID
-# changes with each save, DerivedFrom names the parent. People shown and place names are sensitive, as GPS is in
-# exif: kept apart, for the owners of a copy only (ROADMAP 16). Version 2: they are sent (1 left them on the agent).
+# changes with each save, DerivedFrom names the parent (`parent`: whose field its value is). Lineage links files
+# by them, the version first: a parent's instance, its document, the same instance, the same document. People
+# shown and place names are sensitive, as GPS is in exif: kept apart, for the owners of a copy only (ROADMAP 16).
+# Version 2: they are sent (1 left them on the agent).
 
 name = "xmp"
 version = 2
@@ -55,29 +57,31 @@ type = "date"
 index = "range"
 description = "xmp:CreateDate, else photoshop:DateCreated"
 
-[fields.document_id]
-type = "text"
-index = "exact"
-identity = true
-description = "xmpMM:DocumentID"
-
 [fields.instance_id]
 type = "text"
 index = "exact"
 identity = true
 description = "xmpMM:InstanceID"
 
-[fields.derived_document_id]
+[fields.document_id]
 type = "text"
 index = "exact"
 identity = true
-description = "xmpMM:DerivedFrom's documentID: the parent document"
+description = "xmpMM:DocumentID"
 
 [fields.derived_instance_id]
 type = "text"
 index = "exact"
 identity = true
+parent = "instance_id"
 description = "xmpMM:DerivedFrom's instanceID: the parent's version"
+
+[fields.derived_document_id]
+type = "text"
+index = "exact"
+identity = true
+parent = "document_id"
+description = "xmpMM:DerivedFrom's documentID: the parent document"
 
 [fields.people]
 type = "list"

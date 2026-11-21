@@ -33,6 +33,7 @@ agents).
 - 10. The operator page
 - 12. The metadata schema registry
 - 13. Extractors, first part: EXIF and embedded XMP from JPEGs
+- 15. Identity fields for lineage (XMP)
 - 16. Sensitive metadata for owners only (first part)
 - 16. Metadata on a file's page and in find (showing it)
 - 19. Checksum manifests
@@ -267,6 +268,32 @@ desktop), on generated JPEGs. Its first run on a real tree skipped photos whose 
 deployment's agents: 86,608 of 87,325 JPEGs have EXIF (717 without, not looked into yet); 83,176 exif and 40,546 xmp
 rows; nothing from a protected root or link; no metadata left out; five photos' camera and date taken read correctly
 (not compared with a photo viewer).
+
+## 15. Identity fields for lineage (XMP)
+
+Design: DESIGN.md "Lineage across machines" (2); METADATA.md "Identity fields"; DECISIONS.md "Identity fields in
+lineage".
+
+**Built:** the ingester links files by the identity fields of the registry's schemas (`identity`, and the new
+`parent` key: `registry.Schema.identity_rules()`), one statement per round of lineage over every rule, each lookup by
+the field's own index. XMP's `derived_instance_id` and `derived_document_id` name the parent's `instance_id` and
+`document_id`; `instance_id` and `document_id` shared are versions of one document. Certain `derived_from` edges, after
+the same content and before chunks, for a file with no line yet; never to or from a backup or protected root, an
+empty file or the same content. A file of an earlier scan gets its parent, or its earlier version, when that one
+arrives (at the end of the pass). The registry refuses an identity field that isn't exact-indexed text or is
+sensitive, and a `parent` that isn't another identity field without a parent of its own. No schema change, no new
+protocol: release 10.
+
+**Not as the roadmap said:** PDF's `/ID` and EPUB's identifier need their extractors (13), not built yet; once their
+schemas declare the fields, lineage reads them with no further code.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_server.py`
+`TestIdentityLineage`, `tests/test_registry.py` `TestIdentityRules`), on generated JPEGs: two renamed, edited files
+sharing a DocumentID linked with certainty, and the lineage walk following it; the later version scanned first; an
+export linked to the parent's version over a later version of the parent's document, scanned before its parent;
+rounds of 1 and 2000 giving the same edges; a copy under a protected root not taken as the source (checked to fail
+without the check); a file changed in place left alone; the registry's refusals. All 446 tests pass (tools/test).
+Other Pythons not run; not run on a real catalog; not deployed. Existing files aren't linked until worked out again.
 
 ## 16. Sensitive metadata for owners only (first part)
 

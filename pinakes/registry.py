@@ -34,14 +34,18 @@ _MODULE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
 _REQUIREMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*([<>=!~]=?[A-Za-z0-9.*+!-]+(,[<>=!~]=?[A-Za-z0-9.*+!-]+)*)?\Z")
 
 _TOP_KEYS = {"name", "version", "title", "mime", "extractor", "common", "fields"}
-_FIELD_KEYS = {"type", "of", "index", "sensitive", "identity", "description"}
+_FIELD_KEYS = {"type", "of", "index", "sensitive", "identity", "parent", "description"}
 _EXTRACTOR_KEYS = {"module", "requires"}
 
 
 class Field:
-    def __init__(self, name, type, of=None, index=None, sensitive=False, identity=False, description=""):
+    def __init__(self, name, type, of=None, index=None, sensitive=False, identity=False, description="",
+                 parent=None):
         self.name, self.type, self.of, self.index = name, type, of, index
         self.sensitive, self.identity, self.description = sensitive, identity, description
+        # an identity field (METADATA.md "Identity fields"): two files sharing its value are versions of one
+        # document; with parent, its value is another file's `parent` field instead: that file is the parent
+        self.parent = parent
 
     @property
     def index_kind(self):
@@ -52,6 +56,15 @@ class Schema:
     def __init__(self, name, version, title, mime, fields, common, extractor, path):
         self.name, self.version, self.title, self.mime = name, version, title, mime
         self.fields, self.common, self.extractor, self.path = fields, common, extractor, path
+
+    def identity_rules(self):
+        """How lineage reads this schema's identity fields: (field, the other file's field, how), how being
+        'shared' (versions of one document), 'parent' (the other file is this one's parent) or 'child' (the other
+        is this one's child: the same rule from the parent's side). Parents first: the more particular."""
+        fs = [f for f in self.fields.values() if f.identity]
+        return ([(f.name, f.parent, "parent") for f in fs if f.parent]
+                + [(f.parent, f.name, "child") for f in fs if f.parent]
+                + [(f.name, f.name, "shared") for f in fs if not f.parent])
 
     def indexes(self):
         """(schema, field, kind) for every indexed field."""
@@ -99,7 +112,13 @@ def _field(where, name, d):
     desc = d.get("description", "")
     if not isinstance(desc, str):
         _refuse(where, "description is text")
-    return Field(name, t, of, index, d.get("sensitive", False), d.get("identity", False), desc)
+    identity, parent = d.get("identity", False), d.get("parent")
+    if identity and (t != "text" or index != "exact" or d.get("sensitive", False)):
+        # lineage looks the value up in other files' metadata: by its index, and never in what only owners see
+        _refuse(where, "an identity field is text with index = \"exact\", not sensitive")
+    if parent is not None and (not identity or not isinstance(parent, str)):
+        _refuse(where, "parent names another identity field of this schema, on an identity field")
+    return Field(name, t, of, index, d.get("sensitive", False), identity, desc, parent)
 
 
 def parse(d, path, common=None):
@@ -135,6 +154,11 @@ def parse(d, path, common=None):
         if not _FIELD_NAME.match(fname):
             _refuse(where, "field name %r: a lowercase letter, then up to 29 lowercase letters, digits or _" % fname)
         fields[fname] = _field("%s: field %s" % (where, fname), fname, fd)
+    for f in fields.values():
+        p = fields.get(f.parent) if f.parent is not None else None
+        if f.parent is not None and (p is None or not p.identity or p.parent is not None):
+            _refuse("%s: field %s" % (where, f.name), "parent %r is not an identity field of this schema without "
+                    "a parent of its own" % f.parent)
 
     extractor = d.get("extractor")
     if extractor is not None:

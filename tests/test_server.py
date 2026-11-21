@@ -1954,6 +1954,110 @@ class TestNameLineage(ServerCase):
                                         ("x/notes.txt", "y/notes.txt", "similar name, similar size")])
 
 
+class TestIdentityLineage(ServerCase):
+    """Identity fields link versions with certainty, whatever their names (ROADMAP 15): XMP's DocumentID and
+    InstanceID shared, DerivedFrom naming the parent."""
+
+    def edges(self):
+        return sorted(self.q("""SELECT fr.relpath, ft.relpath, l.kind, l.evidence, l.confidence
+                                FROM pinakes.lineage l
+                                JOIN pinakes.files fr ON fr.file_id = l.from_file_id
+                                JOIN pinakes.files ft ON ft.file_id = l.to_file_id"""))
+
+    def test_renamed_and_edited_files_sharing_a_document_id(self):
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "people/user-1/harbour.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"),
+                   mtime=t0)
+        self.scan("server-1", "store")
+        # edited and saved on the laptop under another name: new bytes, new size, nothing in the names alike
+        self.write("laptop-1", "downloads", "work/boats at dusk.jpg",
+                   jpegs.version("xmp.did:doc-1", "xmp.iid:i-2", width=800), mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.assertEqual(self.edges(), [("people/user-1/harbour.jpg", "work/boats at dusk.jpg", "derived_from",
+                                         "same xmp document_id", "certain")])
+        from pinakes import queries
+        laptop = self.file("downloads", "work/boats at dusk.jpg")
+        self.assertEqual([r["relpath"] for r in queries.lineage(self.conn, laptop, "up")],
+                         ["people/user-1/harbour.jpg"])
+
+    def test_the_later_version_reported_first(self):
+        """The laptop's later version is scanned before the original: the edge still runs from the earlier."""
+        t0 = time.time() - 86400
+        self.write("laptop-1", "downloads", "boats.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-2"),
+                   mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.write("server-1", "store", "people/user-1/harbour.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"),
+                   mtime=t0)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [("people/user-1/harbour.jpg", "boats.jpg", "derived_from",
+                                         "same xmp document_id", "certain")])
+
+    def test_derived_from_names_the_parent_in_either_order(self):
+        """A new document made from another (Save As, an export): its own DocumentID, its DerivedFrom the parent's
+        version. The parent's instance is preferred to a later version of the parent's document."""
+        t0 = time.time() - 86400
+        self.write("laptop-1", "downloads", "export.jpg",
+                   jpegs.version("xmp.did:doc-2", "xmp.iid:j-1", "xmp.did:doc-1", "xmp.iid:i-1"), mtime=t0 + 900)
+        self.scan("laptop-1", "downloads")
+        self.write("server-1", "store", "people/user-1/a.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"),
+                   mtime=t0)
+        self.write("server-1", "store", "people/user-1/b.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-3"),
+                   mtime=t0 + 600)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [
+            ("people/user-1/a.jpg", "export.jpg", "derived_from", "xmp derived_instance_id = instance_id",
+             "certain"),
+            ("people/user-1/a.jpg", "people/user-1/b.jpg", "derived_from", "same xmp document_id", "certain")])
+
+    def test_rounds_give_the_same_edges(self):
+        t0 = time.time() - 86400
+        for i in range(4):
+            self.write("server-1", "store", "v/%d.jpg" % i, jpegs.version("xmp.did:doc-1", "xmp.iid:i-%d" % i),
+                       mtime=t0 + 60 * i)
+        self.write("server-1", "store", "v/child.jpg",
+                   jpegs.version("xmp.did:doc-2", "xmp.iid:k-1", "xmp.did:doc-1", "xmp.iid:i-2"), mtime=t0 + 30)
+        self.scan("server-1", "store")
+        whole = self.edges()
+        doc = ("derived_from", "same xmp document_id", "certain")
+        self.assertEqual(whole, [("v/0.jpg", "v/1.jpg") + doc, ("v/1.jpg", "v/2.jpg") + doc,
+                                 ("v/2.jpg", "v/3.jpg") + doc,
+                                 ("v/2.jpg", "v/child.jpg", "derived_from", "xmp derived_instance_id = instance_id",
+                                  "certain")])
+        self.conn.execute("DELETE FROM pinakes.lineage")
+        self.ing.lineage_round = 1
+        self.ing.lineage_many([r[0] for r in self.q("SELECT file_id FROM pinakes.files ORDER BY file_id")],
+                              datetime.date.today())
+        self.assertEqual(self.edges(), whole)
+
+    def test_not_from_a_protected_root(self):
+        """A copy of the original under a protected root is not taken as the source, though later than the one
+        elsewhere: identity fields are never read there."""
+        t0 = time.time() - 86400
+        original = jpegs.version("xmp.did:doc-1", "xmp.iid:i-1")
+        self.write("server-1", "store", "people/user-1/harbour.jpg", original, mtime=t0)
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", extra="protected = true")
+        self.write("server-2", "snapshots", "kept.jpg", original, mtime=t0 + 300)
+        self.scan("server-2", "snapshots")
+        self.write("laptop-1", "downloads", "boats.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-2"),
+                   mtime=t0 + 600)
+        self.scan("laptop-1", "downloads")
+        self.assertIn(("people/user-1/harbour.jpg", "boats.jpg", "derived_from", "same xmp document_id", "certain"),
+                      self.edges())
+        self.assertNotIn("boats.jpg", [e[1] for e in self.edges() if e[0] == "kept.jpg"])
+
+    def test_a_changed_file_keeps_its_own_line(self):
+        t0 = time.time() - 86400
+        self.write("server-1", "store", "a.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-1"), mtime=t0)
+        self.write("server-1", "store", "b.jpg", jpegs.version("xmp.did:doc-9", "xmp.iid:z-1"), mtime=t0)
+        self.scan("server-1", "store")
+        # b.jpg saved over with a.jpg's document: its history says what it was, no edge is made
+        self.write("server-1", "store", "b.jpg", jpegs.version("xmp.did:doc-1", "xmp.iid:i-2"), mtime=t0 + 600)
+        self.scan("server-1", "store")
+        self.assertEqual(self.edges(), [])
+        self.assertEqual(self.history(self.file("store", "b.jpg")), ["new", "changed"])
+
+
 class TestLineageDecisions(ServerCase):
     """Confirming or rejecting a relative (ROADMAP 9): a decision outranks every heuristic. A rejected pair leaves
     the walks and is never suggested again, either way; a confirmed edge survives tidy. Only the owner or a co-owner

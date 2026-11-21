@@ -54,8 +54,8 @@ name. Export maps onto schema.org types where they exist.
 19 lowercase letters or digits), `version` (a whole number from 1), `title`, `mime` (a list; `image/*`, `*/*`),
 `[extractor]` (`module`, a dotted Python name, and `requires`, a list of packages), `[common]` (common field =
 this schema's field, of the same type, or one item of a common list) and one `[fields.NAME]` table per field
-(`type`, `of` for a list's items, `index`, `sensitive`, `identity`, `description`). Anything else is refused, as is a
-type an index doesn't fit:
+(`type`, `of` for a list's items, `index`, `sensitive`, `identity`, `parent`, `description`). Anything else is refused,
+as is a type an index doesn't fit:
 
 | Type | Stored as | Index |
 |---|---|---|
@@ -83,6 +83,13 @@ Some formats keep an id that survives edits and saves; a schema marks such field
   survives saves; not verified here).
 
 Identity fields need extraction, so they are never read on a protected root.
+
+Built for XMP (ROADMAP 15). An identity field is text with `index = "exact"`, never sensitive: two files whose
+values match are versions of one document. With `parent = "FIELD"` its value is another file's FIELD instead
+(`derived_instance_id` names a parent's `instance_id`), and that file is the parent. Lineage tries a schema's parent
+fields first, then the shared ones, each in the schema's order: for XMP the parent's version, the parent document,
+the same version, the same document. A match is certain (`derived_from`, evidence such as `same xmp document_id`),
+and is looked for only where nothing stronger gave the file a source, as chunks and names are.
 
 ## Where values come from
 

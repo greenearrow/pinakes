@@ -152,3 +152,14 @@ def bare(exif_tiff=None):
 def gps_only():
     """A JPEG whose only EXIF is its GPS position: every value found a sensitive one."""
     return bare(tiff([], [], GPS_IFD))
+
+
+def version(doc, inst, parent_doc=None, parent_inst=None, width=64):
+    """A saved version of a document: its XMP ids (DocumentID, InstanceID) and, if given, the DerivedFrom ids of
+    the version it was made from. Each InstanceID gives other bytes; width gives other bytes for the same ids."""
+    derived = ('<xmpMM:DerivedFrom stRef:documentID="%s" stRef:instanceID="%s"/>' % (parent_doc, parent_inst)
+               if parent_doc else "")
+    packet = ('<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF %s><rdf:Description rdf:about="" '
+              'xmpMM:DocumentID="%s" xmpMM:InstanceID="%s">%s</rdf:Description></rdf:RDF></x:xmpmeta>'
+              % (_NS, doc, inst, derived))
+    return jpeg(width=width, xmp=packet)

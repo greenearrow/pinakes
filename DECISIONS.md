@@ -487,3 +487,15 @@ were made while building, to keep going, and are open to change.
   can't decide: an edge's later file has a person or a group as owner, and keeping it to people keeps the audit
   simple; a group's files are decided from a person's token or the web. `decided_at` was added for the file page and
   the export; clearing a decision clears who and when.
+- **Identity fields in lineage (ROADMAP 15).** A schema says which of its fields are identity fields and, with
+  `parent`, which name another file's field: the rules are the registry's, not the ingester's, so a site's schema
+  (or PDF's, later) needs no code. An identity field must be exact-indexed text and not sensitive: the lookup uses
+  its index, and a link made from what only owners see would show it to others. Identity evidence ranks after the
+  same content and before chunks, and like them only for a file with no line yet: a file changed in place keeps its
+  own. Scan order doesn't matter: a file of an earlier scan whose parent (or earlier version) arrives now gets it as
+  its source at the end of the pass, the best one of the pass, so the result doesn't depend on which file came first
+  or on the rounds; a file of the same pass works it out itself. The edges are certain, so a person can't reject one
+  (`decide_lineage()` decides every edge but the certain ones): software that copies one template's DocumentID into
+  unrelated files would chain them with no way out. Not seen yet; if it is, either identity edges become decidable
+  or a value shared by too many contents stops being evidence. Files ingested before this release are linked by
+  identity only when worked out again; `tidy` doesn't add them.

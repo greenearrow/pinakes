@@ -115,6 +115,47 @@ NAME_CANDIDATE = """
     ORDER BY (s.mtime <= t.mtime) DESC, s.mtime DESC NULLS LAST, s.file_id LIMIT 1"""
 
 
+# Files whose metadata shares an identity field's value with a target's (METADATA.md "Identity fields"): one part per
+# schema rule (registry.Schema.identity_rules), joined by UNION ALL over the targets t(fid, content, mtime). The
+# field names are the registry's, checked against _FIELD_NAME, and written in so that each lookup uses the field's
+# own index (md_SCHEMA_FIELD_eq). Not from a backup or protected root (extraction never reads one), not an empty
+# file, not the same content (that is a copy, found first).
+IDENTITY_PART = """
+    SELECT t.fid, o.file_id, o.mtime, {rank} AS rank, '{how}' AS how, '{evidence}' AS evidence,
+           coalesce(o.mtime <= t.mtime, true) AS earlier
+    FROM t JOIN pinakes.metadata tm ON tm.content_id = t.content AND tm.schema = '{schema}' AND NOT tm.sensitive
+                                    AND tm.source IN ('embedded', 'sidecar')
+    JOIN pinakes.metadata om ON om.schema = '{schema}' AND (om.vals ->> '{theirs}') = (tm.vals ->> '{mine}')
+                            AND NOT om.sensitive AND om.source IN ('embedded', 'sidecar')
+                            AND om.content_id <> t.content
+    JOIN pinakes.files o ON o.content_id = om.content_id JOIN pinakes.roots r ON r.root_id = o.root_id
+    WHERE r.kind <> 'backup' AND NOT r.protected AND o.size > 0 AND o.file_id <> t.fid"""
+
+
+def identity_query(reg):
+    """The statement that lists every target's identity candidates, or None when no schema has identity fields."""
+    parts = []
+    for s in reg:
+        for mine, theirs, how in s.identity_rules():
+            if how == "shared":
+                evidence = "same %s %s" % (s.name, mine)
+            elif how == "parent":
+                evidence = "%s %s = %s" % (s.name, mine, theirs)
+            else:                                   # the edge's later file is the other: its field names ours
+                evidence = "%s %s = %s" % (s.name, theirs, mine)
+            parts.append(IDENTITY_PART.format(rank=len(parts), how=how, evidence=evidence, schema=s.name,
+                                              mine=mine, theirs=theirs))
+    if not parts:
+        return None
+    return ("WITH t AS (SELECT * FROM unnest(%s::bigint[], %s::bigint[], %s::timestamptz[]) AS t(fid, content, mtime))"
+            + " UNION ALL ".join(parts))
+
+
+def _latest_first(cands):
+    """Candidates by mtime, latest first, unknown last; then by file id."""
+    return sorted(cands, key=lambda c: (c[2] is None, -c[2].timestamp() if c[2] else 0, c[1]))
+
+
 class _LineageState:
     """What one pass of lineage knows. Files and history don't change during a pass, so what was read of them is
     kept for the whole pass; edges do, so what is known of them is read again from the table each round."""
@@ -124,7 +165,9 @@ class _LineageState:
         self.how_loaded = set()
         self.how = {}                # (file_id, content_id) -> latest history kind that brought it
         self.rare_folders = None     # folder names few folders have (RARE_FOLDERS), read when first needed
-        self.new_round()
+        self.pass_ids = set()        # the files this pass works out
+        self.adopt = {}              # file of an earlier pass -> (rank, parent, evidence): its source by identity,
+        self.new_round()             # found from the parent's side, given at the end of the pass if it has none
 
     def new_round(self):
         self.loaded = set()          # file ids whose incoming edges are in keys / has_source
@@ -223,6 +266,7 @@ class Ingester:
         self.cfg = cfg
         self.patterns = names.load_patterns(cfg.name_patterns_file)
         self.registry = registry.load(getattr(cfg, "schemas_dir", None))   # what a batch's metadata is checked by
+        self.identity_sql = identity_query(self.registry)
         self.dropped = []   # the last batch's metadata left out: (path, schema, why)
         self._acl_cache = {}
         self._uid_maps = {}
@@ -1141,13 +1185,15 @@ class Ingester:
         back from the table. Chunk sharing, rare, is still asked per file.
         """
         st = _LineageState()
+        st.pass_ids = set(file_ids)
         for i in range(0, len(file_ids), self.lineage_round):
             self._lineage_round(file_ids[i:i + self.lineage_round], on, st)
+        self._adopt(on, st)
 
     def _lineage_round(self, ids, on, st):
         st.new_round()
         rows = self.q("""SELECT f.file_id, f.content_id, f.mtime, f.dev, f.ino, r.host_id, f.name_key, f.ext,
-                                f.size, f.relpath, r.kind
+                                f.size, f.relpath, r.kind, r.protected
                          FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
                          WHERE f.file_id = ANY(%s) AND f.content_id IS NOT NULL
                            AND f.size > 0""", (ids,)).fetchall()  # an empty file descends from nothing
@@ -1191,15 +1237,41 @@ class Ingester:
                  [r[2] for r in named], [r[8] for r in named], [r[9] for r in named], [r[10] for r in named],
                  self._rare(st, [r[9] for r in named]), on,
                  *self._name_params())).fetchall()}
+        # files sharing an identity field with these (none from a protected root: nothing is extracted there)
+        by_identity = {}
+        known = [r for r in rows if not r[11]]
+        if self.identity_sql and known:
+            for c in self.q(self.identity_sql, ([r[0] for r in known], [r[1] for r in known],
+                                                [r[2] for r in known])).fetchall():
+                by_identity.setdefault(c[0], []).append(c)
         for file_id in ids:
             f = by_id.get(file_id)
             if f is not None:
-                self._lineage_one(f, on, st, changed, chunked, by_name)
+                self._lineage_one(f, on, st, changed, chunked, by_name, by_identity)
+        self._write_queue(st)
+
+    def _write_queue(self, st):
         if st.queue:
             with self.conn.cursor() as cur:
                 cur.executemany("INSERT INTO pinakes.lineage (from_file_id, to_file_id, kind, evidence, confidence, "
                                 "found_on) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING", st.queue)
             st.queue = []
+
+    def _adopt(self, on, st):
+        """The end of a pass: each file of an earlier pass that a file of this one is the identity parent of (or
+        the earlier version of) gets the best of them as its source, if it still has none. At the end, so that the
+        result doesn't hang on which of this pass's files came first, nor on the rounds."""
+        if not st.adopt:
+            return
+        st.new_round()
+        kids = sorted(st.adopt)
+        self._load_lineage(kids, st)
+        for kid in kids:
+            if kid not in st.has_source:
+                _, parent, evidence = st.adopt[kid]
+                self._edge(st, parent, kid, "derived_from", evidence, "certain", on)
+        st.adopt = {}
+        self._write_queue(st)
 
     def _load_lineage(self, ids, st):
         ids = [i for i in ids if i not in st.loaded]
@@ -1235,17 +1307,40 @@ class Ingester:
         return "replaced_by" if st.how.get((file_id, content_id)) in ("changed", "moved_changed") else "copied_from"
 
     def _edge(self, st, src, dst, kind, evidence, confidence, on):
+        """Queue an edge; False if a person's rejection of the pair keeps it out."""
         if src == dst or (src, dst, kind) in st.keys:
-            return  # the table already has it, perhaps rejected: as ON CONFLICT DO NOTHING would leave it
+            return True  # the table already has it, perhaps rejected: as ON CONFLICT DO NOTHING would leave it
         if confidence != "certain" and frozenset((src, dst)) in st.rejected:
-            return  # a person said these two aren't relatives: a heuristic doesn't overrule them (the hash does)
+            return False  # a person said these two aren't relatives: a heuristic doesn't overrule them (the hash does)
         st.keys.add((src, dst, kind))
         st.has_source.add(dst)
         if evidence == "same sha256":
             st.has_copy_source.add(dst)
         st.queue.append((src, dst, kind, evidence, confidence, on))
+        return True
 
-    def _lineage_one(self, f, on, st, changed, chunked, by_name):
+    def _identity(self, f, cands, on, st):
+        """Lineage by identity fields (DESIGN.md "Lineage across machines", 2), certain. True once this file has a
+        source: the first rule (registry order: parents first) that names one; for a parent rule, the latest
+        parent; for a shared value, the latest earlier file. A file of an earlier pass that this one is the parent
+        of, or an earlier version of, is noted for the end of the pass (_adopt): scan order doesn't matter. One of
+        this pass works it out itself."""
+        file_id, mtime = f[0], f[2]
+        for c in cands:
+            kid = c[1]
+            if (c[4] == "child" or (c[4] == "shared" and not c[6])) and kid not in st.pass_ids:
+                rank = (c[3], mtime is None, -mtime.timestamp() if mtime else 0, file_id)
+                if kid not in st.adopt or rank < st.adopt[kid][0]:
+                    st.adopt[kid] = (rank, file_id, c[5])
+        for rank in sorted({c[3] for c in cands if c[4] != "child"}):
+            group = [c for c in cands if c[3] == rank]
+            ahead = _latest_first(group if group[0][4] == "parent" else [c for c in group if c[6]])
+            for c in ahead:
+                if self._edge(st, c[1], file_id, "derived_from", c[5], "certain", on):
+                    return True
+        return False
+
+    def _lineage_one(self, f, on, st, changed, chunked, by_name, by_identity=None):
         file_id, content, mtime, dev, ino, host_id, name_key, ext = f[:8]
         # 1. identical content elsewhere (not a backup copy, not another link to the same inode)
         others = [h for h in st.holders.get(content, ()) if h[0] != file_id and _other_inode(h, host_id, dev, ino)]
@@ -1266,7 +1361,10 @@ class Ingester:
         # weaker evidence only for a file with no line of descent yet (a changed file keeps its own)
         if file_id in st.has_source or file_id in changed:
             return
-        # 2. shared chunks with another content
+        # 2. an identity field shared with another file, or naming it as the parent (certain)
+        if by_identity and by_identity.get(file_id) and self._identity(f, by_identity[file_id], on, st):
+            return
+        # 3. shared chunks with another content
         if content in chunked:
             best = self.one("""SELECT cb.content_id, sum(ca.len)::float / (SELECT sum(len) FROM pinakes.content_chunks
                                                                             WHERE content_id = %s) AS share
@@ -1283,7 +1381,7 @@ class Ingester:
                     self._edge(st, src[0], file_id, "derived_from", "chunks %.0f%% shared" % (100 * best[1]),
                                "likely", on)
                     return
-        # 3. the same name once copy markers, dates and versions are taken off
+        # 4. the same name once copy markers, dates and versions are taken off
         #    and a second signal (NAME_CANDIDATE): a name alone links unrelated files (camera names, README)
         if name_key and by_name.get(file_id):
             src, evidence = by_name[file_id]
