@@ -372,21 +372,59 @@ columns it assumes: [QUERIES.md](QUERIES.md).
 
 ## Wish: an MCP server
 
-Not a requirement. The same read-only queries, offered as Model Context Protocol tools (`find`, `where`,
-`only_here`, `safe_to_delete`, `backed_up`, `history`, `search_metadata`), so an assistant can answer "is this
-folder safe to delete" or "where are the photos from that trip" from the catalog instead of walking disks.
+Not a requirement, but the way pinakes is meant to be used most: a person asks an assistant, and the command line
+and the web UI show what was done. The queries, review marks, tags and notes, and lineage decisions, offered as Model
+Context Protocol tools, so an assistant can answer "is this folder safe to delete" or "where are the photos from that
+trip" from the catalog instead of walking disks, and mark and tag what the person asks it to. ROADMAP 24, after 61
+and 62.
 
-- `pinakes-mcp`, a thin layer over the API (the official Python MCP SDK as its one dependency), over stdio for a
-  local client or streamable HTTP behind the proxy.
-- It acts as one person, with a token that person creates in the web UI and can revoke. Row-level security applies
-  exactly as for the web UI.
-- Read-only. No step-up: an administrator session is never available to an assistant. Never a file's content. No
-  file operations, no metadata edits, at least at first.
+### What runs where
+
+- **The model runner:** a local one with tool calling (Ollama, say) on a machine on the LAN, or a hosted assistant.
+  It runs no tool itself.
+- **The MCP host:** the chat app that lists the tools, gives them to the model, carries out the calls it asks for
+  and returns the answers until it replies (Open WebUI, an MCP client for the runner, a hosted assistant's app). Not
+  part of pinakes.
+- **`pinakes-mcp`:** a thin layer over the API (the official Python MCP SDK as its one dependency, the `mcp` extra).
+  It carries each connection's token to the API and adds nothing the API doesn't allow. Its tool descriptions and
+  its server instructions (what pinakes is, which tool answers what) are in this repo, the same for every host; a
+  site's own prompt belongs to its host.
+- **`pinakes-web`'s API** does the work, under row-level security, and records every call.
+
+### Transport
+
+Streamable HTTP behind the proxy, on the catalog server: one place where it runs, and each connection carries its
+own person's token, so a chat app that serves a household acts as each person and never as one. `pinakes-mcp` holds
+no token of its own. stdio, for a client on one person's machine, can come later; the audit is the same either way,
+since every tool call is an API call (DECISIONS.md "The MCP server").
+
+### Tools
+
+- **Read:** `find`, `where`, `only_here`, `safe_to_delete`, `backed_up`, `history`, `search_metadata`, `changes`,
+  and the others the command line asks.
+- **Write:** review marks (intended, restore, cleared), tags and notes, lineage decisions, as `pinakes review`, `tag`
+  and `relatives` make them, with the token's review and tag scopes. Each write takes two calls: the first says what
+  it would change (how many files, under which folder) and changes nothing; the second, naming that answer, applies
+  it. A wrong call costs an undo, not a loss: every write is kept with its token and the value before, and the person
+  sees and undoes it (ROADMAP 62).
+- **Never:** a file's content, a step-up, sharing sensitive fields, making tokens. Once the operation queue (ROADMAP
+  17) exists, an assistant may request a change on disk only to a file the catalog says a backup holds, and the
+  request still waits for approval and the agent's local `managed` policy, as every request does.
+
+### Answers that fit
+
+Every answer is a count, the first rows (a few dozen by default) and how to ask for the next page, never a whole
+list: a local model's context is small, and a whole list is slow. The API answers the same way, and the first page
+comes fast on a large catalog (ROADMAP 61): the speed is the server's job, not the layer's.
+
+### Whose view, and what leaves the house
+
+- It acts as one person, with a token that person makes in the web UI and can revoke, optionally limited to some
+  roots. Row-level security applies exactly as for the web UI.
 - Protected roots are left out of every token unless the person adds them; even then, path, size, times and hashes
   only.
-- What leaves the house is the person's choice: a local model (through a local runner with tool calling) keeps
-  everything on the LAN; a hosted assistant receives whatever file names and metadata its queries return. The token
-  can be limited to some roots for that reason.
+- A local model keeps everything on the LAN. A hosted assistant receives whatever file names and metadata its
+  answers return; the token can be limited to some roots for that reason.
 
 ## Scrub: reading unchanged files again (ROADMAP 41)
 

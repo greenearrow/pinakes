@@ -114,11 +114,36 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
     decided; then `pinakes operator` and `--json` are tested through the API with an ops token, a person's token
     refused, and no path or person in the answer.
 
+## Before the MCP server
+
+The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); these two come first, and help the
+command line and the web UI as much.
+
+61. [Scalability; also feature] **Paged answers with counts, fast on a large catalog:** every list call of the API
+    answers one page by default, not every row, with the total (or, where counting is the slow part, whether there
+    is more), and the first page comes fast: the queries' `count(*) OVER ()` evaluates the whole result for every
+    page, and the API now pages only when asked. *Done when:* `pinakes find`, `where`, `history`, `changes`,
+    `only-here`, `backed-up` and `meta` say "N of TOTAL" and take `--limit` and `--offset`, their `--json` carries
+    the total, each tested through the API; and a benchmark in `tools/` on a generated catalog of 500,000 files
+    records each read call's first-page time, every one within 2 seconds on the hardware it states.
+62. [Security; also correctness] **A history of the catalog's own writes:** every review mark, tag and note, and
+    lineage decision is kept with who made it, by which token or on the web, when, and the value before; nothing
+    overwrites one. *Done when:* `pinakes edits [--token CLIENT] [--days N]` lists a person's writes, their own and
+    their tokens', and `pinakes undo EDIT...` puts back the value before, both with `--json` and tested through the
+    API; tests show a second person can neither see nor undo another's writes, an undo of a value changed since is
+    refused and names the later write, and a group token's writes are listed for its group's members.
+
 ## Soon: add-on modules
 
 Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.
 
-24. [Feature; also security] **MCP server**, an add-on module, over the read-only queries (DESIGN.md "Wish"), on the
-    API and tokens of 34, `read` scope only; no new powers in the core, and the core runs without it. *Done when:* tests show a
-    token acting as one person under row-level security, never stepping up, leaving protected roots out unless added,
-    and every query logged.
+24. [Feature; also security] **MCP server**, an add-on module (DESIGN.md "Wish: an MCP server"), on the API and
+    tokens of 34, after 61 and 62: the read-only queries, and review marks, tags and notes and lineage decisions with
+    the review and tag scopes, each write a preview and then an apply; streamable HTTP behind the proxy, each
+    connection with its own person's token. No new powers in the core, and the core runs without it. Needs too: the
+    account page's token form saying a hosted assistant receives the names and metadata its answers contain. A
+    person asks through their assistant; what it did they see with `pinakes access` and `pinakes edits`. *Done
+    when:* tests show a token acting as one person under row-level security, two connections with two people's
+    tokens each seeing only their own, never stepping up, leaving protected roots out unless added, every call
+    logged, a write changing nothing before its apply, and that write listed by `pinakes edits` and undone by
+    `pinakes undo`.

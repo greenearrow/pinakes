@@ -199,13 +199,18 @@ a database credential, not even on the catalog server.
 DESIGN.md "Wish: an MCP server". Its rules:
 
 - One token per person and client, created and revoked in the web UI, optionally limited to some roots; stored
-  hashed on the server.
-- The token acts as that person under row-level security. It can never open a step-up session, fetch a file, request
-  operations or edit metadata.
+  hashed on the server. A chat app that serves more than one person passes each person's token on their own
+  connection; `pinakes-mcp` holds no token of its own.
+- The token acts as that person under row-level security, with the scopes they gave it: `read`, and `review` and
+  `tag` if they choose. It can never open a step-up session, fetch a file, share sensitive fields or make tokens.
+- Writes ask first: a call that says what would change and changes nothing, then one that applies it. Every write
+  is kept with its token and the value before, and the person sees and undoes their tokens' writes (ROADMAP 62).
 - Every MCP query is logged with its token, so a person can see what their assistants asked.
 - A hosted assistant receives the names and metadata its answers contain. The UI says so when the token is made.
 - Protected roots are not in a token unless the person adds them, after a warning that the records go to whoever
   runs the assistant.
+- Later, with the operation queue (ROADMAP 17): an assistant may request a change on disk only to a file the catalog
+  says a backup holds; the request waits for approval and the agent's local `managed` policy like any other.
 
 ## The database and its backups
 
@@ -228,6 +233,6 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
-| An assistant with an MCP token oversteps | Read-only, the person's own view, no step-up, revocable, logged. |
+| An assistant with an MCP token oversteps | The person's own view and the scopes they gave, no step-up, writes asked first, kept with the value before and undoable, revocable, logged. |
 | Protected work's records reach an outside service that would use them | Protected roots: hashes only, never extracted; left out of MCP tokens unless added deliberately. Encrypted offsite backups of the database are storage, not use. |
 | Photo locations or people's names leak through sharing | Metadata fields marked sensitive stay with the owner unless shared explicitly (METADATA.md). |

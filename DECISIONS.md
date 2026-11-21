@@ -34,6 +34,14 @@ were made while building, to keep going, and are open to change.
   `days` for a full pass, default 30 (about 3.3 % a night). The agent writes the file of numbers itself from the
   filesystems under its roots and the person edits it; a published pinakes has to work for sites that never open
   it. A changed hash with an unchanged mtime is its own kind of change, not an edit.
+- **The MCP server** (2026-11-21). The assistant is meant to be the main way to use pinakes; the command line and
+  the web UI show what was done. So its tokens may have the review and tag scopes, not read alone: the catalog isn't
+  the file store, and with every write kept with the value before and undoable (ROADMAP 62), a wrong one is
+  recoverable. Writes ask first, a preview then an apply, since a local model makes more mistakes with tools.
+  Streamable HTTP behind the proxy, chosen for visibility over ease: one place where it runs, and a token per
+  connection, so a chat app shared by a household acts as each person; the audit is the API's either way. Answers
+  are paged with counts, and making them fast is the server's job (ROADMAP 61). Once the operation queue exists, an
+  assistant may request a change on disk only to a file a backup holds.
 
 ## Build
 
