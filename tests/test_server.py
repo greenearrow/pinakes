@@ -3743,11 +3743,12 @@ as = "annotator"
                 c.execute("SELECT pinakes.begin_step_up('checking a photo', 5)")
         with self.assertRaisesRegex(R, "only with a reader or annotator of the file"):
             self.share("user-1", "own.jpg")                                  # user-2 doesn't see it
-        # under a token: neither, whatever its scopes (pinakes tag is ROADMAP 37)
+        # under a token: entering only with its tag scope (pinakes tag, ROADMAP 37: tests/test_api.py TestCliTag),
+        # sharing never
         with self.as_person("user-1") as c:
             c.execute("SELECT set_config('pinakes.token', '1', false)")
             c.commit()                                                     # kept past each refusal's rollback
-            with self.assertRaisesRegex(R, "not with a token"):
+            with self.assertRaisesRegex(R, "tag scope"):
                 c.execute("SELECT pinakes.set_file_metadata(%s, 'dc', '{}', '{}')", (self.ids["own.jpg"],))
             c.rollback()
             with self.assertRaisesRegex(R, "not with a token"):

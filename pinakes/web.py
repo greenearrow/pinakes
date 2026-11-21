@@ -1,6 +1,7 @@
 """pinakes-web: the web UI (Flask, served by waitress). Read-only on the catalog but for review marks, lineage
-decisions, a person's own metadata on a file and sharing its sensitive fields, each through its database function;
-plus sign-in, a second factor, the administrator's step-up, and API tokens; and the JSON API.
+decisions, a person's own metadata on a file (their tags and notes by token too) and sharing its sensitive fields,
+each through its database function; plus sign-in, a second factor, the administrator's step-up, and API tokens;
+and the JSON API.
 
   pinakes-web --config /etc/pinakes/server.toml
 
@@ -21,6 +22,12 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
                                   only gone files and moves, only the person's own or co-owned, only in the
                                   token's roots; {"asked", "marked"}
+  tags?loc=ROOT:PATH              (scope read or tag) the files under it (or that file) with the person's role,
+                                  their own tags and note, and others' they can see (ROADMAP 37)
+  POST tag {"ids": [...], "add": [...], "remove": [...], "note": TEXT}   (scope tag; a person's token) the
+                                  person's own tags (dc.subject) and note (dc.description, "" removes it) on those
+                                  files: only where they are the owner, a co-owner or an annotator, only in the
+                                  token's roots; {"asked", "tagged"}
   relatives?loc=ROOT:PATH (or ?file=ID)   the file's direct relatives both ways, rejected ones too, with each
                                   edge's ends (from_file_id, to_file_id), confidence and decision (ROADMAP 9)
   POST decide {"files": [A, B], "decision": "confirmed"|"rejected"|null}   (scope review; a person's token) every
@@ -36,7 +43,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   they have one, for a read-only token of minutes ({"token", "until"}); limited
                                   like the web sign-in, and recorded for the person
   POST session/end                that token, revoked (its command is done)
-  POST is for these four; every other call is GET
+  POST is for these five; every other call is GET
   limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
   {"error": "..."} with 400, 401, 403, 404 or 429.
 
@@ -511,6 +518,59 @@ def create_app(cfg, connect=None):
         if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
             return api_answer({"error": "ids is a list of change numbers"}, 400)
         return api_answer({"asked": len(ids), "marked": queries.mark_changes(g.db, ids, mark) if ids else 0})
+
+    @api("tags", ("read", "tag"))
+    def api_tags():
+        return {"rows": queries.tags(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+
+    @app.route(API + "tag", methods=["POST"])
+    def api_tag():
+        """Tag files and note on them (ROADMAP 37), by their ids (as `tags` listed them): the person's own tags (their
+        dc.subject) get `add` and lose `remove`, and their note (dc.description) becomes `note` ("" removes it; none:
+        unchanged). Files the person may not enter on (only the owner, a co-owner or an annotator; only in the token's
+        roots) are skipped, and the database checks the same; answers how many of the files asked it tagged."""
+        if "tag" not in g.scopes:
+            return api_answer({"error": "this token doesn't have the tag scope"}, 403)
+        if g.kind != "person":
+            return api_answer({"error": "tags and notes are a person's own: use a person's token"}, 403)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        ids, note = body.get("ids"), body.get("note")
+        add, remove = body.get("add") or [], body.get("remove") or []
+        if not isinstance(ids, list) or len(ids) > TAG_BATCH or not all(
+                isinstance(i, int) and not isinstance(i, bool) and 0 < i < 2 ** 62 for i in ids):
+            return api_answer({"error": "ids is a list of at most %d file numbers" % TAG_BATCH}, 400)
+        try:
+            add, remove = [_tag(t) for t in _list(add)], [_tag(t) for t in _list(remove)]
+            if note is not None and not isinstance(note, str):
+                raise ValueError("a note is text")
+        except ValueError as e:
+            return api_answer({"error": str(e)}, 400)
+        if not add and not remove and note is None:
+            return api_answer({"error": "nothing to do: add, remove or note"}, 400)
+        schema = reg.schemas[registry.COMMON]
+        _, problems = extract.check_vals(schema, {"subject": add or None,
+                                                  "description": (note or "").strip() or None})
+        if problems:
+            return api_answer({"error": "; ".join(problems)}, 400)
+        tagged = 0
+        for fid in ids:
+            if queries.my_file_role(g.db, fid) not in ENTERS:
+                continue
+            vals = queries.my_entered(g.db, fid, registry.COMMON)
+            was = dict(vals)
+            subject = [t for t in vals.get("subject") or [] if t not in remove]
+            subject += [t for t in add if t not in subject]
+            vals["subject"] = subject or None
+            if note is not None:
+                vals["description"] = note.strip() or None
+            keep, problems = extract.check_vals(schema, vals)
+            if problems:
+                return api_answer({"error": "file %d: %s" % (fid, "; ".join(problems))}, 400)
+            if keep != was:
+                queries.set_file_metadata(g.db, fid, schema, keep)
+            tagged += 1
+        return api_answer({"asked": len(ids), "tagged": tagged})
 
     @api("relatives")
     def api_relatives():
@@ -1075,6 +1135,24 @@ def create_app(cfg, connect=None):
 ENTERS = ("owner", "co-owner", "annotator")      # who enters metadata on a file (ROADMAP 16)
 SHARES = ("owner", "co-owner")                   # who shares its sensitive fields
 REFS = ("person", "file")                        # types the catalog names, not a person typing
+
+
+TAG_BATCH = 1000                                 # files one POST tag may name
+
+
+def _list(v):
+    if not isinstance(v, list):
+        raise ValueError("add and remove are lists of tags")
+    return v
+
+
+def _tag(t):
+    """One tag as given: text, trimmed, with no comma (the web form takes a list's items separated by commas)."""
+    if not isinstance(t, str) or not t.strip():
+        raise ValueError("a tag is some text")
+    if "," in t:
+        raise ValueError("a tag has no comma: %s" % t)
+    return t.strip()
 
 
 def parse_entry(field, text):

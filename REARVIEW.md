@@ -48,6 +48,7 @@ agents).
 - 35. `pinakes` as a client of the API
 - 36. `--as NAME`
 - 37. Reviewing from a folder (first part)
+- 37. Tagging from a folder (last part)
 - 38. Group tokens
 - 39. Ops tokens and `pinakes releases`
 - 41. The scrub
@@ -338,7 +339,7 @@ another's file and every share or stop are audited. Web only: every token is ref
 agent's own MIME lookup, now one function the web uses too.
 
 **Not as the roadmap said:** sharing is per file, not per folder, as enrollments are still config-seeded (ROADMAP
-8). No `pinakes` command: entering by token is `pinakes tag` (ROADMAP 37); sharing stays on the web.
+8). No `pinakes` command: entering by token came with `pinakes tag` (ROADMAP 37); sharing stays on the web.
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_server.py`
 `TestPersonMetadata`, `tests/test_web.py` `TestEnteringMetadata`, `TestParseEntry`): a reader of a shared file sees
@@ -508,6 +509,29 @@ the scope refused by the API and by the database; a token limited to another roo
 ids (checked to fail without the check); the marks on the web's Changes and restore pages. Not run against a real
 catalog; not deployed.
 
+## 37. Tagging from a folder (last part)
+
+Design: DECISIONS.md "Tagging from a folder". With this, ROADMAP 37 is built and no longer listed.
+
+**Built:** `pinakes tag [PATH] [--add TAG] [--remove TAG] [--note TEXT] [--yes]`: a person's own tags and note (their
+`dc.subject` and `dc.description`, the values the file page enters) on the file, or on every file under the folder
+they own, co-own or annotate; shown, asked, then sent by the ids shown (a file named alone: at once; without a
+terminal only with `--yes`); says how many of how many were tagged. Without an option it lists the tags and notes
+there: the person's own and others' they can see. `GET /api/v1/tags?loc=` (scope `read` or `tag`) and `POST
+/api/v1/tag` (scope `tag`, a person's token, at most 1000 files a call; the CLI sends more in turns), which skips the
+files the person may not enter on and checks the values with `extract.check_vals`. `set_file_metadata()` now takes a
+person's token with the `tag` scope, still in its roots (`my_file_role()`), and refuses a group token by name
+(`schema.sql` and `upgrades/person-metadata.sql`, release 10, not cut; protocol 6's fingerprint updated).
+
+**State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCliTag`, the CLI
+against a real HTTP server on 127.0.0.1): the owner from inside the folder, asked and declining, then tagging; a file
+named alone; a note set and removed, a tag removed, a file left with nothing losing its row; the listing and its
+`--json`; a tag with a comma and an empty call refused; the tags on the web's file page with their author; an
+annotator tagging, audited for the owner; a reader's file skipped by the CLI and by ids; a token without the scope
+refused by the API and the database; a token limited to another root tagging nothing of the store, by path or by ids,
+and refused by the database; a group token refused by the API and the database. The scope check checked to fail
+without it. PostgreSQL 15, 17 and 18 not run; not run against a real catalog; not deployed.
+
 ## 38. Group tokens
 
 **Built:** A token of kind `group` acts as its group and no member: `begin_token_call()` sets no person,
@@ -517,7 +541,7 @@ account page by a member of the group ("Asks as"), listed for every member, revo
 its maker leaves the group; its calls, making and revoking are on every member's record; it marks only where the group
 is the owner or a co-owner, the mark the group's (`review_marks.marked_by_group`), audited with the token for every
 member; sensitive metadata where the group is the owner or a co-owner; `api-tokens.sql` fills `acl_groups` from each
-ACL's key. Tags wait for 37.
+ACL's key. Tags are a person's: a group token doesn't tag (37).
 
 **State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py`
 `TestGroupToken`): the group's files and no member's own, by the API and in the database; a non-member refused making,

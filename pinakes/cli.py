@@ -28,6 +28,10 @@
   pinakes review intended|restore [PATH] [--days N] [--yes]   mark the unreviewed gone files and moves under PATH
                                        (or of that file) reviewed, as on the web's Changes page: shown, then marked
                                        once you say yes. Only your own or co-owned; the token needs the review scope
+  pinakes tag [PATH] [--add TAG] [--remove TAG] [--note TEXT] [--yes]   your tags (again for more) and note on
+                                       the file, or on every file under the folder: shown, then changed once you say
+                                       yes (a file: at once). Without an option: the tags and notes there. Only where
+                                       you own, co-own or annotate; the token needs the tag scope. --note "" removes it
   pinakes restores [PATH] [--back]     the changes marked restore and the backup copies holding their content;
                                        --back: also those whose content is back where it was
   pinakes growth [FOLDER] [--weeks N]  per folder under FOLDER (none, outside every root: each root's top
@@ -389,7 +393,7 @@ FILE = ("where", "history", "versions", "lineage")                  # take one f
 FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
-                                         "restores", "relatives")
+                                         "restores", "relatives", "tag")
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -457,6 +461,9 @@ def run(api, a, cfg):
         return
     if a.cmd == "relatives":
         relatives(api, a, cfg)
+        return
+    if a.cmd == "tag":
+        tag(api, a, cfg)
         return
     if a.cmd == "releases":
         releases(api, a.json)
@@ -590,6 +597,83 @@ def review(api, a, cfg):
         print("the rest are not yours or co-owned to mark (readers can't), or outside this token's roots")
 
 
+ENTERS = ("owner", "co-owner", "annotator")      # who may tag a file (web.ENTERS)
+TAG_BATCH = 1000                                 # files one POST tag names (web.TAG_BATCH)
+
+
+def tag(api, a, cfg):
+    """pinakes tag [PATH] [--add TAG] [--remove TAG] [--note TEXT]: the person's own tags and note (their dc.subject
+    and dc.description, ROADMAP 37) on the file, or on each file under the folder, shown and then changed by their
+    ids once confirmed (a file named alone: at once; --yes: without asking). Without an option, the tags and notes
+    there. The catalog changes only what the person owns, co-owns or annotates, in the token's roots, with its tag
+    scope, and says how many."""
+    where = location(api, "tag", a.arg, _this_host(a.host, cfg), "any")
+    rows, offset = [], 0
+    while True:
+        got = api.get("tags", loc=where, limit=TAG_BATCH, offset=offset)["rows"]
+        rows += got
+        offset += len(got)
+        if len(got) < TAG_BATCH:
+            break
+    changing = bool(a.add or a.remove or a.note is not None)
+    if not changing:
+        if a.json:
+            print(json.dumps({"rows": rows}, indent=1))
+            return
+        if not rows:
+            print("no file you can see under %s" % where)
+            return
+        print("tags and notes on %d file(s) under %s:" % (len(rows), where))
+        _print(_tag_rows(rows[:SHOW]), False, ["path", "role", "tags", "note", "others"])
+        if len(rows) > SHOW:
+            print("... and %d more (--json for every one)" % (len(rows) - SHOW))
+        return
+    mine = [r for r in rows if r["role"] in ENTERS]
+    if not mine:
+        print("nothing to tag under %s: no file you own, co-own or annotate%s" % (
+            where, " (%d you only read)" % len(rows) if rows else ""))
+        return
+    what = "; ".join(x for x in ("add " + ", ".join(a.add) if a.add else "",
+                                 "remove " + ", ".join(a.remove) if a.remove else "",
+                                 ("note " + json.dumps(a.note) if a.note else "remove the note")
+                                 if a.note is not None else "") if x)
+    one = len(rows) == 1 and rows[0]["relpath"] == where.split(":", 1)[1]        # a file, named alone
+    if not a.json:
+        print("%d file(s) under %s to tag (%s)%s:" % (len(mine), where, what,
+                                                      ", %d you only read left alone" % (len(rows) - len(mine))
+                                                      if len(rows) > len(mine) else ""))
+        _print(_tag_rows(mine[:SHOW]), False, ["path", "tags", "note"])
+        if len(mine) > SHOW:
+            print("... and %d more" % (len(mine) - SHOW))
+    if not a.yes and not one:
+        if not sys.stdin.isatty():
+            raise Failed("not tagged: add --yes to tag them without being asked")
+        if input("Tag these %d? [y/N] " % len(mine)).strip().lower() not in ("y", "yes"):
+            print("not tagged")
+            return
+    body = {"add": a.add or [], "remove": a.remove or []}
+    if a.note is not None:
+        body["note"] = a.note
+    asked = tagged = 0
+    for i in range(0, len(mine), TAG_BATCH):
+        got = api.post("tag", dict(body, ids=[r["file_id"] for r in mine[i:i + TAG_BATCH]]))
+        asked, tagged = asked + got["asked"], tagged + got["tagged"]
+    if a.json:
+        print(json.dumps({"asked": asked, "tagged": tagged, "files": mine}, indent=1))
+        return
+    print("tagged %d of %d" % (tagged, asked))
+    if tagged < asked:
+        print("the rest are no longer yours to tag, or outside this token's roots")
+
+
+def _tag_rows(rows):
+    return [{"path": "%s:%s" % (r["root"], r["relpath"]), "role": r["role"] or "", "tags": r["tags"] or [],
+             "note": r["note"] or "",
+             "others": "; ".join("%s: %s" % (o["by"], ", ".join(x for x in (", ".join(o["tags"] or []),
+                                                                         o["note"] or "") if x))
+                                 for o in r["others"])} for r in rows]
+
+
 def relatives(api, a, cfg):
     """pinakes relatives FILE [--confirm|--reject|--clear OTHER]: the file's direct relatives; with an option, the
     link between FILE and OTHER decided first (ROADMAP 9). The catalog decides only what the person may, and says how
@@ -648,7 +732,10 @@ def main(argv=None):
     ap.add_argument("--down", action="store_true", help="lineage: what came from the file, not where it came from")
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--host", help="changes: only this host's; backups: this machine's name in the catalog")
-    ap.add_argument("--yes", action="store_true", help="review: mark without asking")
+    ap.add_argument("--yes", action="store_true", help="review, tag: mark or tag without asking")
+    ap.add_argument("--add", action="append", metavar="TAG", help="tag: add this tag (again for more)")
+    ap.add_argument("--remove", action="append", metavar="TAG", help="tag: remove this tag (again for more)")
+    ap.add_argument("--note", metavar="TEXT", help='tag: your note on each file ("" removes it)')
     ap.add_argument("--confirm", metavar="OTHER", help="relatives: confirm the link between FILE and OTHER")
     ap.add_argument("--reject", metavar="OTHER", help="relatives: reject it (never suggested again)")
     ap.add_argument("--clear", metavar="OTHER", help="relatives: clear the decision on it")

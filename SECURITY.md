@@ -137,8 +137,9 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   role has no write on the table itself. Under a token (`pinakes review`), `mark_changes()` also needs the token's
   `review` scope and skips changes outside its roots.
 - Person-entered metadata is written only through `set_file_metadata()`: by the owner, a co-owner or an annotator
-  of the file, each their own values only, never in a step-up and never under a token (until `pinakes tag`, ROADMAP
-  37); entering on another person's file is audited for its owners. A file's sensitive fields are shared only through
+  of the file, each their own values only, never in a step-up; under a token (`pinakes tag`, ROADMAP 37) only a
+  person's with its `tag` scope, in its roots, never a group's; entering on another person's file is audited for its
+  owners. A file's sensitive fields are shared only through
   `share_sensitive()`, by its owner or a co-owner, with a reader or annotator the file is already shared with; it
   shares no file, lapses when that person no longer sees it, is audited for them and the other owners, and the list
   of who has them (`sensitive_sharing()`) is the owners' only. The web role reads and writes neither table directly.
@@ -167,7 +168,7 @@ a database credential, not even on the catalog server.
 | Token | Acts as | Can |
 |---|---|---|
 | **person** | one person | their own files, what is shared with them and their groups'; scoped `read`, `review`, `tag` |
-| **group** | one group, no member | what the group owns or has shared with it, never a member's own; made, seen and revoked by the group's members, and dead once its maker leaves; marks only where the group owns or co-owns, as the group; scoped `read`, `review`, `tag` |
+| **group** | one group, no member | what the group owns or has shared with it, never a member's own; made, seen and revoked by the group's members, and dead once its maker leaves; marks only where the group owns or co-owns, as the group; never tags; scoped `read`, `review`, `tag` |
 | **ops** | no person (made by an operator) | `releases`, `stale` and `whoami`; never a person, root or file: the database sets no person for it, so row-level security shows it nothing |
 | **admin** | an administrator (later) | every function (`*`); another person's records still only in a step-up |
 

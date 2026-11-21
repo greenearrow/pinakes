@@ -95,14 +95,9 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
 
 Every person-facing function goes through one API in `pinakes-web`, with one way to authenticate (DECISIONS.md "The
 CLI and the API"), and `pinakes` is a client of it that runs on any machine and works where you are. Agents' batches
-stay on their forced SSH keys, and server maintenance stays a local command (`pinakes-ingest`). 33 to 36, 38, 39 and
-37's first part are built (REARVIEW.md). Left, in order:
+stay on their forced SSH keys, and server maintenance stays a local command (`pinakes-ingest`). 33 to 39 are built
+(REARVIEW.md). Left:
 
-37. [Feature; also security] **Tagging from a folder.** Reviewing from a folder is built (REARVIEW.md); left:
-    `pinakes tag` and notes, with the token's `tag` scope: person-entered metadata exists (16), and its
-    `set_file_metadata()` refuses every token until this opens it to that scope. *Done when:* tests
-    cover an owner tagging from inside a folder, a reader refused, a token without the scope refused, a root outside
-    the token's limit refused, and the tags shown in the web UI.
 40. [Security] **A protected admin API** (later): admin tokens with every function (`*`), each call audited; another
     person's records still only in a step-up, logged where they can see it, as on the web. Until then administration
     is the server's local CLI. *Done when:* tests show an admin token refused another person's records without an

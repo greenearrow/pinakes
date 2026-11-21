@@ -749,6 +749,29 @@ def set_file_metadata(conn, file_id, schema, vals):
                  (file_id, schema.name, json.dumps(plain), json.dumps(hidden)))
 
 
+def tags(conn, loc, limit=None, offset=0):
+    """The files under loc (or that file) the person can see, symlinks aside, each with the person's role on it, their
+    own tags and note (their dc.subject and dc.description, ROADMAP 37) and the others' they can see (`others`: by,
+    tags, note)."""
+    root, path = split_location(loc)
+    return rows(conn, """SELECT f.file_id, r.label AS root, f.relpath, pinakes.my_file_role(f.file_id) AS role,
+                                mine.vals->'subject' AS tags, mine.vals->>'description' AS note,
+                                (SELECT coalesce(jsonb_agg(jsonb_build_object('by', p.display,
+                                                                              'tags', o.vals->'subject',
+                                                                              'note', o.vals->'description')
+                                                           ORDER BY p.display, o.metadata_id), '[]')
+                                 FROM pinakes.metadata o JOIN pinakes.people p ON p.person_id = o.author
+                                 WHERE o.file_id = f.file_id AND o.schema = 'dc' AND o.source = 'person'
+                                   AND NOT o.sensitive AND o.author IS DISTINCT FROM pinakes.current_person()
+                                   AND (o.vals ? 'subject' OR o.vals ? 'description')) AS others, """ + TOTAL + """
+                         FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                         LEFT JOIN pinakes.metadata mine ON mine.file_id = f.file_id AND mine.schema = 'dc'
+                              AND mine.source = 'person' AND NOT mine.sensitive
+                              AND mine.author = pinakes.current_person()
+                         WHERE r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s) AND NOT f.is_symlink
+                         ORDER BY f.relpath, f.file_id""" + PAGE, (root, _prefix(path), path, limit, offset))
+
+
 def sensitive_sharing(conn, file_id):
     """For the file's owner or a co-owner: its readers and annotators, and whether its sensitive fields are shared
     with each. Nobody else gets a row."""

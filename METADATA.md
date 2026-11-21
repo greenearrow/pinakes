@@ -141,6 +141,9 @@ schema's sensitive fields stay apart, as extracted ones do. The owner or a co-ow
 fields with any of its readers and annotators, and stops; the page lists who has them, for the owners only. Both
 are audited where they touch someone else's file or records.
 
+From a shell, `pinakes tag` sets a person's tags (their `dc.subject`) and note (their `dc.description`) on a file or
+on every file under a folder, by a person's token with the `tag` scope (ROADMAP 37); other fields stay on the page.
+
 ## Pairing: bundles
 
 Some files only make sense together. A **bundle** is a set of files with a lead file; each schema declares its

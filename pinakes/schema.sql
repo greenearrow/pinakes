@@ -855,10 +855,10 @@ $$;
 -- Enter metadata on a file (ROADMAP 16): the current person's values of one schema replace what they entered on it
 -- before, the schema's sensitive fields (`hidden`) in a row of their own as extracted ones are; empty objects remove
 -- them. The values are the file's own, so they follow it through moves, and belong to their author: nobody else
--- changes them. Only the owner, a co-owner or an annotator enters, on the web (never under a token: `pinakes tag`
--- is ROADMAP 37), and a step-up gives no right to. The application checks the values against the registry
--- (extract.check_vals); this checks who, the schema's name and the size. Entering on another person's file is
--- audited for its owners and co-owners.
+-- changes them. Only the owner, a co-owner or an annotator enters: on the web, or under a person's token with its
+-- `tag` scope and in its roots (`pinakes tag`, ROADMAP 37), never a group token; a step-up gives no right to.
+-- The application checks the values against the registry (extract.check_vals); this checks who, the schema's name
+-- and the size. Entering on another person's file is audited for its owners and co-owners.
 CREATE FUNCTION set_file_metadata(fid bigint, sch text, plain jsonb, hidden jsonb) RETURNS void
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pinakes AS $$
 DECLARE
@@ -866,8 +866,12 @@ DECLARE
     mine text := my_file_role(fid);
     affected int[];
 BEGIN
+    IF current_group() IS NOT NULL THEN RAISE EXCEPTION 'a group token doesn''t enter metadata'; END IF;
     IF me IS NULL THEN RAISE EXCEPTION 'no person set'; END IF;
-    IF current_token() IS NOT NULL THEN RAISE EXCEPTION 'metadata is entered on the web, not with a token'; END IF;
+    IF current_token() IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.token_id = current_token() AND 'tag' = ANY (t.scopes)) THEN
+        RAISE EXCEPTION 'this token doesn''t have the tag scope';
+    END IF;
     IF mine IS NULL OR mine NOT IN ('owner', 'co-owner', 'annotator') THEN
         RAISE EXCEPTION 'only the owner, a co-owner or an annotator of a file enters its metadata';
     END IF;

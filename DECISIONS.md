@@ -388,9 +388,8 @@ were made while building, to keep going, and are open to change.
   while they still do. Who has them is shown to the owners only (`sensitive_sharing()`; the table is read through
   that function and written through the other), and each share and its end is audited for the person and the other
   owners. Per file, not per folder, because enrollments are still seeded from the server's config (ROADMAP 8); a
-  folder's share can come with enrolling. Both are web only: under a token the functions refuse, whatever its
-  scopes, until `pinakes tag` (ROADMAP 37) opens entering to the `tag` scope; sharing stays a person's act on the
-  web. Which schemas a file's form offers follows its name's MIME type, as the agent picks extractors
+  folder's share can come with enrolling. Sharing is web only, refused under every token; entering opened to a
+  person's token with the `tag` scope with `pinakes tag` (ROADMAP 37, below). Which schemas a file's form offers follows its name's MIME type, as the agent picks extractors
   (`extract.mime_of`), and the common schema fits every file. Older catalogs: `upgrades/person-metadata.sql`.
 - **Hidden files** are those with a dot at the start of their name or of a folder's above them, or with the
   Windows hidden attribute, set on them or on a folder above, which Samba keeps in the `user.DOSATTRIB` extended
@@ -471,7 +470,17 @@ were made while building, to keep going, and are open to change.
   unseen. Without a terminal it marks only with `--yes`. `mark_changes()` checks the token's scope and roots itself,
   because it reads history and files as the schema's owner, where the files policy doesn't apply; the test was
   checked to fail without it (two changes outside the token's roots were marked). Its new body ships in
-  `api-tokens.sql` with the rest of release 5. Tags wait for person-entered metadata (16).
+  `api-tokens.sql` with the rest of release 5.
+- **Tagging from a folder (ROADMAP 37).** A tag is an item of the person's own `dc.subject` and a note is their
+  `dc.description`: the common schema's keywords and description, the same values the file page enters, so the CLI
+  and the web never disagree about what a file's tags are, and `meta dc.subject=X` finds them. `pinakes tag` adds and
+  removes single tags rather than setting the list, so tagging a folder keeps what each file had; a tag has no comma,
+  as the web form takes a list's items separated by commas. Like `pinakes review` it shows the files, asks, and sends
+  exactly the ids it showed; a file named alone is tagged at once, as there is nothing to sweep in. It sends only the
+  files the person owns, co-owns or annotates, says how many it leaves alone, and the API skips the rest again;
+  `set_file_metadata()` checks the token's `tag` scope itself, and its roots through `my_file_role()`, so a call that
+  forgot either is still refused. A group token doesn't tag: an entered value has a person as its author and is
+  theirs alone to change, and a group has no person to be. Values other than tags and notes stay on the file page.
 - **Ops tokens and `pinakes releases` (ROADMAP 39).** An ops token is a token of its own kind (`tokens.kind`), made
   by an operator, scope `ops` alone: the database sets no person for its calls, so even a call that forgot its
   scope check would see no file, and it answers only `releases`, `stale` and `whoami` (a test calls every route).
@@ -488,7 +497,7 @@ were made while building, to keep going, and are open to change.
   owns or reads and never a member's own, and its view doesn't change when members come and go. A mark is the
   group's (`review_marks.marked_by_group`), only where the group is the owner or a co-owner; the audit entry names
   the token and its maker and goes to every member, as do its calls. Its sensitive metadata follows the owner's rule,
-  by the group's role. Tagging waits for 37.
+  by the group's role. It doesn't tag (ROADMAP 37): an entered value is a person's.
 - **The operator page and a disk's loss (ROADMAP 10, 42).** A disk is a device of a host as the agent saw it
   (`st_dev`): a root never crosses a filesystem, so a disk is one or more roots. Losing it loses the files with no
   readable copy on another host or another device of that host, counted as only-here counts them; the same per host is

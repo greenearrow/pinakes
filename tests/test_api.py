@@ -281,12 +281,13 @@ class TestApi(ApiCase):
         self.assertEqual(c.get("/file/%d" % diary).status_code, 200)        # the web session is stepped up
         self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
-        # GET only, but for signing in and out (pinakes --as), and the review marks and lineage decisions a token's
-        # review scope allows (the database checks the scope again)
+        # GET only, but for signing in and out (pinakes --as), the review marks and lineage decisions a token's
+        # review scope allows and the tags its tag scope allows (the database checks the scope again)
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
         posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
-        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review", "/api/v1/decide"})
+        self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review", "/api/v1/decide",
+                                 "/api/v1/tag"})
         for rule in api:
             self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
@@ -969,6 +970,175 @@ as = "co-owner"
                                      headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, json.load(r)
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliTag(ServerCase):
+    """pinakes tag [PATH] (ROADMAP 37): a person's own tags and note from inside a folder, through
+    set_file_metadata() and its rules, with the token's tag scope and roots."""
+
+    U = "people/user-1/"
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER + """
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/notes"
+person = "user-2"
+as = "annotator"
+""")
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        for rel in ("trip/a.jpg", "trip/b.jpg", "trip/day-2/c.txt", "notes/n.txt", "shared-with-2/plan.txt"):
+            self.write("server-1", "store", self.U + rel, b"content " + rel.encode())
+        self.write("laptop-1", "downloads", "d.txt", b"downloads")
+        self.scan("server-1", "store")
+        self.scan("laptop-1", "downloads")
+        self.folder = self.path("server-1", "store", self.U + "trip")
+        self.cli = None
+
+    def as_(self, person, scopes=("read", "tag"), roots=None):
+        if self.cli:
+            self.cli.close()
+        self.cli = CliRun(self, person, scopes, roots)
+        self.addCleanup(lambda: self.cli and self.cli.close())
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')
+        return self.cli
+
+    def entered(self):
+        """{(path, author): dc values} of every person-entered dc row."""
+        return {(r[0], r[1]): r[2] for r in self.q(
+            "SELECT f.relpath, p.name, m.vals FROM pinakes.metadata m JOIN pinakes.files f USING (file_id) "
+            "JOIN pinakes.people p ON p.person_id = m.author WHERE m.source = 'person' AND m.schema = 'dc'")}
+
+    def fid(self, rel):
+        return self.q("SELECT file_id FROM pinakes.files WHERE relpath = %s", (rel,))[0][0]
+
+    def post(self, cli, body):
+        import urllib.request
+        with open(cli.home_token()) as f:
+            token = f.read().strip()
+        req = urllib.request.Request(cli.url + "/api/v1/tag", data=json.dumps(body).encode(), method="POST",
+                                     headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, json.load(e)
+
+    def test_the_owner_tags_from_inside_the_folder_once_asked(self):
+        cli = self.as_("user-1")
+        with mock.patch("sys.stdin.isatty", return_value=True), mock.patch("builtins.input", return_value="n"):
+            out = cli("tag", "--add", "holiday", "--add", "2026", cwd=self.folder)
+        self.assertIn("3 file(s) under store:people/user-1/trip to tag (add holiday, 2026):", out)
+        self.assertTrue(out.endswith("not tagged\n"), out)
+        self.assertEqual(self.entered(), {})
+        with mock.patch("sys.stdin.isatty", return_value=True), \
+                mock.patch("builtins.input", return_value="y") as asked:
+            out = cli("tag", "--add", "holiday", "--add", "2026", cwd=self.folder)
+        self.assertEqual(asked.call_args.args[0], "Tag these 3? [y/N] ")
+        self.assertIn("tagged 3 of 3", out)
+        trip = {(self.U + "trip/" + r, "user-1"): {"subject": ["holiday", "2026"]}
+                for r in ("a.jpg", "b.jpg", "day-2/c.txt")}
+        self.assertEqual(self.entered(), trip)
+        # not asked without a terminal unless --yes; a file named alone at once; a note, a tag removed, the note gone
+        self.assertIn("add --yes", cli("tag", "--add", "x", cwd=self.folder, code=1))
+        out = cli("tag", "a.jpg", "--note", "the harbour at dawn", "--remove", "2026", cwd=self.folder)
+        self.assertIn("tagged 1 of 1", out)
+        trip[(self.U + "trip/a.jpg", "user-1")] = {"subject": ["holiday"], "description": "the harbour at dawn"}
+        self.assertEqual(self.entered(), trip)
+        cli("tag", "day-2", "--remove", "holiday", "--remove", "2026", "--yes", cwd=self.folder)
+        del trip[(self.U + "trip/day-2/c.txt", "user-1")]               # nothing left: no row
+        self.assertEqual(self.entered(), trip)
+        cli("tag", "store:" + self.U + "trip/a.jpg", "--note", "", cwd=self.tmp)
+        trip[(self.U + "trip/a.jpg", "user-1")] = {"subject": ["holiday"]}
+        self.assertEqual(self.entered(), trip)
+        # without an option, what is there; --json
+        out = cli("tag", cwd=self.folder)
+        self.assertIn("tags and notes on 3 file(s) under store:people/user-1/trip:", out)
+        self.assertRegex(out, r"store:people/user-1/trip/b.jpg +owner +holiday")
+        rows = json.loads(cli("tag", "b.jpg", "--json", cwd=self.folder))["rows"]
+        self.assertEqual([(r["relpath"], r["role"], r["tags"], r["note"]) for r in rows],
+                         [(self.U + "trip/b.jpg", "owner", ["holiday", "2026"], None)])
+        # a tag with a comma, and nothing asked, refused by the API
+        self.assertIn("a tag has no comma", cli("tag", "a.jpg", "--add", "a,b", cwd=self.folder, code=1))
+        self.assertEqual(self.post(cli, {"ids": [self.fid(self.U + "trip/a.jpg")]}),
+                         (400, {"error": "nothing to do: add, remove or note"}))
+        # shown on the web, on the file's page, as entered by the person
+        c = cli.app.test_client()
+        page = c.get("/login").get_data(as_text=True)
+        csrf = re.search(r'name="csrf" value="([^"]+)"', page).group(1)
+        self.conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash) SELECT person_id, %s "
+                          "FROM pinakes.people WHERE name = 'user-1'", (auth.hash_password(PASSWORDS["user-1"]),))
+        c.post("/login", data={"csrf": csrf, "name": "user-1", "password": PASSWORDS["user-1"]})
+        page = c.get("/file/%d" % self.fid(self.U + "trip/b.jpg")).get_data(as_text=True)
+        self.assertIn("holiday", page)
+        self.assertIn("User One", page)
+        # every call on the person's record, with the token
+        calls = [r[0] for r in self.q("SELECT a.detail->>'call' FROM pinakes.audit a WHERE a.action = 'api' "
+                                      "AND a.detail->>'call' = 'tag' ")]
+        self.assertGreaterEqual(len(calls), 5)
+
+    def test_an_annotator_tags_and_a_reader_cant(self):
+        cli = self.as_("user-2")
+        out = cli("tag", "store:" + self.U + "notes/", "--add", "draft", "--yes", cwd=self.tmp)
+        self.assertIn("tagged 1 of 1", out)
+        self.assertEqual(self.entered(), {(self.U + "notes/n.txt", "user-2"): {"subject": ["draft"]}})
+        self.assertEqual(self.q("SELECT p.name, a.affects FROM pinakes.audit a JOIN pinakes.people p "
+                                "ON p.person_id = a.actor WHERE a.action = 'metadata'"),
+                         [("user-2", [self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0]])])
+        shared = "store:" + self.U + "shared-with-2/"
+        self.assertEqual(cli("tag", shared, "--add", "mine", "--yes", cwd=self.tmp),
+                         "nothing to tag under %s: no file you own, co-own or annotate (1 you only read)\n" % shared)
+        plan = self.fid(self.U + "shared-with-2/plan.txt")
+        self.assertEqual(self.post(cli, {"ids": [plan], "add": ["mine"]}), (200, {"asked": 1, "tagged": 0}))
+        self.assertNotIn((self.U + "shared-with-2/plan.txt", "user-2"), self.entered())
+        # the owner sees the annotator's tag as another's
+        cli = self.as_("user-1")
+        self.assertIn("User Two: draft", cli("tag", "store:" + self.U + "notes/", cwd=self.tmp))
+
+    def test_a_token_without_the_scope_outside_its_roots_or_a_groups(self):
+        cli = self.as_("user-1", scopes=("read",))
+        self.assertEqual(cli("tag", "--add", "x", "--yes", cwd=self.folder, code=1),
+                         "pinakes: this token doesn't have the tag scope")
+        self.assertIn("tags and notes on 3 file(s)", cli("tag", cwd=self.folder))      # reading, yes
+        self.assertEqual(self.entered(), {})
+        # limited to downloads: the store's files are out of sight, and their ids out of reach
+        a = self.fid(self.U + "trip/a.jpg")
+        cli = self.as_("user-1", roots=[self.q("SELECT root_id FROM pinakes.roots WHERE label = 'downloads'")[0][0]])
+        self.assertIn("not inside a root that server-1 reports", cli("tag", "--add", "x", "--yes",
+                                                                     cwd=self.folder, code=1))
+        self.assertEqual(cli("tag", "store:" + self.U + "trip/", "--add", "x", "--yes", cwd=self.tmp),
+                         "nothing to tag under store:people/user-1/trip/: no file you own, co-own or annotate\n")
+        self.assertEqual(self.post(cli, {"ids": [a], "add": ["x"]}), (200, {"asked": 1, "tagged": 0}))
+        self.assertEqual(self.entered(), {})
+        self.assertIn("tagged 1 of 1", cli("tag", "downloads:d.txt", "--add", "x", cwd=self.tmp))    # its own root
+        # and the database itself refuses, whatever the application asks: no scope, outside the roots, a group
+        R = psycopg.errors.RaiseException
+        for scopes, roots, group, refused in (
+                (["read"], None, None, "tag scope"),
+                (["read", "tag"], [self.q("SELECT root_id FROM pinakes.roots WHERE label = 'downloads'")[0][0]],
+                 None, "only the owner"),
+                (["read", "tag"], None, "household", "a group token")):
+            secret = "pinakes_test_%s" % os.urandom(8).hex()
+            with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+                c.execute("SELECT set_config('pinakes.person', person_id::text, true) FROM pinakes.people "
+                          "WHERE name = 'user-1'")
+                c.execute("SELECT pinakes.make_token('workstation-1', %s, %s, %s, NULL, "
+                          "(SELECT group_id FROM pinakes.groups WHERE name = %s))",
+                          (hashlib.sha256(secret.encode()).digest(), scopes, roots, group))
+            with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+                c.execute("SELECT * FROM pinakes.begin_token_call(%s, 'test')",
+                          (hashlib.sha256(secret.encode()).digest(),))
+                with self.assertRaisesRegex(R, refused):
+                    c.execute("SELECT pinakes.set_file_metadata(%s, 'dc', '{\"subject\": [\"x\"]}', '{}')", (a,))
+            if group:                                                   # and the API, before it asks
+                CliRun.save(cli.home_token(), secret)
+                self.assertEqual(self.post(cli, {"ids": [a], "add": ["x"]}),
+                                 (403, {"error": "tags and notes are a person's own: use a person's token"}))
+        self.assertEqual(self.entered(), {("d.txt", "user-1"): {"subject": ["x"]}})
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")
