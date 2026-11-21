@@ -2,6 +2,42 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 12
+
+Not cut. Affects the server only. Protocol 6, as release 11: no change to the schema, the batches or the agent, so
+nothing else needs updating.
+
+### Before you update
+
+1. No upgrade file (`tools/latest-release --upgrades-after 11` lists none). Update the server.
+2. Optional: `[web] statement_timeout` (default `55s`; `0` for no limit). The command waits 60 s, so keep it below
+   that.
+
+### `pinakes changes` answers on a root with many gone files
+
+- `changes` counts every matching row, and the lookup of each gone file's copies (`elsewhere`, `backups`) sat under
+  that count, so it ran for every gone file in the window, not only the page shown. On a catalog of 3.4 M files, one
+  root's 30 days (193 k history rows) took 4 s without the lookup and was cancelled at 300 s with it. The page is now
+  cut first and the copies looked up for its rows only; `--elsewhere` stops at the first copy. The rows and their
+  order are unchanged.
+- A test checks that the lookup runs once per row on the page, not once per gone file in the window.
+
+### One slow query no longer blocks everybody's
+
+- The server had no statement timeout: a call the command had given up on at 60 s kept running, holding a thread
+  and the database, and every other call waited for minutes. `[web] statement_timeout` (default `55s`) stops a query
+  in the database once it runs past it, and the answer is a 503 saying to ask for less (a folder, fewer days, a
+  smaller page).
+
+### Not yet
+
+Tested on `81203bc`: `tools/test --matrix`, 489 tests on Python 3.10.22, 3.11.18, 3.12.3, 3.13.18, 3.14.9 and 3.15.2,
+each with PostgreSQL 16.15 (Linux x86-64), all OK; `tools/test --wheel`, the installed wheel, 489 tests on Python
+3.12.3, OK (one skipped by design, as it needs git). PostgreSQL 15, 17 and 18 not run; aarch64 not run. Not run
+against a real catalog; not deployed. A call stopped by the timeout isn't recorded in `pinakes access` (its record
+is rolled back with the query). Counting every row stays: about 4 s on that root, measured before this
+change.
+
 ## Release 11
 
 Cut 2026-11-21 (tag `release-11`). Affects the server only. Protocol 6, as release 10: no change to the schema, the batches or the agent, so
