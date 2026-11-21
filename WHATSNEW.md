@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 13 (0.13.0)
 
-Not cut. Affects the server and the CLI. Protocol 6, as release 12: no change to the schema, the batches or the
+Cut 2026-11-21 (tags `release-13` and `v0.13.0`). Affects the server and the CLI. Protocol 6, as release 12: no change to the schema, the batches or the
 agent. Either may be updated first: an older `pinakes` ignores the new counts, and against an older server the new
 one prints no count line.
 
