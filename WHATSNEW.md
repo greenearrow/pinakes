@@ -2,6 +2,92 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 10
+
+Not cut. Affects the server, the agents and the CLI. Protocol 6, a change to the schema only: agents of protocol 0 to
+5 work with this server unchanged, and this agent with any server, so the server and the agents may be updated in
+either order. The CLI goes with the server: its lists are now paged.
+
+### Before you update
+
+1. As the schema's owner, run `upgrades/lineage-decisions.sql`, `upgrades/person-metadata.sql` and
+   `upgrades/edits.sql`, in that order (`tools/latest-release --upgrades-after 9` lists them). Then update the server.
+2. Run `pinakes-ingest tidy` once after the update: it links the files ingested before it by their XMP identity
+   fields, and replaces the undecided name edges those links make unneeded.
+3. Update the CLI on every machine that has the `pinakes` command: the catalog server, and each desktop or laptop
+   where it was installed with a person's agent. Every list call of the API now answers one page unless asked, so an
+   older `pinakes` sees only the first page of a list, and its `review`, `tag` and `export` only the first page's
+   files. Scripts that read a list's `--json` read its `rows`.
+4. Update the agents: this release makes their scrub fast on a filesystem that holds one root. Nothing else in the
+   agent changes, so an agent left on an older release keeps working.
+
+### Lineage decisions
+
+- Confirm, reject or clear the link between a file and a direct relative: on the file page (Direct relatives),
+  `pinakes relatives FILE --confirm|--reject|--clear OTHER`, and `POST /api/v1/decide`. `pinakes relatives FILE` and
+  `GET /api/v1/relatives` list a file's direct relatives both ways, rejected ones too.
+- A decision covers every edge between the two files but a certain one (the same content), and outranks every
+  heuristic: a rejected pair is never suggested again by a scan or `tidy`; a confirmed edge survives `tidy`. Only the
+  owner or a co-owner of the later file decides, or an administrator in a step-up. Under a token: the review scope,
+  never a group token.
+
+### Identity fields in lineage
+
+- Files whose XMP DocumentID or InstanceID match, or whose DerivedFrom names the other, are linked with certainty,
+  whatever their names. A schema names such fields with `identity` and `parent`.
+
+### Entering metadata, and sharing sensitive fields
+
+- On a file's page, its owner, a co-owner or an annotator sets or removes their own value of any field of a schema
+  that fits the file. It is kept on the file (it follows moves) with its author; entering on another person's file is
+  audited for its owners.
+- The owner or a co-owner shares a file's sensitive fields (GPS, people shown, places) with one of its readers or
+  annotators, and stops. On the web only, never with a token; audited for that person and the other owners.
+
+### Tagging from a folder
+
+- `pinakes tag [PATH] --add TAG --remove TAG --note TEXT`: your own tags (`dc.subject`) and note (`dc.description`)
+  on the file, or on every file under the folder that you own, co-own or annotate, shown and asked first (`--yes`
+  without). Without an option it lists the tags and notes there. New API calls `GET tags` and `POST tag` (the tag
+  scope, a person's token).
+
+### Paged answers with counts
+
+- Every list call of the API answers a page, 100 rows by default (`limit=` up to 10,000, `offset=`), with the whole
+  list's `total`. The `pinakes` commands that list take `--limit` and `--offset` and print "N of TOTAL" and the next
+  page's `--offset`.
+- Faster on a large catalog: the web turns PostgreSQL's JIT off on its connections, and `meta` and folder copies use
+  their indexes. `tools/bench-pages` times each read call's first page on a generated catalog of 500,000 files: every
+  one within 2 s on the hardware it was run on (REARVIEW.md 61).
+
+### A history of the catalog's own writes
+
+- Every review mark, lineage decision and person-entered value (tags, notes) written from this release on is kept as
+  an edit: who made it, by which token or on the web, when, and each value before and after. Nothing overwrites one.
+- `pinakes edits [--token CLIENT] [--days N]` lists your edits and your groups'. `pinakes undo EDIT...` puts back the
+  values before, and refuses an edit whose value changed since, naming the later edit. New API calls `GET edits` and
+  `POST undo`. An undo is an edit too, audited like the write.
+
+### Smaller changes
+
+- The token form on the account page says what an assistant receives: whoever runs it gets the file names, paths and
+  metadata its answers return.
+- The agent's scrub looks each file up by its inode's index: on a filesystem holding one root it searched the whole
+  root for each file, a few files a second.
+
+### Documentation
+
+- `INSTALL.md`: setting up a site step by step: the catalog server, each machine with files, people, updating and
+  backing up the catalog.
+- `README.md` rewritten: what pinakes is, what it does, and how to use it. `CONTRIBUTING.md`: tests, hooks and
+  cutting a release (the checklist that was in the README).
+
+### Not yet
+
+Tested: 485 tests on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (Linux x86-64), and on the installed wheel
+(Python 3.12.3; one test skipped there by design, as it needs git); PostgreSQL 15, 17 and 18 not run. Not run against
+a real catalog; not deployed.
+
 ## Release 9
 
 Cut 2026-11-20 (tag `release-9`). Affects the server and the CLI; the agents are unchanged. Protocol 5, as release 8: no schema upgrade.
