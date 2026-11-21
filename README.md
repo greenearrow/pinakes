@@ -52,7 +52,8 @@ Built and tested:
   laptops can scan only on mains power. Agents hold no database credentials: batches travel by an SSH key forced to
   one command, or a shared directory.
 - **Every write is undoable** (from release 10). Review marks, lineage decisions, tags and notes are each kept with
-  who made them, by which token, and the value before; `pinakes edits` lists yours and `pinakes undo` puts the old values back.
+  who made them, by which token, and the value before; `pinakes edits` lists yours and `pinakes undo` puts the old
+  values back.
 
 Not yet (ROADMAP.md): extractors beyond JPEG (audio tags, PDF, office, video, XMP sidecars), bundles (RAW with JPEG,
 a photo with its sidecar), changing owners in the web UI, file operations by approved request (move, rename, trash;
@@ -186,9 +187,8 @@ Configuration, all of it site-specific and none in the code:
   ownership rules.
 - [client.example.toml](client.example.toml): the `pinakes` command.
 
-On the server, `pinakes-ingest --config FILE setup` seeds people, hosts and schemas once the schema is applied, and
-`pinakes-ingest --config FILE passwd NAME` sets a person's first password. A step-by-step install guide is not
-written yet.
+[INSTALL.md](INSTALL.md) sets up a site step by step: the database, the catalog server and its web UI, an agent on
+each machine (a system service, or a person's own on a laptop), and the people and their tokens.
 
 ## Documentation
 
@@ -202,4 +202,5 @@ written yet.
   planned, kept for the day a catalog's size asks for it.
 - [REARVIEW.md](REARVIEW.md): what is built, and how each piece was tested.
 - [DECISIONS.md](DECISIONS.md): every choice made while building, and why.
+- [INSTALL.md](INSTALL.md): setting up a site, and updating it.
 - [CONTRIBUTING.md](CONTRIBUTING.md): tests, hooks, and cutting a release.
