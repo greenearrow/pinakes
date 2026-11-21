@@ -239,7 +239,8 @@ were made while building, to keep going, and are open to change.
   known as one. Older catalogs: `upgrades/symlink-targets.sql`, after `protected-links.sql`.
 - **Paging:** every list in the web UI is paged (50, 100, 250 or 500 a page, 100 by default); a query selects its
   total with a window count, so a page says "41-80 of 312" without a second query. Page links keep the page's other
-  arguments; a bad page or size falls back to the first page at the default size. The CLI still gets everything.
+  arguments; a bad page or size falls back to the first page at the default size. The API and the CLI page too
+  (ROADMAP 61, below).
 - **Sorting is in SQL, not in the browser:** a page holds only part of a list, so a script (DataTables and the like)
   would sort that part. Each column header has a ▲ and a ▼ link (`sort`, `dir`; `copies_sort` and the like for
   the lists on a file's page), so either direction is one click and one query, not a toggle; the current one is
@@ -538,3 +539,22 @@ were made while building, to keep going, and are open to change.
   `pinakes-ingest tidy`: each with identity metadata, never changed, whose only source is an undecided name edge or
   none, is worked out as a scan would now, and a name edge it had goes (identity outranks names; a decided edge
   stays and keeps the file out). Chunk edges aren't redone, so a file whose source is chunks keeps it.
+- **Paged answers with counts (ROADMAP 61).** Every list call of the API answers one page unless asked otherwise:
+  100 rows, at most 10,000 with `limit=`, and the whole list's total beside it, read from the window count each
+  query already selects; a page past the end asks once more for the total alone. A total is always given, never
+  only "there is more": on a generated catalog of 500,000 files every first page with its total took at most 0.9 s
+  (duplicates; only-here of a whole root of 400,000 files 0.7 s), so counting was not the slow part, and a person (or an
+  assistant) needs the number to know what they are looking at. What was slow had other causes, fixed where they
+  were: PostgreSQL's JIT compiled short queries whose costs row-level security makes look high, and compiling took
+  longer than running them (folder copies 1.5 s of 1.6 s), so the web turns JIT off on its connections; `meta`
+  asked `sensitive_visible()` of every sensitive row of the schema before its own test of the value, which the
+  policy's order puts last, so it now tests `m.sensitive` first (a field's values are in a row of its own
+  sensitivity, and the registry knows which); folder copies built every folder of the catalog to answer for one,
+  and now builds only the scope's and looks the other folders' files up by path (a scope of most of the catalog
+  takes as long as before). Under row-level security only a
+  leakproof comparison becomes an index condition, so a path is made before it is compared (`||` isn't leakproof;
+  `=` and `~>=~` are). The CLI shows a page and says "N of TOTAL" and the next `--offset`; `--json` is the API's
+  answer, rows and total. Commands that act on a whole list (review, tag, export) ask a page at a time until the
+  last. Offsets, not keysets: the web already pages by them, and a person reads the first pages; an export of
+  hundreds of thousands of rows asks 10,000 at a time. roots, stale, host-roots, lineage and relatives aren't paged:
+  a site's roots and hosts, and one file's relatives, are short.

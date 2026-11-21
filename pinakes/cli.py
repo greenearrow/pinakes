@@ -52,8 +52,11 @@
                                        refusals, the last time its batch numbering went back). It needs an ops
                                        token, which an operator makes on the account page, and sees nothing else
                                        but `stale`; on the catalog server, [client] url can be http://127.0.0.1.
-  Add --json for JSON, --as NAME to ask as another person (their password and second factor, or a token of theirs,
-  at a hidden prompt; the command then sees only what they may see).
+  A list (find, where, history, versions, only-here, safe-to-delete, backed-up, folder-copies, dupes, changes,
+  manifests, meta, restores, access) is one page: 100 rows, or --limit N (at most 10000), from --offset N; under it,
+  "N of TOTAL" and the next page's --offset.
+  Add --json for JSON (a list: {"rows", "total", "limit", "offset"}), --as NAME to ask as another person (their
+  password and second factor, or a token of theirs, at a hidden prompt; the command then sees only what they may see).
 
 FILE, FOLDER and PATH are a path here (none: the current folder) or ROOT:PATH; a path that exists here is taken
 as one.
@@ -68,8 +71,10 @@ shows only what that person (or, with a group token, that group) may see, and ne
 """
 
 import argparse
+import csv
 import datetime
 import getpass
+import io
 import json
 import os
 import socket
@@ -88,6 +93,7 @@ FOLDER_TOKEN = ".pinakes-token"
 TOKEN_PREFIX = "pinakes_"               # what the web UI's tokens begin with (web.TOKEN_PREFIX)
 LOCAL = ("localhost", "127.0.0.1", "::1")
 SHOW = 50
+BATCH = 1000            # rows a command that needs a whole list asks the API for at a time
 TIMEOUT = 60
 
 
@@ -378,14 +384,36 @@ def restores(rows):
                                   for h in r["held_in"] or [])} for r in rows]
 
 
+EXPORT_BATCH = 10000    # rows of each part an export asks for at a time (the API's most)
+
+
 def export(api, a):
-    """pinakes export [PART] [--csv]: the person's own records (ROADMAP 45, 54), as the API gives them."""
+    """pinakes export [PART] [--csv]: the person's own records (ROADMAP 45, 54), every page of them (ROADMAP 61: the
+    API answers a page of each part), as one JSON or one CSV."""
     if a.csv:
         if not a.arg:
             raise Failed("a CSV is one part: pinakes export PART --csv")
-        sys.stdout.write(api.get("export", raw=True, part=a.arg, format="csv"))
-        return
-    print(json.dumps(api.get("export", part=a.arg), indent=1))
+        offset = 0
+        while True:
+            page = api.get("export", raw=True, part=a.arg, format="csv", limit=EXPORT_BATCH, offset=offset)
+            n = len(list(csv.reader(io.StringIO(page)))) - 1                  # rows, the header aside
+            sys.stdout.write(page if not offset else page.split("\n", 1)[1])
+            offset += n
+            if n < EXPORT_BATCH:
+                return
+    got, offset = None, 0
+    while True:
+        page = api.get("export", part=a.arg, limit=EXPORT_BATCH, offset=offset)
+        parts = [k for k, v in page.items() if isinstance(v, list)]
+        if got is None:
+            got = {k: v for k, v in page.items() if k not in ("limit", "offset")}
+        else:
+            for k in parts:
+                got[k] += page[k]
+        offset += EXPORT_BATCH
+        if all(len(page[k]) < EXPORT_BATCH for k in parts):
+            break
+    print(json.dumps(got, indent=1))
 
 
 # commands ----------------------------------------------------------------------------------------------------------
@@ -394,6 +422,8 @@ FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take 
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
                                          "restores", "relatives", "tag")
+PAGED = ("find", "where", "history", "versions", "only-here", "backed-up", "folder-copies", "dupes", "changes",
+         "manifests", "meta", "restores", "access")    # lists the API answers a page of, with the total (ROADMAP 61)
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -417,7 +447,33 @@ def location(api, cmd, given, host, want):
 
 
 def count(got):
+    """A list's total: the API's (ROADMAP 61), else, from a server before it, the window count in its rows."""
+    if got.get("total") is not None:
+        return got["total"]
     return got["rows"][0]["total_rows"] if got["rows"] else 0
+
+
+def page_line(got):
+    """"N of TOTAL" under a page of a list (ROADMAP 61), and how to ask for the next; None without a total (a server
+    before it) or for an empty list."""
+    n, total, offset = len(got["rows"]), got.get("total"), got.get("offset") or 0
+    if total is None or not total:
+        return None
+    if not n:
+        return "none of %d: --offset %d is past the end" % (total, offset)
+    line = "%s of %d" % ("%d-%d" % (offset + 1, offset + n) if offset else n, total)
+    return line + ("; the next: --offset %d" % (offset + n) if offset + n < total else "")
+
+
+def every(api, call, **args):
+    """Every row of a list call, a page of BATCH at a time (the API answers one page by default)."""
+    rows, offset = [], 0
+    while True:
+        got = api.get(call, limit=BATCH, offset=offset, **args)["rows"]
+        rows += got
+        offset += len(got)
+        if len(got) < BATCH:
+            return rows
 
 
 def summary(api, cfg, days=7, host=None):
@@ -475,25 +531,30 @@ def run(api, a, cfg):
         return
     if a.cmd == "safe-to-delete":
         where = loc("any")
-        got = api.get("safe-to-delete", loc=where)
+        got = api.get("safe-to-delete", loc=where, limit=a.limit, offset=a.offset)
         if a.json:
             print(json.dumps(got, indent=1))
             return
-        if not got["not_safe"]:
+        not_safe = {"rows": got["not_safe"], "total": got.get("total"), "offset": got.get("offset")}
+        if not count(not_safe):
             print("safe: every file under %s has a kept copy on another disk" % where)
         else:
             _print(got["not_safe"], False)
+            _page_line(not_safe)
         links = got["links_into"]
         if links:
-            print("\n%d symlink(s) elsewhere lead into %s and would be left dangling:" % (len(links), where))
+            n = got.get("links_into_total", len(links))
+            print("\n%d symlink(s) elsewhere lead into %s and would be left dangling%s:" % (
+                n, where, " (the first %d)" % len(links) if n > len(links) else ""))
             _print([{"link": "%s:%s" % (l["root"], l["relpath"]), "target": l["link_target"]} for l in links], False)
         return
+    page = {"limit": a.limit, "offset": a.offset} if a.cmd in PAGED else {}
     if a.cmd == "find":
-        got = api.get("find", q=need("a name or glob"))
+        got = api.get("find", q=need("a name or glob"), **page)
     elif a.cmd in FILE:
-        got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None)
+        got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None, **page)
     elif a.cmd in FOLDER:
-        got = api.get(a.cmd, loc=loc("any"))
+        got = api.get(a.cmd, loc=loc("any"), **page)
     elif a.cmd == "changes":
         # --host is a filter here, not this machine's name; no folder outside every root: everything
         try:
@@ -519,7 +580,7 @@ def run(api, a, cfg):
                                         "gone", "scrub", "unreviewed"])
             return
         else:
-            got = api.get("changes", host=a.host, **filters)
+            got = api.get("changes", host=a.host, **dict(filters, **page))
             if not a.json:
                 print("changes %s in the last %d days%s:" % ("under " + where if where else "everywhere you can see",
                                                              a.days, ", on " + a.host if a.host else ""))
@@ -536,20 +597,21 @@ def run(api, a, cfg):
         got["rows"] = [dict(r, folder=r["folder"] or "(files directly in it)")
                        for r in sized(got["rows"], "bytes_added", "bytes_gone")]
     elif a.cmd == "restores":
-        got = api.get("restores", loc=loc_or_everywhere("any"), back=1 if a.back else None)
+        got = api.get("restores", loc=loc_or_everywhere("any"), back=1 if a.back else None, **page)
         if not a.json:
             got["rows"] = restores(got["rows"])
     elif a.cmd == "access":
-        got = api.get("access")
+        got = api.get("access", **page)
         if not a.json:
             got["rows"] = [dict(r, actor="you" if r["mine"] else r["actor"],
                                 detail=json.dumps(r["detail"], sort_keys=True) if r["detail"] else "")
                            for r in got["rows"]]
             _print(got["rows"], False, ["at", "actor", "action", "detail"])
+            _page_line(got)
             return
     elif a.cmd == "manifests":
         where = loc_or_everywhere("any")
-        got = api.get("manifests", loc=where)
+        got = api.get("manifests", loc=where, **page)
         if not a.json:
             print("checksum manifests %s: %s" % ("under " + where if where else "everywhere you can see",
                                                  "%d problem(s)" % count(got) if got["rows"] else "nothing wrong"))
@@ -561,10 +623,21 @@ def run(api, a, cfg):
         key, eq, value = need("SCHEMA.FIELD=VALUE").partition("=")
         if not eq:
             raise Failed("pinakes meta needs SCHEMA.FIELD=VALUE")
-        got = api.get("meta", field=key, value=value)
+        got = api.get("meta", field=key, value=value, **page)
     else:                                                               # dupes, stale, roots
-        got = api.get(a.cmd)
+        got = api.get(a.cmd, **page)
+    if a.json and a.cmd in PAGED:
+        print(json.dumps(got, indent=1))                                # the rows, and the total
+        return
     _print(got["rows"], a.json)
+    if a.cmd in PAGED:
+        _page_line(got)
+
+
+def _page_line(got):
+    line = page_line(got)
+    if line:
+        print(line)
 
 
 def review(api, a, cfg):
@@ -574,7 +647,7 @@ def review(api, a, cfg):
     if a.arg not in MARKS:
         raise Failed("pinakes review needs intended or restore, then a path (none: the current folder)")
     where = location(api, "review", a.path, _this_host(a.host, cfg), "any")
-    rows = api.get("changes", loc=where, days=a.days, review="unreviewed", what=list(REVIEWABLE))["rows"]
+    rows = every(api, "changes", loc=where, days=a.days, review="unreviewed", what=list(REVIEWABLE))
     if not rows:
         print("nothing to review under %s in the last %d days" % (where, a.days))
         return
@@ -608,13 +681,7 @@ def tag(api, a, cfg):
     there. The catalog changes only what the person owns, co-owns or annotates, in the token's roots, with its tag
     scope, and says how many."""
     where = location(api, "tag", a.arg, _this_host(a.host, cfg), "any")
-    rows, offset = [], 0
-    while True:
-        got = api.get("tags", loc=where, limit=TAG_BATCH, offset=offset)["rows"]
-        rows += got
-        offset += len(got)
-        if len(got) < TAG_BATCH:
-            break
+    rows = every(api, "tags", loc=where)
     changing = bool(a.add or a.remove or a.note is not None)
     if not changing:
         if a.json:
@@ -747,6 +814,8 @@ def main(argv=None):
     ap.add_argument("--weeks", type=int, default=8, help="growth: how many weeks, this one counted (8)")
     ap.add_argument("--back", action="store_true", help="restores: also those whose content is back")
     ap.add_argument("--csv", action="store_true", help="export: one part, as CSV")
+    ap.add_argument("--limit", type=int, metavar="N", help="a list: show N rows (the API's page: 100; at most 10000)")
+    ap.add_argument("--offset", type=int, metavar="N", help="a list: from the row after the first N (0)")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")
     ap.add_argument("--as", dest="person", metavar="NAME",
                     help="as this person: asks for their password (and second factor) or a token of theirs")

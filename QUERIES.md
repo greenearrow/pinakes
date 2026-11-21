@@ -158,9 +158,13 @@ ORDER BY r.label, f.relpath;
 
 ## folder-copies ROOT:PATH
 
-Not a block below: the statement is long (a CTE that builds each folder's set of (path inside it, content) from `present`,
-looks for the other folders holding a folder's rarest entries, and counts what is shared and what differs), so it lives
-in `queries.folder_copies` and runs in `tests/test_server.py` `TestFolderCopies`, under row-level security.
+Not a block below: the statement is long (a CTE that builds the set of (path inside it, content) of each folder under
+ROOT:PATH from `present`, looks for the other folders holding a folder's rarest entries, and compares each entry with
+the file at the same path in the other folder), so it lives in `queries.folder_copies` and runs in
+`tests/test_server.py` `TestFolderCopies`, under row-level security. It builds only what the scope needs: the scope's
+entries, the entries of the files holding the same contents, and each other folder's files found by path, a path made
+before it is compared, so the index serves it (ROADMAP 61: only a leakproof comparison is an index condition under
+row-level security, and `||` is not one).
 
 ## backed-up HOST:PATH
 
@@ -365,6 +369,7 @@ FROM metadata m
 JOIN present f ON f.content_id = m.content_id
 JOIN roots r USING (root_id)
 WHERE m.schema = 'exif'
+  AND NOT m.sensitive                               -- model isn't a sensitive field: its values are in the plain row
   AND m.vals ->> 'model' = 'Camera-1'               -- an expression index per indexed field serves this
 ORDER BY taken;
 ```

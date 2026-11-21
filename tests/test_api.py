@@ -26,6 +26,7 @@ try:
 except ImportError:  # Flask missing
     web = None
 
+NONE = {"rows": [], "total": 0, "limit": 100, "offset": 0}         # an empty list's answer (ROADMAP 61)
 PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345", "user-3": "kettle lantern 909"}
 
 
@@ -193,9 +194,10 @@ class TestApi(ApiCase):
         for path in ("where?loc=store:people/user-2/diary.txt", "history?file=%d" % diary, "versions?file=%d" % diary):
             self.assertEqual(self.get(path, his), (404, {"error": "no file you can see there"}))
         self.assertEqual(self.paths("where?loc=store:people/user-2/diary.txt", hers), ["store:people/user-2/diary.txt"])
-        self.assertEqual(self.get("only-here?loc=store:people/user-2/", his), (200, {"rows": []}))
+        self.assertEqual(self.get("only-here?loc=store:people/user-2/", his), (200, NONE))
         status, body = self.get("safe-to-delete?loc=store:people/user-1/", his)
-        self.assertEqual((status, sorted(body)), (200, ["links_into", "not_safe"]))
+        self.assertEqual((status, sorted(body)),
+                         (200, ["limit", "links_into", "links_into_total", "not_safe", "offset", "total"]))
         # bad arguments and unknown calls answer in JSON
         self.assertEqual(self.get("find", his), (400, {"error": "q=NAME-OR-GLOB is needed"}))
         self.assertEqual(self.get("meta?field=nodot&value=x", his), (400, {"error": "field is SCHEMA.FIELD"}))
@@ -253,7 +255,7 @@ class TestApi(ApiCase):
         self.assertEqual([r["label"] for r in self.get("roots", his)[1]["rows"]], ["store"])
         self.assertNotIn("downloads:letter.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.paths("where?loc=store:people/user-1/taxes.txt", his), ["store:people/user-1/taxes.txt"])
-        self.assertEqual(self.get("find?q=letter.txt", his), (200, {"rows": []}))
+        self.assertEqual(self.get("find?q=letter.txt", his), (200, NONE))
         # the web session sees both copies
         with self.app_conn() as c:
             c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-1")),))
@@ -377,8 +379,9 @@ class TestApi(ApiCase):
 
         status, mine = self.get("export", hers)
         self.assertEqual(status, 200, mine)
-        self.assertEqual(sorted(mine), ["exported", "files", "history", "lineage", "metadata", "person", "reviews"])
-        self.assertEqual(mine["person"], "user-2")
+        self.assertEqual(sorted(mine), ["exported", "files", "history", "limit", "lineage", "metadata", "offset",
+                                        "person", "reviews"])
+        self.assertEqual((mine["person"], mine["limit"], mine["offset"]), ("user-2", web.API_PAGE, 0))
         self.assertEqual([(f["root"], f["relpath"], f["sha256"]) for f in mine["files"]],
                          [("store", "people/user-2/diary.txt", hashlib.sha256(b"hers, later").hexdigest())])
         self.assertEqual(sorted(h["kind"] for h in mine["history"]), ["changed", "new"])
@@ -415,7 +418,7 @@ class TestApi(ApiCase):
                          ["letter.txt", "taxes-copy.txt"])
         # one part, paged; and as CSV
         status, page = self.get("export?part=files&limit=1&offset=1", his)
-        self.assertEqual((status, sorted(page)), (200, ["exported", "files", "person"]))
+        self.assertEqual((status, sorted(page)), (200, ["exported", "files", "limit", "offset", "person"]))
         self.assertEqual([f["file_id"] for f in page["files"]], [sorted(f["file_id"] for f in theirs["files"])[1]])
         r = self.app.test_client().get("/api/v1/export?part=metadata&format=csv",
                                        headers={"Authorization": "Bearer " + hers})
@@ -542,12 +545,12 @@ class TestCli(ServerCase):
                              "pinakes: no file you can see there")
         self.assertIn("people/user-1/taxes.txt", cli("where", "store:people/user-1/taxes.txt"))
         self.assertIn("new", cli("history", "store:people/user-1/taxes.txt"))
-        self.assertEqual(len(json.loads(cli("versions", "store:people/user-1/taxes.txt", "--json"))), 1)
+        self.assertEqual(len(json.loads(cli("versions", "store:people/user-1/taxes.txt", "--json"))["rows"]), 1)
         self.assertEqual(json.loads(cli("lineage", "store:people/user-1/taxes.txt", "--down", "--json")), [])
         self.assertIn("people/user-1/taxes.txt", cli("only-here", "store:people/user-1/"))
         self.assertIn("people/user-1/taxes.txt", cli("safe-to-delete", "store:people/user-1/"))
         self.assertEqual(sorted(json.loads(cli("safe-to-delete", "store:people/user-1/", "--json"))),
-                         ["links_into", "not_safe"])
+                         ["limit", "links_into", "links_into_total", "not_safe", "offset", "total"])
         self.assertIn("people/user-1/taxes.txt", cli("backed-up", "store:people/user-1/"))
         self.assertEqual(cli("dupes"), "(none)\n")
         changes = cli("changes", "--days", "3", "--host", "server-1")
@@ -561,7 +564,7 @@ class TestCli(ServerCase):
                                             "hidden_files"])
         self.assertEqual(roots[1].split()[:3], ["store", "server-1", "primary"])
         # times come back as ISO 8601 and are shown in this machine's time zone, as before
-        row = json.loads(cli("where", "store:people/user-1/taxes.txt", "--json"))[0]
+        row = json.loads(cli("where", "store:people/user-1/taxes.txt", "--json"))["rows"][0]
         mtime = datetime.datetime.fromisoformat(row["mtime"]).astimezone().strftime("%Y-%m-%d %H:%M")
         self.assertIn(mtime, cli("where", "store:people/user-1/taxes.txt"))
 
@@ -670,11 +673,12 @@ class TestCliHere(ServerCase):
         cli, mine = self.cli, self.mine
         self.assertIn("people/user-1/taxes.txt", cli("where", "taxes.txt", cwd=mine))
         self.assertIn("new", cli("history", "taxes.txt", cwd=mine))
-        self.assertEqual(len(json.loads(cli("versions", "taxes.txt", "--json", cwd=mine))), 1)
+        self.assertEqual(len(json.loads(cli("versions", "taxes.txt", "--json", cwd=mine))["rows"]), 1)
         self.assertEqual(json.loads(cli("lineage", "taxes.txt", "--down", "--json", cwd=mine)), [])
-        here = [r["relpath"] for r in json.loads(cli("only-here", "--json", cwd=mine))]
+        here = [r["relpath"] for r in json.loads(cli("only-here", "--json", cwd=mine))["rows"]]
         self.assertEqual(sorted(here), ["people/user-1/shared-with-2/plan.txt", "people/user-1/taxes.txt"])
-        self.assertEqual([r["relpath"] for r in json.loads(cli("only-here", "shared-with-2", "--json", cwd=mine))],
+        self.assertEqual([r["relpath"] for r in json.loads(cli("only-here", "shared-with-2", "--json",
+                                                               cwd=mine))["rows"]],
                          ["people/user-1/shared-with-2/plan.txt"])
         self.assertIn("people/user-1/taxes.txt", cli("safe-to-delete", cwd=mine))
         self.assertIn("people/user-1/taxes.txt", cli("backed-up", cwd=mine))
@@ -1363,7 +1367,7 @@ class TestCliReports(ServerCase):
 
     def test_restores_and_where_they_are_held(self):
         cli = self.cli
-        rows = json.loads(cli("restores", "--json"))
+        rows = json.loads(cli("restores", "--json"))["rows"]
         self.assertEqual([(r["root"], r["old_relpath"], r["backups"], r["back"]) for r in rows],
                          [("store", self.GONE, 1, False)])
         self.assertEqual(rows[0]["held_in"], [{"root": "snapshots", "snapshot": "2026-01-01",
@@ -1375,11 +1379,11 @@ class TestCliReports(ServerCase):
         # back where it was: gone from the list unless --back is asked for
         self.write("server-1", "store", self.GONE, b"cleanup a")
         self.scan("server-1", "store")
-        self.assertEqual(json.loads(cli("restores", "--json")), [])
-        self.assertEqual([r["back"] for r in json.loads(cli("restores", "--back", "--json"))], [True])
+        self.assertEqual(json.loads(cli("restores", "--json"))["rows"], [])
+        self.assertEqual([r["back"] for r in json.loads(cli("restores", "--back", "--json"))["rows"]], [True])
         # not hers to see
         self.as_token(make_token(self, "user-2", client="laptop-2"))
-        self.assertEqual(json.loads(cli("restores", "--back", "--json")), [])
+        self.assertEqual(json.loads(cli("restores", "--back", "--json"))["rows"], [])
 
     def test_changes_tree_and_filters(self):
         cli = self.cli
@@ -1397,12 +1401,14 @@ class TestCliReports(ServerCase):
         self.assertEqual(cli("changes", "--tree", "--host", "server-1", code=1),
                          "pinakes: pinakes changes --tree takes a folder, not --host")
         # the filters, on the list and on the tree
-        gone = json.loads(cli("changes", "store:", "--what", "gone", "--json"))
+        gone = json.loads(cli("changes", "store:", "--what", "gone", "--json"))["rows"]
         self.assertEqual([(r["kind"], r["old_relpath"]) for r in gone], [("gone", self.GONE)])
         self.assertEqual(sorted(r["kind"] for r in json.loads(cli("changes", "store:", "--what", "gone", "--what",
-                                                                   "new", "--json"))), ["gone", "new", "new"])
-        self.assertEqual(json.loads(cli("changes", "store:", "--what", "gone", "--review", "unreviewed", "--json")), [])
-        self.assertEqual(len(json.loads(cli("changes", "store:", "--what", "gone", "--review", "reviewed", "--json"))), 1)
+                                                                   "new", "--json"))["rows"]), ["gone", "new", "new"])
+        self.assertEqual(json.loads(cli("changes", "store:", "--what", "gone", "--review", "unreviewed",
+                                        "--json"))["rows"], [])
+        self.assertEqual(len(json.loads(cli("changes", "store:", "--what", "gone", "--review", "reviewed",
+                                            "--json"))["rows"]), 1)
         self.assertEqual({r["folder"]: r["gone"] for r in json.loads(cli(
             "changes", "store:", "--tree", "--what", "gone", "--json"))["rows"]}["people/user-1/cleanup"], 1)
         self.assertIn("what is one of", cli("changes", "--what", "renamed", code=1))
@@ -1414,7 +1420,7 @@ class TestCliReports(ServerCase):
     def test_access_is_the_persons_own(self):
         cli = self.cli
         cli("whoami")
-        rows = json.loads(cli("access", "--json"))
+        rows = json.loads(cli("access", "--json"))["rows"]
         self.assertEqual([(r["action"], r["detail"]["call"], r["mine"]) for r in rows[:2]],
                          [("api", "access", True), ("api", "whoami", True)])          # the newest first
         self.assertTrue(all(r["actor"] == "User One" for r in rows))
@@ -1424,7 +1430,7 @@ class TestCliReports(ServerCase):
         self.assertEqual(text[1].split()[2], "you")
         # hers has none of his calls
         self.as_token(make_token(self, "user-2", client="laptop-2"))
-        hers = json.loads(cli("access", "--json"))
+        hers = json.loads(cli("access", "--json"))["rows"]
         self.assertEqual([r["detail"]["call"] for r in hers if r["action"] == "api"], ["access"])
         self.assertTrue(all(r["mine"] and r["actor"] == "User Two" for r in hers), hers)
         # a group's or an ops token: refused
@@ -1432,6 +1438,118 @@ class TestCliReports(ServerCase):
         self.assertEqual(cli("access", code=1), "pinakes: an access record is a person's own: use a person's token")
         self.as_token(make_kind_token(self, "user-1", scopes=("ops",), client="deploy"))
         self.assertEqual(cli("access", code=1), "pinakes: this token doesn't have the read scope")
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliPages(ServerCase):
+    """Paged answers with counts (ROADMAP 61): every list call of the API answers one page by default, with the
+    total; each paged command says "N of TOTAL" and takes --limit and --offset, its --json carrying the total."""
+
+    def setUp(self):
+        super().setUp()
+        import jpegs
+        self.scan("server-1", "store")      # empty: a root's first scan is not a change (ROADMAP 52), the next is
+        for i in range(5):
+            self.write("server-1", "store", "people/user-1/notes/note-%d.txt" % i, b"note %d" % i)
+            self.write("server-1", "store", "people/user-1/copies/c-%d.txt" % i, b"the same")
+            self.write("server-1", "store", "people/user-1/photos/IMG_%04d.JPG" % i,
+                       jpegs.camera(make="Maker-1", when="2019:06:01 12:30:0%d" % i))
+            self.write("server-1", "store", "people/user-2/notes/note-%d.txt" % i, b"hers %d" % i)
+        self.write("server-1", "store", "people/user-1/edited.txt", b"v0")
+        self.scan("server-1", "store")
+        for v in range(1, 5):               # four more versions: five history rows
+            self.write("server-1", "store", "people/user-1/edited.txt", b"v%d" % v, mtime=time.time() + v)
+            self.scan("server-1", "store")
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+
+    # each command: its arguments, and how many rows user-1 sees
+    COMMANDS = [("find", ["note-*"], 5), ("where", ["store:people/user-1/copies/c-0.txt"], 5),
+                ("history", ["store:people/user-1/edited.txt"], 5), ("changes", ["store:people/user-1"], 20),
+                ("only-here", ["store:people/user-1/notes"], 5), ("backed-up", ["store:people/user-1/photos"], 5),
+                ("meta", ["exif.make=Maker-1"], 5)]
+
+    def test_each_command_says_n_of_total_and_pages(self):
+        cli = self.cli
+        for cmd, args, total in self.COMMANDS:
+            with self.subTest(cmd=cmd):
+                whole = cli(cmd, *args).splitlines()
+                self.assertEqual(whole[-1], "%d of %d" % (total, total))
+                first = cli(cmd, *args, "--limit", "2").splitlines()
+                self.assertEqual(first[-1], "2 of %d; the next: --offset 2" % total)
+                self.assertEqual(len(first), len(whole) - (total - 2))                  # two rows, not all
+                second = cli(cmd, *args, "--limit", "2", "--offset", "2").splitlines()
+                self.assertEqual(second[-1], "3-4 of %d; the next: --offset 4" % total)
+                last = cli(cmd, *args, "--limit", "2", "--offset", str(total - 1)).splitlines()
+                self.assertEqual(last[-1], "%d-%d of %d" % (total, total, total))
+                self.assertEqual(cli(cmd, *args, "--offset", str(total)).splitlines()[-1],
+                                 "none of %d: --offset %d is past the end" % (total, total))
+                got = json.loads(cli(cmd, *args, "--limit", "2", "--offset", "1", "--json"))
+                self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
+                                 (["limit", "offset", "rows", "total"], total, 2, 2, 1))
+                self.assertNotIn("total_rows", got["rows"][0])
+                # the pages are the whole list, in order, with nothing twice
+                pages = [r for o in range(0, total, 2)
+                         for r in json.loads(cli(cmd, *args, "--limit", "2", "--offset", str(o), "--json"))["rows"]]
+                self.assertEqual(pages, json.loads(cli(cmd, *args, "--json"))["rows"])
+
+    def test_the_api_answers_one_page_by_default(self):
+        with mock.patch.object(web, "API_PAGE", 3):
+            got = json.loads(self.cli("find", "*.txt", "--json"))
+        self.assertEqual((len(got["rows"]), got["total"], got["limit"], got["offset"]), (3, 11, 3, 0))
+        got = json.loads(self.cli("find", "*.txt", "--limit", "999999", "--json"))   # at most API_MAX
+        self.assertEqual((len(got["rows"]), got["total"], got["limit"]), (11, 11, web.API_MAX))
+        # a page past the end still says the total
+        got = json.loads(self.cli("find", "*.txt", "--offset", "50", "--json"))
+        self.assertEqual((got["rows"], got["total"], got["offset"]), ([], 11, 50))
+
+    def test_a_total_counts_only_what_the_person_sees(self):
+        cli = self.cli
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        got = json.loads(cli("find", "note-*", "--limit", "1", "--json"))
+        self.assertEqual((got["total"], [r["relpath"] for r in got["rows"]]), (5, ["people/user-2/notes/note-0.txt"]))
+        self.assertEqual(json.loads(cli("changes", "store:", "--limit", "1", "--json"))["total"], 5)
+        self.assertEqual(json.loads(cli("meta", "exif.make=Maker-1", "--json"))["total"], 0)
+        self.assertEqual(cli("where", "store:people/user-1/copies/c-0.txt", code=1),
+                         "pinakes: no file you can see there")
+
+    def test_whole_lists_for_review_and_tag_page_through(self):
+        """review and tag act on every row under a folder: they ask a page at a time until the last."""
+        cli = self.cli
+        cli.save(cli.home_token(), make_token(self, "user-1", ("read", "review", "tag"), client="laptop-3"))
+        for i in range(5):
+            os.remove(self.path("server-1", "store", "people/user-1/notes/note-%d.txt" % i))
+        self.scan("server-1", "store")
+        with mock.patch("pinakes.cli.BATCH", 2):
+            self.assertIn("marked 5 of 5 as intended", cli("review", "intended", "store:people/user-1/notes", "--yes"))
+            self.assertIn("tagged 5 of 5", cli("tag", "store:people/user-1/photos", "--add", "trip", "--yes"))
+
+    def test_an_export_is_every_page(self):
+        """The API answers a page of each part; pinakes export asks until the last and gives them all, once."""
+        cli = self.cli
+        whole = json.loads(cli("export"))
+        self.assertEqual((len(whole["files"]), len(whole["history"])), (16, 20))        # pages of 4: several
+        with mock.patch.object(web, "API_PAGE", 3):
+            got = self.cli.app.test_client().get("/api/v1/export?part=files", headers={
+                "Authorization": "Bearer " + make_token(self, "user-1", client="laptop-4")}).get_json()
+        self.assertEqual((len(got["files"]), got["limit"], got["offset"]), (3, 3, 0))
+        with mock.patch("pinakes.cli.EXPORT_BATCH", 4):
+            paged = json.loads(cli("export"))
+            table = list(csv.DictReader(io.StringIO(cli("export", "history", "--csv"))))
+        self.assertEqual({k: v for k, v in paged.items() if k != "exported"},
+                         {k: v for k, v in whole.items() if k != "exported"})
+        self.assertEqual(sorted(paged), ["exported", "files", "history", "lineage", "metadata", "person", "reviews"])
+        self.assertEqual([r["history_id"] for r in table], [str(r["history_id"]) for r in whole["history"]])
+
+    def test_safe_to_delete_pages_its_files(self):
+        cli = self.cli
+        text = cli("safe-to-delete", "store:people/user-1/notes", "--limit", "2").splitlines()
+        self.assertEqual(text[-1], "2 of 5; the next: --offset 2")
+        got = json.loads(cli("safe-to-delete", "store:people/user-1/notes", "--limit", "2", "--json"))
+        self.assertEqual((len(got["not_safe"]), got["total"], got["links_into"], got["links_into_total"]),
+                         (2, 5, [], 0))
+        # past the end of the list is not "safe"
+        self.assertNotIn("safe:", cli("safe-to-delete", "store:people/user-1/notes", "--offset", "9"))
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")

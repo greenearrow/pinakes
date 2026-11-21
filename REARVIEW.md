@@ -867,3 +867,41 @@ restore`, which marks.
 through the API from a real HTTP server: each command and its `--json`, a second person's records left out, a
 token's root limit kept, group and ops tokens refused where a person's is needed). All 428 tests pass (tools/test). Other Pythons not run;
 not run against a real catalog; not deployed.
+
+## 61. Paged answers with counts
+
+Design: DECISIONS.md "Paged answers with counts". With this, ROADMAP 61 is built and no longer listed.
+
+**Built:** Every list call of the API answers one page unless asked: 100 rows (`limit=` up to 10,000, from
+`offset=`), with `total`, `limit` and `offset` beside `rows`; a page past the end still gives the total. Safe-to-delete
+adds `total` for its files and the first 200 links with `links_into_total`; export answers a page of each part. `pinakes
+find`, `where`, `history`, `versions`, `only-here`, `safe-to-delete`, `backed-up`, `folder-copies`, `dupes`, `changes`,
+`manifests`, `meta`, `restores` and `access` take `--limit` and `--offset`, print "N of TOTAL" (or "101-200 of TOTAL")
+and the next page's `--offset` under the rows, and their `--json` is the API's answer with the total. `review`, `tag`
+and `export` ask a page at a time until the last. For speed: the web turns PostgreSQL's JIT off on its connections;
+`meta` tests the row's sensitivity (from the schema registry) before the row-level policy asks `sensitive_visible()`;
+folder copies builds only the scope's folders and looks the other folders' files up by path, by index. `tools/bench-pages`
+builds a catalog of 500,000 files by real scans in a throwaway PostgreSQL and times each read call's first page through
+the API over HTTP, failing one over 2 s (`--keep`, `--reuse DIR` to time it again).
+
+**Measured** on 2026-11-21 with `tools/bench-pages` (500,000 files: 400,000 primary on one host, 100,000 in a backup on
+another; 404,980 history rows, 40,000 metadata rows; PostgreSQL 16.15 with fsync off and otherwise default settings,
+after ANALYZE; Python 3.12.3, Linux x86-64 desktop, Intel Core Ultra 7 270K Plus, 24 threads, 33 GB; as a person with a
+read token, best of three, warm cache). Every first page within 2 s: the slowest list dupes 0.88 s, only-here of the
+whole primary root 0.72 s (217,311 files), backed-up of it 0.45 s, find of a name in 378,500 files 0.36 s, changes 0.06
+to 0.28 s, meta 0.05 s, folder copies of a folder of 2,000 files 0.11 s; the at-risk report 1.78 s. Before, the same
+calls unpaged: folder copies 5.7 s (its copy found: 5.0 s), export 5.2 s, meta 1.2 s; with JIT on, folder copies 1.6 s
+(1.5 s of it compiling). Folder copies of a scope of most of the catalog (the whole root, 10.5 s; old query 9.3 s) is
+not faster. A first run without ANALYZE as the tables' owner had no statistics and took seconds where these take
+tenths: a site's autovacuum does it.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCliPages`, the CLI
+against a real HTTP server on 127.0.0.1): each of find, where, history, changes, only-here, backed-up and meta saying "N
+of TOTAL", paged by `--limit` and `--offset` to the whole list in order with nothing twice, past the end, and its
+`--json` with the total; the API's default page and its limit; a second person's totals counting only what they see;
+review and tag paging through, export's pages giving the whole export as JSON and as CSV; safe-to-delete paged and never
+"safe" past the end. Three of these checked to fail with the change undone (review's paging, the meta sensitivity, the
+CLI's limit). The new folder-copies query compared with the old on 15 random catalogs (two primary roots and a backup,
+same, inside, nearly, nested and empty folders; every folder as each of three viewers) and on the benchmark's
+catalog: the same rows. All 477 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not run on a
+real catalog; not deployed.

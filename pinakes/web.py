@@ -44,8 +44,12 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   like the web sign-in, and recorded for the person
   POST session/end                that token, revoked (its command is done)
   POST is for these five; every other call is GET
-  limit= and offset= page any list. Answers are {"rows": [...]} (safe-to-delete: {"not_safe", "links_into"}), or
-  {"error": "..."} with 400, 401, 403, 404 or 429.
+  A list answers one page (ROADMAP 61): 100 rows, or limit= (at most 10000) from offset=, as {"rows": [...], "total",
+  "limit", "offset"}, the total being the whole list's (safe-to-delete: {"not_safe", "total", "limit", "offset",
+  "links_into", "links_into_total"}, the first 200 links; export: a page of each part, its last shorter than the
+  limit). roots, stale, host-roots, lineage and relatives are not paged (a site's roots and hosts, one file's
+  relatives); at-risk, growth and change-tree have their own limits. Errors are {"error": "..."} with 400, 401, 403,
+  404 or 429.
 
 /health answers without sign-in, for monitoring: whether the database is reachable, and per host its newest batch,
 last complete scan, whether it is stale, whether its batches are being refused (protocol or sequence), when its
@@ -78,6 +82,8 @@ LOGIN_LIMIT = 5          # failed sign-ins per address
 PER_PAGE = (50, 100, 250, 500)   # the page sizes offered; the first after 50 is the default
 LOGIN_WINDOW = 15 * 60   # seconds
 API = "/api/v1/"
+API_PAGE = 100           # rows a list call of the API answers without limit= (ROADMAP 61)
+API_MAX = 10000          # the most it answers with one
 SCOPES = ("read", "review", "tag")      # what a token may be given (the database checks the same list)
 TOKEN_PREFIX = "pinakes_"
 CLI_SESSION_MINUTES = 10  # pinakes --as: a session lasts this long at most; the command ends it sooner
@@ -251,6 +257,9 @@ def create_app(cfg, connect=None):
         if request.endpoint == "health":
             return                      # no session, no form; it opens its own connection, and reports a failed one
         g.db = connect()
+        # No JIT: row-level security's subplans make the planner's costs high, so PostgreSQL compiles short queries,
+        # and compiling took longer than running them (ROADMAP 61: folder copies 1.6 s, 0.1 s without)
+        g.db.execute("SET jit = off")
         if request.path.startswith(API):
             return api_begin()          # by token only: no session cookie, so no form to forge
         g.person = session.get("person")
@@ -374,8 +383,19 @@ def create_app(cfg, connect=None):
             raise ValueError("%s is needed" % (what or name))
         return v
 
-    def lim():
-        return _int_arg("limit", None, 1, 1000000), _int_arg("offset", 0, 0, 10 ** 12)
+    def lim(paged=True):
+        """limit= and offset=: a list call's page (API_PAGE rows without limit=), or without `paged` every row."""
+        return _int_arg("limit", API_PAGE if paged else None, 1, API_MAX), _int_arg("offset", 0, 0, 10 ** 12)
+
+    def page(query, *a, **kw):
+        """A list call's answer (ROADMAP 61): one page of query(g.db, *a, limit=, offset=, **kw), API_PAGE rows unless
+        limit= asks for another number (at most API_MAX), with the whole list's total, read from the window count in
+        its rows (queries.TOTAL); a page past the end asks once more for the total alone."""
+        limit, offset = lim()
+        got = query(g.db, *a, limit=limit, offset=offset, **kw)
+        total = queries.page_total(got if got or not offset else query(g.db, *a, limit=1, offset=0, **kw))
+        return {"rows": [{k: v for k, v in r.items() if k != "total_rows"} for r in got], "total": total,
+                "limit": limit, "offset": offset}
 
     def target():
         """The file a call names, by ?file=ID or ?loc=ROOT:PATH; 404 when the token's person can't see it."""
@@ -449,19 +469,19 @@ def create_app(cfg, connect=None):
 
     @api("find")
     def api_find():
-        return {"rows": queries.find(g.db, arg("q", "q=NAME-OR-GLOB"), *lim())}
+        return page(queries.find, arg("q", "q=NAME-OR-GLOB"))
 
     @api("where")
     def api_where():
-        return {"rows": queries.where(g.db, target(), *lim())}
+        return page(queries.where, target())
 
     @api("history")
     def api_history():
-        return {"rows": queries.history(g.db, target(), *lim())}
+        return page(queries.history, target())
 
     @api("versions")
     def api_versions():
-        return {"rows": queries.versions(g.db, target(), *lim())}
+        return page(queries.versions, target())
 
     @api("lineage")
     def api_lineage():
@@ -469,28 +489,32 @@ def create_app(cfg, connect=None):
 
     @api("only-here")
     def api_only_here():
-        return {"rows": queries.only_here(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+        return page(queries.only_here, arg("loc", "loc=ROOT:PATH"))
 
     @api("safe-to-delete")
     def api_safe_to_delete():
         loc = arg("loc", "loc=ROOT:PATH")
-        return {"not_safe": queries.not_safe_to_delete(g.db, loc, *lim()), "links_into": queries.links_into(g.db, loc)}
+        got = page(queries.not_safe_to_delete, loc)
+        links = queries.links_into(g.db, loc, LINKS_SHOWN)
+        return {"not_safe": got["rows"], "total": got["total"], "limit": got["limit"], "offset": got["offset"],
+                "links_into": [{k: v for k, v in r.items() if k != "total_rows"} for r in links],
+                "links_into_total": queries.page_total(links)}
 
     @api("backed-up")
     def api_backed_up():
-        return {"rows": queries.backed_up(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+        return page(queries.backed_up, arg("loc", "loc=ROOT:PATH"))
 
     @api("manifests")
     def api_manifests():
-        return {"rows": queries.manifests(g.db, request.args.get("loc") or None, *lim())}
+        return page(queries.manifests, request.args.get("loc") or None)
 
     @api("folder-copies")
     def api_folder_copies():
-        return {"rows": queries.folder_copies(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+        return page(queries.folder_copies, arg("loc", "loc=ROOT:PATH"))
 
     @api("dupes")
     def api_dupes():
-        return {"rows": queries.dupes(g.db, *lim())}
+        return page(queries.dupes)
 
     @api("changes")
     def api_changes():
@@ -500,9 +524,8 @@ def create_app(cfg, connect=None):
         kinds = request.args.getlist("what")
         if set(kinds) - set(queries.KINDS):
             raise ValueError("what is one of %s" % ", ".join(queries.KINDS))
-        return {"rows": queries.changes(g.db, _int_arg("days", 7, 1, 3650), request.args.get("host") or None,
-                                        *lim(), loc=request.args.get("loc") or None, review=review or None,
-                                        kinds=kinds or None)}
+        return page(queries.changes, _int_arg("days", 7, 1, 3650), request.args.get("host") or None,
+                    loc=request.args.get("loc") or None, review=review or None, kinds=kinds or None)
 
     @app.route(API + "review", methods=["POST"])
     def api_review():
@@ -521,7 +544,7 @@ def create_app(cfg, connect=None):
 
     @api("tags", ("read", "tag"))
     def api_tags():
-        return {"rows": queries.tags(g.db, arg("loc", "loc=ROOT:PATH"), *lim())}
+        return page(queries.tags, arg("loc", "loc=ROOT:PATH"))
 
     @app.route(API + "tag", methods=["POST"])
     def api_tag():
@@ -612,7 +635,8 @@ def create_app(cfg, connect=None):
     def api_export():
         """A person's export of their own records (ROADMAP 45): the files they own and what the catalog holds about
         them, as the person under row-level security; the call is recorded like any other. JSON: every part, or one
-        with part=; CSV (format=csv): one part. limit= and offset= page each part."""
+        with part=; CSV (format=csv): one part. A page of each part (ROADMAP 61): API_PAGE rows, or limit= from offset=;
+        a part's page shorter than the limit is its last."""
         if "read" not in g.scopes:
             return api_answer({"error": "this token doesn't have the read scope"}, 403)
         if g.kind != "person":
@@ -624,14 +648,15 @@ def create_app(cfg, connect=None):
             if fmt == "csv" and not part:
                 raise ValueError("a CSV is one part: part=%s" % "|".join(queries.EXPORT))
             parts = [part] if part else list(queries.EXPORT)
-            got = {p: queries.export(g.db, p, *lim()) for p in parts}
+            limit, offset = lim()
+            got = {p: queries.export(g.db, p, limit, offset) for p in parts}
         except ValueError as e:
             return api_answer({"error": str(e)}, 400)
         if fmt == "csv":
             return Response(_csv(*got[part]), mimetype="text/csv")
         me = g.db.execute("SELECT name FROM pinakes.people WHERE person_id = %s", (g.person,)).fetchone()[0]
-        return api_answer(dict({"person": me, "exported": datetime.datetime.now(datetime.timezone.utc)},
-                               **{p: rows for p, (_, rows) in got.items()}))
+        return api_answer(dict({"person": me, "exported": datetime.datetime.now(datetime.timezone.utc),
+                                "limit": limit, "offset": offset}, **{p: rows for p, (_, rows) in got.items()}))
 
     @api("host-roots")
     def api_host_roots():
@@ -649,7 +674,10 @@ def create_app(cfg, connect=None):
         schema, dot, field = arg("field", "field=SCHEMA.FIELD").partition(".")
         if not dot or not field:
             raise ValueError("field is SCHEMA.FIELD")
-        return {"rows": queries.meta(g.db, schema, field, request.args.get("value", ""), *lim())}
+        known = reg.schemas.get(schema)
+        known = known.fields.get(field) if known else None
+        return page(queries.meta, schema, field, request.args.get("value", ""),
+                    sensitive=known.sensitive if known else None)
 
     # the web's reports, for `pinakes` (ROADMAP 55 to 59): the same queries under row-level security, without the
     # owner ids the web keeps for its step-up audit (a token never steps up)
@@ -669,8 +697,7 @@ def create_app(cfg, connect=None):
 
     @api("restores")
     def api_restores():
-        return {"rows": queries.restores(g.db, request.args.get("loc") or None, bool(request.args.get("back")),
-                                         *lim())}
+        return page(queries.restores, request.args.get("loc") or None, bool(request.args.get("back")))
 
     @api("change-tree")
     def api_change_tree():
@@ -689,7 +716,7 @@ def create_app(cfg, connect=None):
         """The person's access record, as on the access page: who saw their records, and their own calls."""
         if g.kind != "person":
             abort(403, "an access record is a person's own: use a person's token")
-        return {"rows": queries.audit_mine(g.db, *lim())}
+        return page(queries.audit_mine)
 
     # sign-in -------------------------------------------------------------------------------------------------
     @app.route("/login", methods=["GET", "POST"])

@@ -64,6 +64,8 @@ tests. When to run what:
   (`tools/test --agent-only`, about 3 s; `PINAKES_SKIP_TESTS=1` skips them once). Run the full `tools/test` yourself
   (about 75 s).
 - A change to the schema, an upgrade file, packaging or what runs on old machines: `tools/test --matrix`.
+- A change to a query, a policy or an API list call: `tools/bench-pages` (about 5 minutes), which builds a catalog of
+  500,000 files by real scans in a throwaway PostgreSQL and times each read call's first page, failing one over 2 s.
 - Before a release: `tools/test --matrix` and `tools/test --wheel` ("Cutting a release" below).
 - Preparing a release: its entry in `RELEASES.toml` (what it affects, its protocol, the `upgrades/*.sql` it needs)
   and the same numbers in `pinakes/compat.py`. Cutting it is a deliberate step, never implied by a commit: tag the

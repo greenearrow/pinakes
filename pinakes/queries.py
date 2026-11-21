@@ -250,48 +250,76 @@ FOLDER_COPIES_SORT = {"size": ("bytes",), "files": ("files",), "where": ("folder
 NEAR_PERCENT = 10      # "nearly the same": every file of the folder is in the other, at most this share (min. 1) edited
 
 # A folder is the set of its files' (path inside it, content): the whole subtree, empty files and symlinks left out
-# (they all hash alike or hold no data), backup roots too (a backup copying a folder is its job). Entries of every
-# ancestor folder of a file, the root's own folder ('') included. %s: the scope's root, then its folder, three times.
+# (they all hash alike or hold no data), backup roots too (a backup copying a folder is its job). Only what the scope
+# asks about is built (ROADMAP 61: building every folder's entries of the catalog took 5.7 s for a folder of 2,000 files
+# among 500,000): the entries of the scope's folders (es), the entries of every file holding one of their contents
+# (ec, where another folder holding them is found), and each candidate other folder's files looked up by path (by
+# index). An entry is a file in one of its ancestor folders, the root's own folder ('') included.
+_ENTRIES = """SELECT x.root_id, d.dir, substr(x.relpath, CASE WHEN d.dir = '' THEN 1 ELSE length(d.dir) + 2 END) AS rel,
+                     x.content_id, x.size
+              FROM %s x CROSS JOIN LATERAL (
+                  SELECT '' AS dir
+                  UNION ALL SELECT left(x.relpath, i - 1) FROM generate_series(1, length(x.relpath)) i
+                  WHERE substr(x.relpath, i, 1) = '/') d"""
 _FOLDER_COPIES = """
-WITH e AS (
-    SELECT f.root_id, d.dir, substr(f.relpath, CASE WHEN d.dir = '' THEN 1 ELSE length(d.dir) + 2 END) AS rel,
-           f.content_id, c.size
-    FROM pinakes.present f JOIN pinakes.roots r USING (root_id) JOIN pinakes.contents c USING (content_id)
-    CROSS JOIN LATERAL (SELECT '' AS dir
-                        UNION ALL SELECT left(f.relpath, i - 1) FROM generate_series(1, length(f.relpath)) i
-                        WHERE substr(f.relpath, i, 1) = '/') d
-    WHERE r.kind <> 'backup' AND c.size > 0 AND NOT f.is_symlink),
-fs AS (SELECT root_id, dir, count(*) AS n FROM e GROUP BY root_id, dir),
-held AS (SELECT rel, content_id, count(*) AS h FROM e GROUP BY rel, content_id),
-mine AS (SELECT fs.* FROM fs JOIN pinakes.roots r USING (root_id)
-         WHERE r.label = %s AND (%s = '' OR fs.dir = %s OR left(fs.dir, length(%s) + 1) = %s || '/')),
+WITH sf AS (SELECT f.root_id, f.relpath, f.content_id, c.size
+            FROM pinakes.present f JOIN pinakes.roots r USING (root_id) JOIN pinakes.contents c USING (content_id)
+            WHERE r.label = %(root)s AND r.kind <> 'backup' AND c.size > 0 AND NOT f.is_symlink
+              AND (%(path)s = '' OR f.relpath ~>=~ %(lo)s AND f.relpath ~<~ %(hi)s)),
+es AS (SELECT * FROM (""" + _ENTRIES % "sf" + """) e
+       WHERE %(path)s = '' OR e.dir = %(path)s OR left(e.dir, length(%(path)s) + 1) = %(path)s || '/'),
+ns AS (SELECT root_id, dir, count(*) AS n FROM es GROUP BY root_id, dir),
+ef AS (SELECT f.root_id, f.relpath, f.content_id, k.size
+       FROM (SELECT DISTINCT content_id, size FROM sf) k JOIN pinakes.present f USING (content_id)
+       JOIN pinakes.roots r USING (root_id) WHERE r.kind <> 'backup' AND NOT f.is_symlink),
+ec AS (""" + _ENTRIES % "ef" + """),
+held AS (SELECT rel, content_id, count(*) AS h FROM ec GROUP BY rel, content_id),
 -- a folder's rarest entries are where to look for what holds them: a folder that is the same, or inside another, holds
 -- all of them; one with k files edited holds at least one of its k + 1 rarest
 anchors AS (SELECT * FROM (SELECT e.root_id, e.dir, e.rel, e.content_id, m.n,
                                   row_number() OVER (PARTITION BY e.root_id, e.dir ORDER BY held.h, e.rel) AS rk
-                           FROM e JOIN mine m USING (root_id, dir) JOIN held USING (rel, content_id)) x
-            WHERE rk <= greatest(1, x.n * %s / 100) + 1),
+                           FROM es e JOIN ns m USING (root_id, dir) JOIN held USING (rel, content_id)) x
+            WHERE rk <= greatest(1, x.n * %(near)s / 100) + 1),
 cand AS (SELECT DISTINCT a.root_id AS ra, a.dir AS da, b.root_id AS rb, b.dir AS db
-         FROM anchors a JOIN e b ON b.rel = a.rel AND b.content_id = a.content_id
+         FROM anchors a JOIN ec b ON b.rel = a.rel AND b.content_id = a.content_id
          WHERE NOT (a.root_id = b.root_id AND (a.dir = b.dir OR a.dir = '' OR b.dir = ''
                     OR left(b.dir, length(a.dir) + 1) = a.dir || '/' OR left(a.dir, length(b.dir) + 1) = b.dir || '/'))),
-pairs AS (SELECT c.ra, c.da, c.rb, c.db, count(*) FILTER (WHERE eb.content_id = ea.content_id) AS shared,
-                 array_agg(ea.rel ORDER BY ea.rel) FILTER (WHERE eb.content_id <> ea.content_id) AS differing,
-                 sum(ea.size) AS bytes
-          FROM cand c JOIN e ea ON ea.root_id = c.ra AND ea.dir = c.da
-          LEFT JOIN e eb ON eb.root_id = c.rb AND eb.dir = c.db AND eb.rel = ea.rel
-          GROUP BY c.ra, c.da, c.rb, c.db),
-res AS (SELECT ra, da, rb, db, p.bytes, na.n AS files, nb.n AS other_files, p.shared, p.differing,
+-- The other folders' files, by the relpath index. Each path is made first (MATERIALIZED) and compared as a value:
+-- under row-level security only a leakproof comparison is used as an index condition, and || is not leakproof.
+-- A folder's files: db/ up to db0 ('0' follows '/'); its root's all, for '' (a count of its own: in an OR, the range
+-- would not be an index condition either).
+od AS MATERIALIZED (SELECT DISTINCT rb, db, db || '/' AS lo, db || '0' AS hi FROM cand),
+nc AS MATERIALIZED (
+    SELECT o.rb, o.db, (SELECT count(*) FROM pinakes.present f JOIN pinakes.contents oc USING (content_id)
+                        WHERE o.db <> '' AND f.root_id = o.rb AND f.relpath ~>=~ o.lo AND f.relpath ~<~ o.hi
+                          AND NOT f.is_symlink AND oc.size > 0)
+                     + (SELECT count(*) FROM pinakes.present f JOIN pinakes.contents oc USING (content_id)
+                        WHERE o.db = '' AND f.root_id = o.rb AND NOT f.is_symlink AND oc.size > 0) AS n
+    FROM od o),
+-- each entry of the folder against the file at the same path in the other: the same content, another, or none
+pe AS MATERIALIZED (SELECT c.ra, c.da, c.rb, c.db, ea.rel, ea.content_id, ea.size,
+                           CASE WHEN c.db = '' THEN ea.rel ELSE c.db || '/' || ea.rel END AS opath
+                    FROM cand c JOIN es ea ON ea.root_id = c.ra AND ea.dir = c.da),
+pairs AS (SELECT pe.ra, pe.da, pe.rb, pe.db, count(*) FILTER (WHERE o.content_id = pe.content_id) AS shared,
+                 array_agg(pe.rel ORDER BY pe.rel) FILTER (WHERE o.content_id <> pe.content_id) AS differing,
+                 sum(pe.size) AS bytes
+          FROM pe LEFT JOIN LATERAL (SELECT f.content_id FROM pinakes.present f
+                                     JOIN pinakes.contents oc USING (content_id)
+                                     WHERE f.root_id = pe.rb AND f.relpath = pe.opath AND NOT f.is_symlink
+                                       AND oc.size > 0) o ON true
+          GROUP BY pe.ra, pe.da, pe.rb, pe.db),
+res AS (SELECT p.ra, p.da, p.rb, p.db, p.bytes, na.n AS files, nb.n AS other_files, p.shared, p.differing,
                CASE WHEN p.shared = na.n AND na.n = nb.n THEN 'same'
                     WHEN p.shared = na.n THEN 'inside'
                     WHEN p.shared + cardinality(p.differing) = na.n
-                         AND cardinality(p.differing) <= greatest(1, na.n * %s / 100) THEN 'nearly' END AS relation
-        FROM pairs p JOIN fs na ON na.root_id = p.ra AND na.dir = p.da JOIN fs nb ON nb.root_id = p.rb AND nb.dir = p.db),
+                         AND cardinality(p.differing) <= greatest(1, na.n * %(near)s / 100) THEN 'nearly'
+               END AS relation
+        FROM pairs p JOIN ns na ON na.root_id = p.ra AND na.dir = p.da JOIN nc nb ON nb.rb = p.rb AND nb.db = p.db),
 kept AS (SELECT p.* FROM res p
          WHERE p.relation IS NOT NULL
            -- two folders in scope that are the same are one row, not two
            AND NOT (p.relation = 'same' AND (p.ra, p.da) > (p.rb, p.db)
-                    AND EXISTS (SELECT 1 FROM mine m WHERE m.root_id = p.rb AND m.dir = p.db))
+                    AND EXISTS (SELECT 1 FROM ns m WHERE m.root_id = p.rb AND m.dir = p.db))
            -- a subfolder of a folder already shown with the same relation to the same other side is nothing new
            AND NOT EXISTS (SELECT 1 FROM res q WHERE q.relation = p.relation AND q.ra = p.ra AND q.rb = p.rb
                            AND p.da = CASE WHEN q.da = '' THEN '' ELSE q.da || '/' END || regexp_replace(p.da, '^.*/', '')
@@ -308,11 +336,14 @@ def folder_copies(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
     same files at the same paths inside ('same'), all of them held by a bigger folder ('inside'), or all held with a
     few edited, listed in `differing` ('nearly': at most NEAR_PERCENT of the files, at least one). A subfolder
     whose parent is shown with the same relation to the same other folder is left out; folders of only empty files
-    are ignored. Biggest first. Counts are of the files you can see. The folders' sets are built from the catalog's
-    present files on each call: on a very large root, ask for a smaller folder."""
+    are ignored. Biggest first. Counts are of the files you can see. The work grows with the scope, not the catalog: a
+    folder of 2,000 files among 500,000 takes a tenth of a second, the whole root seconds; on a very large root, ask
+    for a smaller folder."""
     root, path = split_location(loc)
     return rows(conn, _FOLDER_COPIES + order(FOLDER_COPIES_SORT, sort, direction, "k.bytes DESC, folder, other")
-                + PAGE, (root, path, path, path, path, NEAR_PERCENT, NEAR_PERCENT, limit, offset))
+                + " LIMIT %(limit)s OFFSET %(offset)s",
+                {"root": root, "path": path, "lo": path + "/", "hi": path + "0", "near": NEAR_PERCENT, "limit": limit,
+                 "offset": offset})
 
 
 def folder_owners(conn, locs):
@@ -636,11 +667,16 @@ def decide_lineage(conn, a, b, decision):
     return conn.execute("SELECT pinakes.decide_lineage(%s, %s, %s)", (a, b, decision)).fetchone()[0]
 
 
-def meta(conn, schema, field, value, limit=None, offset=0):
+def meta(conn, schema, field, value, limit=None, offset=0, sensitive=None):
+    """The files whose content has metadata `schema` with `field` equal to `value` (as text). `sensitive`: whether the
+    field is one of its schema's sensitive fields (registry.Field.sensitive), whose values are kept in a row of their
+    own; None (not known) looks in both. Knowing it is what makes the query fast (ROADMAP 61): the test of the column
+    runs before the row-level policy, which otherwise asks sensitive_visible() of every sensitive row of the schema."""
     return rows(conn, """SELECT %s, m.vals, %s FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         WHERE m.schema = %%s AND m.vals ->> %%s = %%s ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL)
-                + PAGE, (schema, field, value, limit, offset))
+                         WHERE m.schema = %%s AND (%%s::boolean IS NULL OR m.sensitive = %%s) AND m.vals ->> %%s = %%s
+                         ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL)
+                + PAGE, (schema, sensitive, sensitive, field, value, limit, offset))
 
 
 # A person's export of their own records (ROADMAP 45): the files they own (files.owner_id; shared, co-owned and a

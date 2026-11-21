@@ -116,16 +116,9 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 
 ## Before the MCP server
 
-The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); these two come first, and help the
-command line and the web UI as much.
+The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this comes first, and helps the
+command line and the web UI as much. 61 is built (REARVIEW.md). Left:
 
-61. [Scalability; also feature] **Paged answers with counts, fast on a large catalog:** every list call of the API
-    answers one page by default, not every row, with the total (or, where counting is the slow part, whether there
-    is more), and the first page comes fast: the queries' `count(*) OVER ()` evaluates the whole result for every
-    page, and the API now pages only when asked. *Done when:* `pinakes find`, `where`, `history`, `changes`,
-    `only-here`, `backed-up` and `meta` say "N of TOTAL" and take `--limit` and `--offset`, their `--json` carries
-    the total, each tested through the API; and a benchmark in `tools/` on a generated catalog of 500,000 files
-    records each read call's first-page time, every one within 2 seconds on the hardware it states.
 62. [Security; also correctness] **A history of the catalog's own writes:** every review mark, tag and note, and
     lineage decision is kept with who made it, by which token or on the web, when, and the value before; nothing
     overwrites one. *Done when:* `pinakes edits [--token CLIENT] [--days N]` lists a person's writes, their own and

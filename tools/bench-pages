@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""Time each read call of the API's first page on a generated catalog of 500,000 files (ROADMAP 61).
+
+  tools/bench-pages                  500,000 files, on the newest PostgreSQL installed, with .venv's Python
+  tools/bench-pages --files N        another size (the shares below scale with it)
+  tools/bench-pages --pg 16          on PostgreSQL 16 (/usr/lib/postgresql/16/bin)
+  tools/bench-pages --limit S        fail a call whose first page takes longer than S seconds (2)
+  tools/bench-pages --keep           keep the cluster and the catalog afterwards, and say where
+
+Builds the catalog the way a site gets one: real agents scan generated trees in a temporary folder and the ingester
+takes their batches. Two hosts: `store` (server-1, primary, 80% of the files: user-1's projects, user-2's folder,
+JPEGs with EXIF, one file in 50 a duplicate, a copy of a project folder with one file edited) and `snapshots`
+(server-2, a backup of a quarter of user-1's files); then a second scan of `store` after a clean-up (files deleted, a folder moved, files edited), so changes and history have rows.
+Then each call is asked through the API over HTTP on 127.0.0.1, as user-1 with a read token, three times; the best
+time of the three is the call's. The PostgreSQL cluster is a throwaway like tools/test's (Unix socket, no fsync,
+otherwise PostgreSQL's default settings), removed afterwards unless --keep. The last lines say what it ran on.
+"""
+
+import argparse
+import glob
+import hashlib
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "tests"))
+
+SERVER = """
+[ownership]
+default_owner = "user-1"
+[[ownership.rule]]
+root = "store"
+folder = "people/user-2"
+owner = "user-2"
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/shared-with-2"
+person = "user-2"
+as = "reader"
+[people.user-1]
+display = "User One"
+roles = ["person", "operator", "administrator"]
+[people.user-2]
+display = "User Two"
+roles = ["person"]
+[hosts.server-1]
+roots = ["store"]
+[hosts.server-2]
+roots = ["snapshots"]
+"""
+SNAPSHOT = "2026-11-01_0100"
+
+
+def pg_bin(version):
+    found = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"), key=lambda p: int(p.split("/")[4]))
+    if version:
+        found = [p for p in found if p.split("/")[4] == str(version)]
+    if not found:
+        sys.exit("tools/bench-pages: no PostgreSQL%s under /usr/lib/postgresql" % (" " + version if version else ""))
+    return os.path.dirname(found[-1])
+
+
+def run(cmd):
+    return subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def say(*a):
+    print("tools/bench-pages:", *a, flush=True)
+
+
+class Catalog:
+    """The generated trees, their agents and the ingester."""
+
+    def __init__(self, tmp, conn, n):
+        from pinakes import server_config
+        from pinakes.ingest import Ingester
+        self.tmp, self.n = tmp, n
+        self.ing = Ingester(conn, server_config.loads(SERVER))
+        self.ing.seed()
+        self.agents = {}
+
+    def agent(self, host, label, kind="primary", extra=""):
+        from pinakes import config
+        from pinakes.state import State
+        if label not in self.agents:
+            base = os.path.join(self.tmp, host)
+            top = os.path.join(base, label)
+            os.makedirs(top, exist_ok=True)
+            cfg = config.loads('[agent]\nhost = "%s"\nstate = "%s/state-%s.sqlite"\noutbox = "%s/outbox"\n'
+                               '[[root]]\nlabel = "%s"\npath = "%s"\nkind = "%s"\n%s\n'
+                               % (host, base, label, base, label, top, kind, extra))
+            self.agents[label] = (host, top, cfg, State(cfg.state))
+        return self.agents[label]
+
+    def top(self, label):
+        return self.agents[label][1]
+
+    def scan(self, label):
+        from pinakes import outbox
+        from pinakes.scan import Scanner
+        host, _, cfg, st = self.agents[label]
+        Scanner(cfg, st).scan(cfg.roots[0])
+        for seq, path in outbox.pending(cfg.outbox):
+            header, recs = outbox.read(path)
+            self.ing.apply(header, recs, host)
+            outbox.ack(cfg.outbox, seq)
+
+    def build(self):
+        import jpegs
+        n = self.n
+        self.agent("server-1", "store")
+        self.agent("server-2", "snapshots", "backup", 'mirrors = { root = "store", layout = "*/{relpath}" }')
+        store, snaps = n * 4 // 5, n - n * 4 // 5
+        photos, user2 = store // 20, store // 5
+        copied = min(2000, (store - photos - user2) // 4)        # the last ones: a copy of p001, one file edited
+        self.paths = []
+        t = time.monotonic()
+        for i in range(store):
+            if i >= store - copied:
+                k = i - (store - copied)
+                rel, data = self.paths[photos + user2 + 2000 + k]
+                rel = rel.replace("/projects/p001/", "/copy-of-p001/")
+                data += b"edited\n" if k == 7 else b""
+            elif i < photos:
+                rel = "people/user-1/photos/%03d/IMG_%06d.JPG" % (i // 500, i)
+                data = jpegs.camera(make="Maker-%d" % (i % 5), when="2019:06:%02d %02d:%02d:%02d" % (
+                    1 + i % 28, i // 3600 % 24, i // 60 % 60, i % 60))
+            elif i < photos + user2:
+                rel = "people/user-2/notes/%03d/note-%06d.txt" % (i // 400 % 1000, i)
+                data = b"note %d\n" % i
+            else:
+                j = i - photos - user2
+                rel = "people/user-1/projects/p%03d/d%02d/file-%06d.txt" % (j // 2000, j // 100 % 20, i)
+                data = b"store %d\n" % (i - 1 if i % 50 == 1 else i)          # one in 50 a duplicate
+            self.put("store", rel, data)
+            self.paths.append((rel, data))
+        say("wrote %d files of store in %.0f s" % (store, time.monotonic() - t))
+        t = time.monotonic()
+        self.scan("store")
+        say("scanned and ingested store in %.0f s" % (time.monotonic() - t))
+        t = time.monotonic()
+        mine = [p for p in self.paths if p[0].startswith("people/user-1/")]
+        for rel, data in mine[:snaps]:
+            self.put("snapshots", SNAPSHOT + "/" + rel, data)
+        say("wrote %d files of snapshots in %.0f s" % (min(snaps, len(mine)), time.monotonic() - t))
+        t = time.monotonic()
+        self.scan("snapshots")
+        say("scanned and ingested snapshots in %.0f s" % (time.monotonic() - t))
+        # a clean-up on store: files deleted, a folder moved, files edited (each about 0.5% of store)
+        t = time.monotonic()
+        top = self.top("store")
+        step = 200
+        for rel, _ in self.paths[photos + user2::step]:
+            os.remove(os.path.join(top, rel))
+        os.rename(os.path.join(top, "people/user-1/projects/p000"), os.path.join(top, "people/user-1/moved-p000"))
+        for rel, data in self.paths[photos + user2 + 1::step]:
+            if not rel.startswith("people/user-1/projects/p000/"):
+                self.put("store", rel, data + b"edited\n")
+        self.scan("store")
+        say("changed and scanned store again in %.0f s" % (time.monotonic() - t))
+
+    def put(self, label, rel, data):
+        p = os.path.join(self.top(label), rel)
+        try:
+            f = open(p, "wb")
+        except FileNotFoundError:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            f = open(p, "wb")
+        with f:
+            f.write(data)
+
+
+def token(db_connect, person):
+    secret = "pinakes_bench_%s" % os.urandom(8).hex()
+    with db_connect() as c:
+        pid = c.execute("SELECT person_id FROM pinakes.people WHERE name = %s", (person,)).fetchone()[0]
+        c.execute("SELECT set_config('pinakes.person', %s, true)", (str(pid),))
+        c.execute("SELECT pinakes.make_token(%s, %s, %s, %s, NULL)",
+                  ("bench", hashlib.sha256(secret.encode()).digest(), ["read"], None))
+    return secret
+
+
+def calls(conn):
+    """The read calls to time, with arguments that make them work hardest: whole roots, common names."""
+    one = conn.execute("SELECT f.file_id FROM pinakes.present f JOIN pinakes.roots r USING (root_id) "
+                       "WHERE r.label = 'store' AND f.relpath LIKE 'people/user-1/projects/%%' "
+                       "ORDER BY f.file_id LIMIT 1").fetchone()[0]
+    edited = conn.execute("SELECT file_id FROM pinakes.history WHERE kind = 'changed' "
+                          "ORDER BY history_id LIMIT 1").fetchone()[0]
+    return [
+        ("find", {"q": "file"}), ("find", {"q": "IMG_0000*"}), ("find", {"q": "no-such-name"}),
+        ("where", {"file": one}), ("history", {"file": edited}), ("versions", {"file": edited}),
+        ("lineage", {"file": edited}), ("relatives", {"file": edited}),
+        ("only-here", {"loc": "store:"}), ("only-here", {"loc": "store:people/user-1/projects/p001"}),
+        ("safe-to-delete", {"loc": "store:people/user-1/projects/p001"}),
+        ("backed-up", {"loc": "store:"}), ("backed-up", {"loc": "store:people/user-1/projects/p001"}),
+        ("manifests", {}), ("folder-copies", {"loc": "store:people/user-1/projects/p001"}), ("dupes", {}),
+        ("changes", {"days": 7}), ("changes", {"days": 7, "loc": "store:people/user-1/moved-p000"}),
+        ("changes", {"days": 7, "review": "unreviewed", "what": ["gone", "moved"]}),
+        ("meta", {"field": "exif.make", "value": "Maker-1"}), ("restores", {}),
+        ("tags", {"loc": "store:people/user-1/projects/p001"}), ("access", {}),
+        ("roots", {}), ("stale", {}), ("host-roots", {"host": "server-1"}),
+        ("backups", {"loc": "store:people/user-1/projects/p001"}), ("at-risk", {}), ("growth", {}),
+        ("change-tree", {}), ("export", {"part": "files"}),
+    ]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], epilog=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--files", type=int, default=500000)
+    ap.add_argument("--pg", help="PostgreSQL major version, from /usr/lib/postgresql/N/bin")
+    ap.add_argument("--limit", type=float, default=2.0, help="seconds a first page may take (2)")
+    ap.add_argument("--keep", action="store_true", help="keep the cluster running, with the trees, and say where")
+    ap.add_argument("--reuse", metavar="DIR", help="time the calls on a catalog that --keep kept in DIR")
+    ap.add_argument("--only", action="append", metavar="CALL", help="time only this call (again for more)")
+    a = ap.parse_args()
+    venv = os.path.join(HERE, ".venv/bin/python")
+    if os.path.exists(venv) and sys.prefix != os.path.join(HERE, ".venv"):
+        os.execv(venv, [venv] + sys.argv)
+    import psycopg
+
+    bindir = pg_bin(a.pg)
+    base = tempfile.gettempdir()
+    tmp = a.reuse or tempfile.mkdtemp(prefix="pinakes-bench-", dir=base if len(base) < 60 else "/tmp")
+    data = os.path.join(tmp, "data")
+    ok = started = False
+
+    def connect(user="pinakes_app", db="pinakes", **kw):
+        return psycopg.connect(host=tmp, port=5432, user=user, dbname=db, **kw)
+
+    try:
+        version = run([os.path.join(bindir, "postgres"), "--version"]).stdout.strip()
+        if not a.reuse:
+            started = True
+            build(a, bindir, tmp, data, connect)
+        with connect("pinakes_ingest") as c:
+            files = c.execute("SELECT count(*) FROM pinakes.files").fetchone()[0]
+            todo = calls(c)
+        slow = time_calls(a, connect, todo)
+        ok = not slow
+        say("%s: %d files" % ("OK, every first page within %g s" % a.limit if ok else
+                              "SLOW (over %g s): %s" % (a.limit, ", ".join(slow)), files))
+        say("on %s, Python %s, %s %s, %s, %s, %d CPUs, %.0f GB" % (
+            version.replace("postgres (PostgreSQL) ", "PostgreSQL "), platform.python_version(), platform.system(),
+            platform.release(), platform.machine(), cpu_name(), os.cpu_count(),
+            os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") / 1e9))
+    except subprocess.CalledProcessError as e:
+        print("tools/bench-pages: %s failed:\n%s" % (" ".join(e.cmd[:1]), e.stdout), file=sys.stderr)
+    finally:
+        if a.keep and started:
+            say("kept %s (running: its socket is there, port 5432; --reuse %s times it again; stop it with "
+                "%s/pg_ctl -D %s stop)" % (tmp, tmp, bindir, data))
+        elif started:
+            subprocess.run([os.path.join(bindir, "pg_ctl"), "-D", data, "-m", "immediate", "stop"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            shutil.rmtree(tmp, ignore_errors=True)
+    return 0 if ok else 1
+
+
+def build(a, bindir, tmp, data, connect):
+    """A new cluster in tmp, started, and the catalog in it."""
+    from pinakes.ingest import apply_schema
+    run([os.path.join(bindir, "initdb"), "-D", data, "-U", "postgres", "-A", "trust", "--no-sync", "-E", "UTF8",
+         "--locale", "C.UTF-8"])
+    run([os.path.join(bindir, "pg_ctl"), "-D", data, "-l", os.path.join(tmp, "log"), "-w", "-o",
+         "-k %s -c listen_addresses='' -p 5432 -c fsync=off -c synchronous_commit=off -c full_page_writes=off"
+         % tmp, "start"])
+    with connect("postgres", "postgres", autocommit=True) as c:
+        c.execute("CREATE DATABASE pinakes")
+        c.execute("CREATE ROLE pinakes_app LOGIN")
+        c.execute("CREATE ROLE pinakes_ingest LOGIN BYPASSRLS")
+    with connect("postgres", autocommit=True) as c:
+        apply_schema(c)
+    trees = os.path.join(tmp, "trees")
+    t = time.monotonic()
+    with connect("pinakes_ingest", autocommit=True) as ing:
+        Catalog(trees, ing, a.files).build()
+        with connect("postgres", autocommit=True) as c:
+            c.execute("ANALYZE")    # as the tables' owner (the ingester's ANALYZE skips them), as autovacuum would
+        counts = ing.execute("SELECT count(*), count(*) FILTER (WHERE gone_on IS NULL), "
+                             "(SELECT count(*) FROM pinakes.history), (SELECT count(*) FROM pinakes.metadata) "
+                             "FROM pinakes.files").fetchone()
+    say("catalog: %d files (%d present), %d history rows, %d metadata rows, built in %.0f s"
+        % (counts + (time.monotonic() - t,)))
+    if not a.keep:
+        shutil.rmtree(trees)
+
+
+def time_calls(a, connect, todo):
+    """Each call three times through the API over HTTP as user-1, its best time printed; the calls over a.limit."""
+    from pinakes import cli, server_config, web
+    from werkzeug.serving import WSGIRequestHandler, make_server
+
+    class Quiet(WSGIRequestHandler):
+        def log_request(self, *args):
+            pass
+
+    app = web.create_app(server_config.loads('[web]\nsecure_cookies = false\nsession_key = "bench"\n'),
+                         connect=connect)
+    server = make_server("127.0.0.1", 0, app, threaded=True, request_handler=Quiet)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    api = cli.Api("http://127.0.0.1:%d" % server.server_port, token(connect, "user-1"))
+    print("%-16s %-52s %8s %8s  %s" % ("call", "arguments", "seconds", "rows", "of"))
+    slow = []
+    try:
+        for call, args in todo:
+            if a.only and call not in a.only:
+                continue
+            best = None
+            for _ in range(3):
+                t = time.monotonic()
+                got = api.get(call, **args)
+                best = min(best or 1e9, time.monotonic() - t)
+            rows = next((got[k] for k in ("rows", "not_safe", "shown", "disks", args.get("part")) if k in got), None)
+            total = got.get("total", got["files"] if isinstance(got.get("files"), int) else "")
+            print("%-16s %-52s %8.3f %8s  %s" % (call, ", ".join("%s=%s" % kv for kv in args.items())[:52], best,
+                                                 len(rows) if isinstance(rows, list) else "-", total), flush=True)
+            if best > a.limit:
+                slow.append(call)
+    finally:
+        server.shutdown()
+    return slow
+
+
+def cpu_name():
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("model name"):
+                    return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return platform.processor() or "CPU unknown"
+
+
+if __name__ == "__main__":
+    sys.exit(main())

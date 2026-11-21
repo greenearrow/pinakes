@@ -478,7 +478,7 @@ class TestFolderCopies(ServerCase):
         cli = CliRun(self, "user-1")
         self.addCleanup(cli.close)
         got = json.loads(cli("folder-copies", "store:people/user-1/", "--json"))
-        (row,) = got
+        (row,) = got["rows"]
         self.assertEqual((row["folder"], row["other"], row["relation"]),
                          ("store:people/user-1/one", "store:people/user-1/two", "same"))
         text = cli("folder-copies", self.path("server-1", "store", "people/user-1"), "--host", "server-1")
