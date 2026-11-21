@@ -18,8 +18,8 @@ nothing else needs updating.
 - `changes` counts every matching row, and the lookup of each gone file's copies (`elsewhere`, `backups`) sat under
   that count, so it ran for every gone file in the window, not only the page shown. On a catalog of 3.4 M files, one
   root's 30 days (193 k history rows) took 4 s without the lookup and was cancelled at 300 s with it. The page is now
-  cut first and the copies looked up for its rows only; `--elsewhere` stops at the first copy. The rows and their
-  order are unchanged.
+  cut first and the copies looked up for its rows only; the changes page's "mark all" for gone files still in another
+  root stops at the first copy. The rows and their order are unchanged.
 - A test checks that the lookup runs once per row on the page, not once per gone file in the window.
 
 ### One slow query no longer blocks everybody's
