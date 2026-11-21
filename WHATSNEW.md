@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 10
 
-Not cut. Affects the server, the agents and the CLI. Protocol 6, a change to the schema only: agents of protocol 0 to
+Cut 2026-11-21 (tag `release-10`). Affects the server, the agents and the CLI. Protocol 6, a change to the schema only: agents of protocol 0 to
 5 work with this server unchanged, and this agent with any server, so the server and the agents may be updated in
 either order. The CLI goes with the server: its lists are now paged.
 

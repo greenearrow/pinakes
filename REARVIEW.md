@@ -521,7 +521,7 @@ there: the person's own and others' they can see. `GET /api/v1/tags?loc=` (scope
 /api/v1/tag` (scope `tag`, a person's token, at most 1000 files a call; the CLI sends more in turns), which skips the
 files the person may not enter on and checks the values with `extract.check_vals`. `set_file_metadata()` now takes a
 person's token with the `tag` scope, still in its roots (`my_file_role()`), and refuses a group token by name
-(`schema.sql` and `upgrades/person-metadata.sql`, release 10, not cut; protocol 6's fingerprint updated).
+(`schema.sql` and `upgrades/person-metadata.sql`, release 10; protocol 6's fingerprint updated).
 
 **State:** Tested on each of Python 3.10 to 3.15 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCliTag`, the CLI
 against a real HTTP server on 127.0.0.1): the owner from inside the folder, asked and declining, then tagging; a file
@@ -922,8 +922,8 @@ changed since (naming the newest later edit, and whose), a link no longer in the
 change; it exits 1 if any was refused. New API calls `GET edits` (scope `read`, `review` or `tag`; `days=`, `token=`)
 and `POST undo` (`{"edits": [...]}`, scope `review` or `tag`, and the database asks the scope of each edit's kind).
 An undo is an edit, audited for the other owners and co-owners its values touch (a mark's: only where the person
-undid as no owner, in a step-up) and for a group's members. `schema.sql` and `upgrades/edits.sql` (release 10, not
-cut; protocol 6's fingerprint updated).
+undid as no owner, in a step-up) and for a group's members. `schema.sql` and `upgrades/edits.sql` (release 10;
+protocol 6's fingerprint updated).
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestEdits`, the CLI against
 a real HTTP server on 127.0.0.1): a review of a folder, a tag, a rejection by a token and a mark on the web listed with
