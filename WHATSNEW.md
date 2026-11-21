@@ -2,6 +2,41 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 13 (0.13.0)
+
+Not cut. Affects the server and the CLI. Protocol 6, as release 12: no change to the schema, the batches or the
+agent. Either may be updated first: an older `pinakes` ignores the new counts, and against an older server the new
+one prints no count line.
+
+### Before you update
+
+1. No upgrade file (`tools/latest-release --upgrades-after 12` lists none). Update the server.
+2. Update `pinakes` on every machine that has it, not only the catalog server: this release doesn't affect the
+   agent, so updating the agent alone doesn't bring it.
+
+### `backed-up` says how many of all the files have a backup
+
+- The list is sorted unbacked first, so page 1 of a folder that was mostly backed up showed only zeros and read as
+  if nothing was. `pinakes backed-up` now prints "N of TOTAL file(s) have a backup; M have none." before the rows,
+  the Backed up report says it above the table (no line on an empty page), and `GET /api/v1/backed-up` answers
+  `with_backup` and `without_backup` beside `total`. The counts are over the whole list, under row-level security,
+  not the page's.
+
+### Releases have a semantic version
+
+- From this release each one has a version, MAJOR.MINOR.PATCH, next to its number: MAJOR when something that worked
+  stops working until you do more than update, MINOR when something is added, PATCH for fixes only, and MINOR for
+  both while MAJOR is 0. The package's version is the release's (this one's wheel is `pinakes-0.13.0`), and a cut
+  release has a `vVERSION` tag beside `release-N`. The release number is still what agents and servers compare, so
+  nothing changes at check-in. Releases 1 to 12 have no version.
+
+### Not yet
+
+Tested on `4a4e13d`: `tools/test --matrix`, 493 tests on Python 3.10.22, 3.11.18, 3.12.3, 3.13.18, 3.14.9 and 3.15.2,
+each with PostgreSQL 16.15 (Linux x86-64), all OK; `tools/test --wheel`, the installed wheel, 493 tests on Python
+3.12.3, OK (one skipped by design, as it needs git). PostgreSQL 15, 17 and 18 not run; aarch64 not run. Not run
+against a real catalog; not deployed. Nothing is published.
+
 ## Release 12
 
 Cut 2026-11-21 (tag `release-12`). Affects the server only. Protocol 6, as release 11: no change to the schema, the batches or the agent, so
