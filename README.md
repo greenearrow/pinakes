@@ -92,7 +92,9 @@ Only when the owner says to cut it. In order:
 
 1. **Ready:** its `RELEASES.toml` entry (what it affects, protocol, upgrade files, fingerprint, a note) and
    `pinakes/compat.py` agree, and `tests/test_releases.py` passes. `affects` names every role whose code changed
-   since the last cut (`git diff release-N-1 --stat`): the CLI counts.
+   since the last cut (`git diff release-N-1 --stat`): the CLI counts. A release that affects `cli` must reach
+   every machine with the `pinakes` command, not only the catalog server: one where it is installed with an agent
+   is updated by `agent` and `cli` together, so *Before you update* says so whenever `cli` is in and `agent` isn't.
 2. **Tested:** `tools/test --matrix` and `tools/test --wheel`, both on the commit to be cut, both OK. A run that
    wasn't made is said to be not run, in step 3 and in the commits.
 3. **What's new:** a `## Release N` section at the top of `WHATSNEW.md`: a first line that begins `Not cut.`, then

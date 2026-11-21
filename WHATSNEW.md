@@ -8,8 +8,12 @@ Cut 2026-11-20 (tag `release-9`). Affects the server and the CLI; the agents are
 
 ### Before you update
 
-1. Update the server, then the CLI. The new commands ask the server's new calls; against a release 8 server they
-   answer `pinakes: no such call`. The other commands work with either.
+1. Update the server, then the CLI on every machine that has the `pinakes` command: the catalog server, and each
+   desktop or laptop where it was installed with a person's agent. The new commands ask the server's new calls;
+   against a release 8 server they answer `pinakes: no such call`. The other commands work with either.
+2. The agents are unchanged, so a deploy that picks a machine's release by what affects `agent` alone leaves that
+   machine's CLI on release 8. Pick it by `agent` and `cli` together (the newer of `tools/latest-release agent` and
+   `tools/latest-release cli`) wherever the CLI is installed with the agent.
 
 ### A root's first scan is not a change
 
