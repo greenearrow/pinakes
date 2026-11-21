@@ -123,13 +123,12 @@ command line and the web UI as much. 61 and 62 are built (REARVIEW.md); nothing 
 
 Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.
 
-24. [Feature; also security] **MCP server**, an add-on module (DESIGN.md "Wish: an MCP server"), on the API and
-    tokens of 34, after 61 and 62: the read-only queries, and review marks, tags and notes and lineage decisions with
-    the review and tag scopes, each write a preview and then an apply; streamable HTTP behind the proxy, each
-    connection with its own person's token. No new powers in the core, and the core runs without it. Needs too: the
-    account page's token form saying a hosted assistant receives the names and metadata its answers contain. A
-    person asks through their assistant; what it did they see with `pinakes access` and `pinakes edits`. *Done
-    when:* tests show a token acting as one person under row-level security, two connections with two people's
-    tokens each seeing only their own, never stepping up, leaving protected roots out unless added, every call
-    logged, a write changing nothing before its apply, and that write listed by `pinakes edits` and undone by
-    `pinakes undo`.
+24. [Feature; also security] **MCP server**, an add-on module (DESIGN.md "Wish: an MCP server"), on the API and tokens
+    of 34, after 61 and 62: the read-only queries, and review marks, tags and notes and lineage decisions with the
+    review and tag scopes, each write a preview and then an apply; streamable HTTP behind the proxy, each connection
+    with its own person's token. No new powers in the core, and the core runs without it (the token form's note on what
+    an assistant receives is built: REARVIEW.md "Before 24"). A person asks through their assistant; what it did they
+    see with `pinakes access` and `pinakes edits`. *Done when:* tests show a token acting as one person under row-level
+    security, two connections with two people's tokens each seeing only their own, never stepping up, leaving protected
+    roots out unless added, every call logged, a write changing nothing before its apply, and that write listed by
+    `pinakes edits` and undone by `pinakes undo`.

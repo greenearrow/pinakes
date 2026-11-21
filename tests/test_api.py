@@ -349,6 +349,22 @@ class TestApi(ApiCase):
         self.assertEqual(stored, [(hashlib.sha256(secret.encode()).digest(), ["read"], [self.root_id("store")], True)])
         self.assertEqual(self.get("whoami", secret)[1]["roots"], ["store"])
 
+    def test_the_token_form_says_what_an_assistant_receives(self):
+        """SECURITY.md "The MCP server": the UI says, where the token is made, that a hosted assistant receives the
+        names and metadata its answers contain, and that a protected root ticked goes wherever the token goes."""
+        page = self.login("user-1").get("/account").get_data(as_text=True)
+        form = page[page.index('value="make-token"'):]
+        form = form[:form.index("</form>")]
+        note = re.search(r'<p class="muted" id="token-assistant">(.*?)</p>', form, re.S)
+        self.assertIsNotNone(note)
+        said = " ".join(note.group(1).split())
+        for words in ("whoever runs it receives the file names, paths and metadata",
+                      "a hosted assistant's provider gets them", "Limit the token to some roots"):
+            self.assertIn(words, said)
+        self.assertLess(form.index("token-assistant"), form.index("<button>Make a token</button>"))
+        self.assertIn("Wherever the token goes, they go.", " ".join(form.split()))
+        self.assertNotIn("nothing uses them yet", form)
+
     def test_upgrade_file_matches_the_schema(self):
         self.check_upgrade_matches_the_schema()
 

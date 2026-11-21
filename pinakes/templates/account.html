@@ -50,7 +50,9 @@ group.{% endif %}</p>
     <option value="{{ gr.group_id }}">the group {{ gr.name }}</option>{% endfor %}</select></label>{% endif %}
   <fieldset><legend>Scopes</legend>{% for sc in scopes %}
     <label><input type="checkbox" name="scope" value="{{ sc }}"{% if sc == 'read' %} checked{% endif %}> {{ sc }}</label>{% endfor %}
-    <p class="muted">read: ask questions. review and tag: for later commands; nothing uses them yet.</p></fieldset>
+    <p class="muted">read: ask questions. review: mark changes and decide relatives (<span class="mono">pinakes review</span>,
+      <span class="mono">relatives</span>). tag: your tags and notes (<span class="mono">pinakes tag</span>). Either can undo
+      the token's own writes (<span class="mono">pinakes undo</span>).</p></fieldset>
   <fieldset><legend>Roots</legend>
     <label><input type="radio" name="roots" value="all" checked> Every root but the protected ones, now and later</label>
     <label><input type="radio" name="roots" value="some"> Only these:</label>
@@ -59,6 +61,9 @@ group.{% endif %}</p>
     <p class="muted">A protected root ticked here gives the token its names, sizes, times and hashes. Wherever the token
       goes, they go.</p></fieldset>
   <label>Expires after (days; empty: until revoked) <input name="days" inputmode="numeric" autocomplete="off"></label>
+  <p class="muted" id="token-assistant"><strong>For an assistant:</strong> whoever runs it receives the file names, paths
+    and metadata its answers return. A model on your own network keeps them here; a hosted assistant's provider gets
+    them. Limit the token to some roots to keep the others out.</p>
   <label>Your current password <input name="current" type="password" autocomplete="current-password" required></label>
   <button>Make a token</button></form></div>
 {% if 'operator' in roles %}

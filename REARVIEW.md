@@ -941,3 +941,20 @@ chains of `mark_changes()`, `decide_lineage()` and `set_file_metadata()` in the 
 `edits.sql`'s. Four checks checked to fail with each undone (the value changed since, whose edit it is, the listing's
 policy, the right to write metadata now). All 484 tests pass (tools/test). PostgreSQL 15, 17 and 18 and other Pythons
 not run; not run on a real catalog; not deployed.
+
+## Before 24. What an assistant receives, on the token form
+
+Design: SECURITY.md "The MCP server" (the UI says so when the token is made). Part of what ROADMAP 24 needs from the
+core; 24 itself is not built.
+
+**Built:** The account page's token form says, above the password and the button, that whoever runs an assistant
+receives the file names, paths and metadata its answers return: a model on the person's own network keeps them in the
+house, a hosted assistant's provider gets them, and limiting the token to some roots keeps the others out. The note
+on a protected root ticked (its names, sizes, times and hashes go wherever the token goes) stays. The scopes' note,
+which still said review and tag were for later commands, names the commands that use them (`pinakes review`,
+`relatives`, `tag`, and `undo` for the token's own writes).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py`
+`TestApi.test_the_token_form_says_what_an_assistant_receives`: the note inside the person's token form, before its
+button, with the protected-root note still there and the old scopes' note gone), checked to fail with the template
+change undone. All 485 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not deployed.
