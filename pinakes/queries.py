@@ -2,6 +2,7 @@
 row-level security decides what comes back. A location is ROOT:PATH, where ROOT is a root's label."""
 
 import datetime
+import json
 import re
 
 FILE_COLS = ("f.file_id, h.name AS host, r.label AS root, r.kind, f.relpath, f.size, f.mtime, f.snapshot, f.gone_on, "
@@ -720,6 +721,43 @@ def file_extractions(conn, content_id):
 
 def sensitive_visible(conn, file_id, content_id):
     return conn.execute("SELECT pinakes.sensitive_visible(%s, %s)", (content_id, file_id)).fetchone()[0]
+
+
+# Person-entered metadata and shared sensitive fields (ROADMAP 16): written only through the database's functions,
+# which decide who may (the owner, a co-owner or an annotator enters; the owner or a co-owner shares).
+def my_file_role(conn, file_id):
+    """The person's role on the file (owner, co-owner, reader, annotator), or None."""
+    return conn.execute("SELECT pinakes.my_file_role(%s)", (file_id,)).fetchone()[0]
+
+
+def my_entered(conn, file_id, schema):
+    """The values of one schema the person entered on a file, its sensitive fields with the rest."""
+    vals = {}
+    for (v,) in conn.execute("""SELECT vals FROM pinakes.metadata WHERE file_id = %s AND schema = %s
+                                AND source = 'person' AND author = pinakes.current_person()
+                                ORDER BY sensitive""", (file_id, schema)).fetchall():
+        vals.update(v)
+    return vals
+
+
+def set_file_metadata(conn, file_id, schema, vals):
+    """Replace the person's values of `schema` (a registry.Schema) on a file with `vals`, already checked
+    (extract.check_vals): the sensitive fields go in a row of their own."""
+    plain = {k: v for k, v in vals.items() if not schema.fields[k].sensitive}
+    hidden = {k: v for k, v in vals.items() if schema.fields[k].sensitive}
+    conn.execute("SELECT pinakes.set_file_metadata(%s, %s, %s::jsonb, %s::jsonb)",
+                 (file_id, schema.name, json.dumps(plain), json.dumps(hidden)))
+
+
+def sensitive_sharing(conn, file_id):
+    """For the file's owner or a co-owner: its readers and annotators, and whether its sensitive fields are shared
+    with each. Nobody else gets a row."""
+    return rows(conn, "SELECT * FROM pinakes.sensitive_sharing(%s)", (file_id,))
+
+
+def share_sensitive(conn, file_id, person_id, give):
+    """Share the file's sensitive fields with a reader or annotator of it (give False: stop). Whether it changed."""
+    return conn.execute("SELECT pinakes.share_sensitive(%s, %s, %s)", (file_id, person_id, give)).fetchone()[0]
 
 
 _FIELD = re.compile(r"[a-z][a-z0-9_]{0,29}\Z")

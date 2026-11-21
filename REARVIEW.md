@@ -36,6 +36,7 @@ agents).
 - 15. Identity fields for lineage (XMP)
 - 16. Sensitive metadata for owners only (first part)
 - 16. Metadata on a file's page and in find (showing it)
+- 16. Entering metadata and sharing sensitive fields (last part)
 - 19. Checksum manifests
 - 27. Packaging and a test matrix
 - 28, 29. Backup roots without churn; name lineage with a second signal
@@ -300,7 +301,7 @@ catalog; not deployed.
 
 ## 16. Sensitive metadata for owners only (first part)
 
-Open part: ROADMAP.md 16.
+The rest: "16. Entering metadata and sharing sensitive fields" below.
 
 **Built:** GPS, people shown and place names in rows of their own (`metadata.sensitive`), visible through
 `sensitive_visible()` to the owners and co-owners of a copy or an administrator in a step-up, not to readers; exif and
@@ -321,6 +322,34 @@ its own index, under row-level security.
 **State:** Tested on each of Python 3.10 to 3.15 and PostgreSQL 15 to 18 once (x86-64 desktop), with the test client on
 generated JPEGs: owner, reader, step-up and its audit, find under row-level security, the indexes used, markup in a
 value; the reader tests checked to fail without the policy; deployed on the first deployment; not tried in a browser.
+
+## 16. Entering metadata and sharing sensitive fields (last part)
+
+Design: METADATA.md "Entering it, and sharing sensitive fields"; DECISIONS.md "Entering metadata, and sharing a
+file's sensitive fields". With this, ROADMAP 16 is built and no longer listed.
+
+**Built:** `set_file_metadata()`, `share_sensitive()`, `sensitive_sharing()` and `my_file_role()` in the database,
+the table `sensitive_shares`, `sensitive_visible()` also true for a person a file's sensitive fields are shared with,
+and the metadata policy showing an author their own sensitive values (`upgrades/person-metadata.sql`, release 10,
+protocol 6). On the file page: a form to set or remove one field of one's own (owner, co-owner, annotator; the
+schemas that fit the file's name, Dublin Core always), values parsed by type (`web.parse_entry`) and checked by
+`extract.check_vals`; for the owners, who the sensitive fields are shared with, with share and stop. Entering on
+another's file and every share or stop are audited. Web only: every token is refused. `extract.mime_of` is the
+agent's own MIME lookup, now one function the web uses too.
+
+**Not as the roadmap said:** sharing is per file, not per folder, as enrollments are still config-seeded (ROADMAP
+8). No `pinakes` command: entering by token is `pinakes tag` (ROADMAP 37); sharing stays on the web.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_server.py`
+`TestPersonMetadata`, `tests/test_web.py` `TestEnteringMetadata`, `TestParseEntry`): a reader of a shared file sees
+the entered and extracted non-sensitive fields and neither GPS nor entered people until shared, then both, another
+file of the same folder still not; stop hides them again; the share lapses when the reader's enrollment goes; an
+annotator's own values, theirs alone and audited for the owner; values replaced whole and following a move; a
+reader, another person's file, an administrator in a step-up, a token, no person, a bad schema name, a non-object
+and oversized values refused, the tables unwritable and the shares unreadable by the web role; the form's bad values,
+a field not fitting the file and a missing CSRF token refused; the upgrade against the schema. The sharing and
+author tests checked to fail without the policy and function changes. All 467 tests pass (tools/test). Other
+Pythons and PostgreSQL versions not run; not tried in a browser; not run on a real catalog; not deployed.
 
 ## 19. Checksum manifests
 

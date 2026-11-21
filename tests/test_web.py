@@ -1097,6 +1097,106 @@ class TestMetadataPage(ServerCase):
         self.assertIn("&lt;script&gt;x", page)
 
 
+class TestEnteringMetadata(TestMetadataPage):
+    """Person-entered metadata and shared sensitive fields on a file's page (ROADMAP 16): a shared file shows its
+    non-sensitive fields to the other person and hides the sensitive ones unless shared too."""
+
+    def csrf(self, c, rel):
+        return re.search(r'name="csrf" value="([^"]+)"', self.page(c, rel)).group(1)
+
+    def post(self, c, rel, what, **data):
+        fid = self.file("store", rel)
+        return c.post("/file/%d/%s" % (fid, what), data=dict(data, csrf=self.csrf(c, rel)))
+
+    def test_entered_fields_show_to_a_reader_and_the_sensitive_ones_only_once_shared(self):
+        rel = "people/user-1/shared-with-2/shared.jpg"
+        one, two = self.login("user-1", "correct horse battery"), self.login("user-2", "staple pony 12345")
+        self.assertIn('<option value="xmp.people">people (sensitive)</option>', self.page(one, rel))
+        r = self.post(one, rel, "metadata", field="dc.subject", value="walk, lake , ")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("entered=subject", r.headers["Location"])
+        self.assertEqual(self.post(one, rel, "metadata", field="xmp.people", value="Person-7").status_code, 302)
+        self.assertEqual(self.post(one, rel, "metadata", field="xmp.title", value="Title-7").status_code, 302)
+        page = self.page(one, rel)
+        for text in ("walk, lake", "Person-7", "Title-7", "person, User One"):
+            self.assertIn(text, page)
+        self.assertIn("Sensitive fields shared with", page)
+        page = self.page(two, rel)
+        for text in ("walk, lake", "Title-7", "Maker-2"):                    # the rest, entered and extracted
+            self.assertIn(text, page)
+        for text in ("Person-7", "47.50000", "Sensitive fields shared with", 'name="field"'):
+            self.assertNotIn(text, page)                                     # no sensitive field, no forms: a reader
+        self.assertIn("Sensitive fields (", page)
+        pid = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]
+        r = self.post(one, rel, "share-sensitive", person=pid, do="share")
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("stop sharing", self.page(one, rel))
+        page = self.page(two, rel)
+        for text in ("Person-7", "47.50000", ">gps</span>"):
+            self.assertIn(text, page)
+        self.assertNotIn("Sensitive fields (", page)
+        other = self.page(two, "people/user-1/shared-with-2/tagged.jpg")    # another file of the same folder
+        self.assertNotIn("City-1", other)
+        access = two.get("/access").get_data(as_text=True)                   # she is told
+        self.assertIn("sensitive share", access)
+        self.assertIn("file: %d" % self.file("store", rel), access)
+        self.post(one, rel, "share-sensitive", person=pid, do="stop")
+        self.assertNotIn("Person-7", self.page(two, rel))
+        self.assertEqual(self.post(one, rel, "metadata", field="xmp.people", remove="1").status_code, 302)
+        self.assertNotIn("Person-7", self.page(one, rel))
+        self.assertIn("Title-7", self.page(one, rel))                       # the rest of hers stays
+
+    def test_refused(self):
+        rel = "people/user-1/shared-with-2/shared.jpg"
+        one, two = self.login("user-1", "correct horse battery"), self.login("user-2", "staple pony 12345")
+        self.assertEqual(self.post(two, rel, "metadata", field="dc.title", value="x").status_code, 403)   # a reader
+        pid = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]
+        self.assertEqual(self.post(two, rel, "share-sensitive", person=pid, do="share").status_code, 403)
+        for field, value, why in (("dc.date", "June 2019", "a date is ISO 8601"),
+                                  ("exif.gps", "47.5", "LAT, LON"),
+                                  ("exif.gps", "95, 8", "not a point"),
+                                  ("dc.title", "  ", "no value"),
+                                  ("dc.title", "x" * 1001, "longer than 1000"),
+                                  ("dc.nothing", "x", "not a field entered on this file")):
+            r = self.post(one, rel, "metadata", field=field, value=value)
+            self.assertEqual(r.status_code, 400, field)
+            self.assertIn(why, r.get_data(as_text=True))
+        r = self.post(two, "people/user-2/notes.txt", "metadata", field="exif.make", value="x")
+        self.assertEqual(r.status_code, 400)                                # EXIF isn't a text file's
+        self.assertIn('value="dc.title"', self.page(two, "people/user-2/notes.txt"))
+        self.assertNotIn('value="exif.make"', self.page(two, "people/user-2/notes.txt"))
+        self.assertEqual(self.post(one, "people/user-1/own.jpg", "share-sensitive", person=pid,
+                                   do="share").status_code, 400)            # she doesn't read that one
+        fid = self.file("store", rel)
+        self.assertEqual(one.post("/file/%d/metadata" % fid, data={"field": "dc.title", "value": "x"}).status_code,
+                         400)                                               # no CSRF token
+        hers = self.file("store", "people/user-2/hers.jpg")
+        self.assertEqual(one.post("/file/%d/metadata" % hers, data={"csrf": self.csrf(one, rel), "field": "dc.title",
+                                                                    "value": "x"}).status_code, 404)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.metadata WHERE source = 'person'"), [(0,)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.sensitive_shares"), [(0,)])
+
+
+class TestParseEntry(unittest.TestCase):
+    """What a person types, as the registry stores it (web.parse_entry)."""
+
+    def test_types(self):
+        from pinakes import registry, web
+        F = registry.Field
+        self.assertEqual(web.parse_entry(F("t", "text"), "  Title  "), "Title")
+        self.assertEqual(web.parse_entry(F("l", "list", of="text"), "a, b,, c "), ["a", "b", "c"])
+        self.assertEqual(web.parse_entry(F("l", "list", of="number"), "1, 2.5"), [1, 2.5])
+        self.assertEqual(web.parse_entry(F("n", "number"), "640"), 640)
+        self.assertEqual(web.parse_entry(F("d", "duration"), "1:02:03"), 3723)
+        self.assertEqual(web.parse_entry(F("d", "duration"), "90"), 90)
+        self.assertEqual(web.parse_entry(F("p", "point"), "47.5, -8.26"), {"lat": 47.5, "lon": -8.26})
+        self.assertEqual(web.parse_entry(F("w", "date"), "2019-06-01"), "2019-06-01")
+        for field, text in ((F("n", "number"), "many"), (F("d", "duration"), "1:x"), (F("p", "point"), "north"),
+                            (F("w", "date"), "June"), (F("t", "text"), ""), (F("r", "person"), "user-2")):
+            with self.assertRaises(ValueError):
+                web.parse_entry(field, text)
+
+
 class TestAuth(unittest.TestCase):
     def test_password_and_totp(self):
         from pinakes import auth

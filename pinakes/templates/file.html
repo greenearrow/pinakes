@@ -18,13 +18,14 @@
   <dt>In the catalog</dt><dd>{{ f.first_seen.date() }} to {{ f.last_seen.date() }}</dd>
 </dl>
 
-<h2>Metadata</h2>
+<h2 id="metadata">Metadata</h2>
+{% if entered %}<p class="notice">Saved your {{ entered.replace('_', ' ') }}.</p>{% endif %}
 {% for s in metadata %}
 <h3 class="muted">{{ s.title }}</h3>
 <div class="scroll"><table class="meta">
   <tr><th>Field</th><th>Value</th><th>From</th></tr>
   {% for fd in s.fields %}{% for v in fd["values"] %}<tr>
-    <td>{% if loop.first %}<span{% if fd.field and fd.field.description %} title="{{ fd.field.description }}"{% endif %}>{{ fd.name.replace('_', ' ') }}</span>{% if fd.field and fd.field.sensitive %} <span class="tag" title="Shown only to the owners and co-owners of a copy">sensitive</span>{% endif %}{% endif %}</td>
+    <td>{% if loop.first %}<span{% if fd.field and fd.field.description %} title="{{ fd.field.description }}"{% endif %}>{{ fd.name.replace('_', ' ') }}</span>{% if fd.field and fd.field.sensitive %} <span class="tag" title="Shown only to the owners and co-owners of a copy, and to those they share it with">sensitive</span>{% endif %}{% endif %}</td>
     <td>{% if fd.field and fd.field.type == 'file' %}<a href="{{ url_for('file', file_id=v.value) }}">file {{ v.value }}</a>{% else %}{{ fmt_meta(v.value, fd.field) }}{% endif %}</td>
     <td class="muted">{{ v.source }}{% if v.author %}, {{ v.author }}{% endif %}{% if v.version %} <span class="tag">v{{ v.version }}</span>{% endif %}{% if v.at %} {{ v.at.date() }}{% endif %}</td>
   </tr>{% endfor %}{% endfor %}
@@ -36,7 +37,26 @@
                "unreadable": "a read error", "failed": "the extractor failed",
                "dependency": "a package it needs isn't installed there", "broken": "it didn't load there"} %}
 {% if extractions %}<p class="muted">Read by: {% for e in extractions %}{{ e.title }} <span class="tag">v{{ e.version }}</span> {% if e.outcome == 'found' %}values found{% elif e.outcome == 'nothing' %}nothing found{% elif e.outcome == 'refused' %}<span class="error">refused: {{ why.get(e.reason, e.reason) }}</span>{% else %}not run: {{ why.get(e.reason, e.reason) }}{% endif %} {{ e.at.date() }}{% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
-{% if sensitive_hidden %}<p class="muted notice">Sensitive fields ({{ sensitive_hidden|join(', ') }}) are shown only to the owners and co-owners of a copy.</p>{% endif %}
+{% if sensitive_hidden %}<p class="muted notice">Sensitive fields ({{ sensitive_hidden|join(', ') }}) are shown only to the owners and co-owners of a copy, and to those they share them with.</p>{% endif %}
+{% if enterable %}
+<form method="post" action="{{ url_for('enter_metadata', file_id=f.file_id) }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <label>Your metadata: <select name="field">{% for e in enterable %}<optgroup label="{{ e.schema.title }}">{% for fd in e.fields %}<option value="{{ e.schema.name }}.{{ fd.name }}">{{ fd.name.replace('_', ' ') }}{% if fd.sensitive %} (sensitive){% endif %}</option>{% endfor %}</optgroup>{% endfor %}</select></label>
+  <input name="value" maxlength="1000" placeholder="value">
+  <button>set</button> <button name="remove" value="1">remove mine</button></form>
+<p class="muted">Yours, on this file: it follows the file when it moves, and only you change it. A list's items are separated by commas, a place is LAT, LON, a date YYYY-MM-DD.</p>
+{% endif %}
+{% if sharing %}
+<h3 class="muted" id="sensitive">Sensitive fields shared with</h3>
+{% if shared is not none %}<p class="notice">{{ 'Shared.' if shared == '1' else 'No longer shared.' }}</p>{% endif %}
+<p class="muted">Readers and annotators see this file's metadata but not its sensitive fields, unless you share them; that shares no file, only these fields of one they already see.</p>
+<div class="scroll"><table>
+  <tr><th>Person</th><th>As</th><th>Sensitive fields</th></tr>
+  {% for p in sharing %}<tr><td>{{ p.display }}</td><td>{{ p.role }}</td>
+    <td><form method="post" action="{{ url_for('share_sensitive', file_id=f.file_id) }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="person" value="{{ p.person_id }}">
+      {% if p.shared %}shared {{ p.shared_at.date() }} <button name="do" value="stop">stop sharing</button>{% else %}not shared <button name="do" value="share">share</button>{% endif %}</form></td></tr>
+  {% endfor %}
+</table></div>
+{% endif %}
 
 <h2>Every copy</h2>
 {{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc) }}{{ pager(pc, "paths") }}

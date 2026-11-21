@@ -1,7 +1,7 @@
 # Metadata
 
-Status: partly built (schemas, EXIF and embedded XMP from JPEGs, sensitive fields, a file's page and find: REARVIEW.md
-12 to 16); the rest is design. Files carry metadata of their own (a photo's camera and place, a song's artist, a
+Status: partly built (schemas, EXIF and embedded XMP from JPEGs, sensitive fields, a file's page and find, entering
+metadata and sharing sensitive fields: REARVIEW.md 12 to 16); the rest is design. Files carry metadata of their own (a photo's camera and place, a song's artist, a
 book's author) and people add more (tags, notes, "this is the master copy"). The catalog stores both, typed by
 enrolled schemas, indexed, and attached so that it follows files through copies and moves.
 
@@ -130,6 +130,16 @@ A file's page lists its metadata per schema: every field the person may see, eac
 and date, and sensitive fields tagged as such. Someone who may not see them gets the same note whether the file has
 any or not. Find searches by name, by "made by" (`creator`) and by "dated" (`date`, from and to, a year, a month or
 a day), over every schema that maps onto the common field, each through its own index.
+
+### Entering it, and sharing sensitive fields (built: ROADMAP 16)
+
+On a file's page, its owner, a co-owner or an annotator sets or removes one field at a time of any schema that fits
+the file (by its name's MIME type; Dublin Core fits every file): a list's items separated by commas, a place as
+`LAT, LON`, a duration in seconds or `H:MM:SS`, a date in ISO 8601. The values are checked as extracted ones are,
+kept on the file with their author, and shown with "person" and the author's name; nobody else changes them. The
+schema's sensitive fields stay apart, as extracted ones do. The owner or a co-owner shares the file's sensitive
+fields with any of its readers and annotators, and stops; the page lists who has them, for the owners only. Both
+are audited where they touch someone else's file or records.
 
 ## Pairing: bundles
 

@@ -2930,6 +2930,13 @@ class TestExtracted(ServerCase):
                 later = re.search(r"^CREATE OR REPLACE FUNCTION sensitive_visible\(.*?^\$\$;$", f.read(), re.M | re.S)
             c.execute("SET search_path = pinakes")
             c.execute(later.group(0))
+            # and person-metadata.sql, later still, replaces it for shared sensitive fields, and the policy for an
+            # author's own (ROADMAP 16)
+            with open(os.path.join(UPGRADES, "person-metadata.sql")) as f:
+                text = f.read()
+            for pattern in (r"^CREATE OR REPLACE FUNCTION sensitive_visible\(.*?^\$\$;$",
+                            r"^DROP POLICY metadata_visible.*?\)\);$"):
+                c.execute(re.search(pattern, text, re.M | re.S).group(0))
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
 
@@ -3604,3 +3611,233 @@ class TestAtRisk(ServerCase):
 def store_symlink_bytes(case):
     """The size the agent recorded for the store's symlink (its target's length, as lstat says)."""
     return case.q("SELECT coalesce(sum(size), 0) FROM pinakes.files WHERE is_symlink")[0][0]
+
+
+class TestPersonMetadata(ServerCase):
+    """Person-entered metadata and shared sensitive fields (ROADMAP 16): the owner, a co-owner or an annotator
+    enters values on a file, their own, kept on the file; the owner or a co-owner shares a file's sensitive fields
+    with one of its readers, who then sees them, and nobody else does. Only through the database's functions."""
+
+    def setUp(self):
+        super().setUp()
+        self.scfg = server_config.loads(SERVER + """
+[[ownership.enrollment]]
+root = "store"
+folder = "people/user-1/annotated"
+person = "user-2"
+as = "annotator"
+""")
+        self.ing = Ingester(self.conn, self.scfg)
+        self.ing.seed()
+        self.write("server-1", "store", "people/user-1/own.jpg", jpegs.camera(make="Maker-1"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/shared.jpg", jpegs.camera(make="Maker-2"))
+        self.write("server-1", "store", "people/user-1/shared-with-2/other.jpg", jpegs.camera(make="Maker-3"))
+        self.write("server-1", "store", "people/user-1/annotated/notes.txt", b"plain text")
+        self.scan("server-1", "store")
+        self.ids = {n: self.file("store", "people/user-1/" + n) for n in
+                    ("own.jpg", "shared-with-2/shared.jpg", "shared-with-2/other.jpg", "annotated/notes.txt")}
+        self.two = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-2'")[0][0]
+
+    def enter(self, who, name, schema, plain, hidden=None):
+        with self.as_person(who) as c:
+            c.execute("SELECT pinakes.set_file_metadata(%s, %s, %s::jsonb, %s::jsonb)",
+                      (self.ids[name], schema, json.dumps(plain), json.dumps(hidden or {})))
+
+    def share(self, who, name, give=True, person=None):
+        with self.as_person(who) as c:
+            return c.execute("SELECT pinakes.share_sensitive(%s, %s, %s)",
+                             (self.ids[name], person or self.two, give)).fetchone()[0]
+
+    def seen(self, who, name):
+        """{(schema, sensitive, source): vals} of the metadata `who` sees on that file and its content."""
+        fid = self.ids[name]
+        with self.as_person(who) as c:
+            return {(r[0], r[1], r[2]): r[3] for r in c.execute(
+                "SELECT m.schema, m.sensitive, m.source, m.vals FROM pinakes.metadata m JOIN pinakes.files f "
+                "ON m.file_id = f.file_id OR m.content_id = f.content_id WHERE f.file_id = %s", (fid,))}
+
+    def test_a_reader_sees_entered_fields_and_the_sensitive_ones_only_once_shared(self):
+        self.enter("user-1", "shared-with-2/shared.jpg", "xmp", {"title": "Title-9"}, {"people": ["User Two"]})
+        self.enter("user-1", "shared-with-2/other.jpg", "xmp", {}, {"people": ["User Three"]})
+        owner = self.seen("user-1", "shared-with-2/shared.jpg")
+        self.assertEqual(owner[("xmp", False, "person")], {"title": "Title-9"})
+        self.assertEqual(owner[("xmp", True, "person")], {"people": ["User Two"]})
+        self.assertIn(("exif", True, "embedded"), owner)                      # the GPS
+        before = self.seen("user-2", "shared-with-2/shared.jpg")
+        self.assertEqual(before[("xmp", False, "person")], {"title": "Title-9"})
+        self.assertEqual(sorted(k for k in before if k[1]), [])               # no sensitive row: GPS nor people
+        self.assertTrue(self.share("user-1", "shared-with-2/shared.jpg"))
+        self.assertFalse(self.share("user-1", "shared-with-2/shared.jpg"))    # already shared
+        after = self.seen("user-2", "shared-with-2/shared.jpg")
+        self.assertEqual(after[("xmp", True, "person")], {"people": ["User Two"]})
+        self.assertIn(("exif", True, "embedded"), after)
+        # only that file's: the other photo in the same shared folder keeps its sensitive fields
+        self.assertEqual([k for k in self.seen("user-2", "shared-with-2/other.jpg") if k[1]], [])
+        with self.as_person("user-2") as c:
+            self.assertTrue(c.execute("SELECT pinakes.sensitive_visible(NULL, %s)",
+                                      (self.ids["shared-with-2/shared.jpg"],)).fetchone()[0])
+        audit = self.q("SELECT affects, detail FROM pinakes.audit WHERE action = 'sensitive_share'")
+        self.assertEqual(audit, [([self.two], {"file": self.ids["shared-with-2/shared.jpg"], "person": "User Two",
+                                               "shared": True})])
+        self.assertTrue(self.share("user-1", "shared-with-2/shared.jpg", give=False))
+        self.assertEqual([k for k in self.seen("user-2", "shared-with-2/shared.jpg") if k[1]], [])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'sensitive_share'"), [(2,)])
+
+    def test_entered_values_replace_the_authors_own_and_follow_the_file(self):
+        self.enter("user-1", "own.jpg", "dc", {"subject": ["a", "b"]})
+        self.enter("user-1", "own.jpg", "dc", {"subject": ["c"], "title": "Title-2"})
+        self.assertEqual(self.q("SELECT vals, author IS NOT NULL, file_id IS NOT NULL FROM pinakes.metadata "
+                                "WHERE source = 'person'"), [({"subject": ["c"], "title": "Title-2"}, True, True)])
+        os.rename(self.path("server-1", "store", "people/user-1/own.jpg"),
+                  self.path("server-1", "store", "people/user-1/moved.jpg"))
+        self.scan("server-1", "store")
+        self.assertEqual(self.file("store", "people/user-1/moved.jpg"), self.ids["own.jpg"])
+        self.assertEqual(self.seen("user-1", "own.jpg")[("dc", False, "person")], {"subject": ["c"], "title": "Title-2"})
+        self.enter("user-1", "own.jpg", "dc", {})                            # empty: removed
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.metadata WHERE source = 'person'"), [(0,)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'metadata'"), [(0,)])   # hers
+
+    def test_an_annotator_enters_their_own_audited_for_the_owner_and_sees_their_sensitive_ones(self):
+        self.enter("user-2", "annotated/notes.txt", "dc", {"description": "Note-1"}, {})
+        self.enter("user-1", "annotated/notes.txt", "dc", {"description": "Note-2"})
+        self.enter("user-2", "annotated/notes.txt", "xmp", {}, {"people": ["Person-9"]})
+        rows = self.q("SELECT p.name, m.schema, m.vals FROM pinakes.metadata m JOIN pinakes.people p "
+                      "ON p.person_id = m.author ORDER BY 1, 2")
+        self.assertEqual(rows, [("user-1", "dc", {"description": "Note-2"}),
+                                ("user-2", "dc", {"description": "Note-1"}),
+                                ("user-2", "xmp", {"people": ["Person-9"]})])
+        one = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0]
+        self.assertEqual(self.q("SELECT affects, detail FROM pinakes.audit WHERE action = 'metadata'"),
+                         [([one], {"file": self.ids["annotated/notes.txt"], "schema": "dc"}),
+                          ([one], {"file": self.ids["annotated/notes.txt"], "schema": "xmp"})])
+        self.assertIn(("xmp", True, "person"), self.seen("user-2", "annotated/notes.txt"))     # her own
+        self.assertIn(("xmp", True, "person"), self.seen("user-1", "annotated/notes.txt"))     # the owner's file
+
+    def test_refusals(self):
+        R = psycopg.errors.RaiseException
+        for who, name, msg in (("user-2", "shared-with-2/shared.jpg", "an annotator of a file enters"),   # a reader
+                               ("user-2", "own.jpg", "an annotator of a file enters")):                    # not hers
+            with self.assertRaisesRegex(R, msg):
+                self.enter(who, name, "dc", {"title": "x"})
+        with self.assertRaisesRegex(R, "not a schema's name"):
+            self.enter("user-1", "own.jpg", "DC; drop", {"title": "x"})
+        with self.assertRaisesRegex(R, "values are an object"):
+            with self.as_person("user-1") as c:
+                c.execute("SELECT pinakes.set_file_metadata(%s, 'dc', '[1]', '{}')", (self.ids["own.jpg"],))
+        with self.assertRaisesRegex(R, "over 32768 bytes"):
+            self.enter("user-1", "own.jpg", "dc", {"title": "x" * 40000})
+        # sharing: a reader or annotator can't, nor an administrator in a step-up; only with a reader of the file
+        with self.assertRaisesRegex(R, "only the owner or a co-owner"):
+            self.share("user-2", "shared-with-2/shared.jpg")
+        self.write("server-1", "store", "people/user-2/hers.jpg", jpegs.camera(make="Maker-4"))
+        self.scan("server-1", "store")
+        self.ids["hers"] = self.file("store", "people/user-2/hers.jpg")
+        one = self.q("SELECT person_id FROM pinakes.people WHERE name = 'user-1'")[0][0]
+        with self.as_person("user-1", session="s9") as c:
+            c.execute("SELECT pinakes.begin_step_up('checking a photo', 5)")
+            for sql, args in (("SELECT pinakes.share_sensitive(%s, %s, true)", (self.ids["hers"], one)),
+                              ("SELECT pinakes.set_file_metadata(%s, 'dc', '{}', '{}')", (self.ids["hers"],))):
+                with self.assertRaisesRegex(R, "only the owner"):
+                    c.execute(sql, args)
+                c.rollback()
+                c.execute("SELECT pinakes.begin_step_up('checking a photo', 5)")
+        with self.assertRaisesRegex(R, "only with a reader or annotator of the file"):
+            self.share("user-1", "own.jpg")                                  # user-2 doesn't see it
+        # under a token: neither, whatever its scopes (pinakes tag is ROADMAP 37)
+        with self.as_person("user-1") as c:
+            c.execute("SELECT set_config('pinakes.token', '1', false)")
+            c.commit()                                                     # kept past each refusal's rollback
+            with self.assertRaisesRegex(R, "not with a token"):
+                c.execute("SELECT pinakes.set_file_metadata(%s, 'dc', '{}', '{}')", (self.ids["own.jpg"],))
+            c.rollback()
+            with self.assertRaisesRegex(R, "not with a token"):
+                c.execute("SELECT pinakes.share_sensitive(%s, %s, true)",
+                          (self.ids["shared-with-2/shared.jpg"], self.two))
+        c = psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)       # no person
+        try:
+            with self.assertRaisesRegex(R, "no person set"):
+                c.execute("SELECT pinakes.share_sensitive(1, 1, true)")
+        finally:
+            c.close()
+        # the tables are not the application's to write, and the shares not its to read
+        with self.as_person("user-1") as c:
+            for sql in ("INSERT INTO pinakes.sensitive_shares (file_id, person_id) VALUES (%d, %d)"
+                        % (self.ids["shared-with-2/shared.jpg"], self.two),
+                        "SELECT * FROM pinakes.sensitive_shares",
+                        "INSERT INTO pinakes.metadata (file_id, schema, vals, source) VALUES (%d, 'dc', '{}', 'person')"
+                        % self.ids["own.jpg"]):
+                with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                    c.execute(sql)
+                c.rollback()
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.sensitive_shares"), [(0,)])
+
+    def test_who_it_may_be_shared_with_only_for_the_owner(self):
+        with self.as_person("user-1") as c:
+            got = c.execute("SELECT display, role, shared FROM pinakes.sensitive_sharing(%s)",
+                            (self.ids["shared-with-2/shared.jpg"],)).fetchall()
+            self.assertEqual(got, [("User Two", "reader", False)])
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.sensitive_sharing(%s)",
+                                       (self.ids["own.jpg"],)).fetchone()[0], 0)
+            self.assertEqual(c.execute("SELECT pinakes.my_file_role(%s)", (self.ids["own.jpg"],)).fetchone()[0],
+                             "owner")
+        with self.as_person("user-2") as c:
+            self.assertEqual(c.execute("SELECT count(*) FROM pinakes.sensitive_sharing(%s)",
+                                       (self.ids["shared-with-2/shared.jpg"],)).fetchone()[0], 0)
+            self.assertEqual([c.execute("SELECT pinakes.my_file_role(%s)", (self.ids[n],)).fetchone()[0]
+                              for n in ("shared-with-2/shared.jpg", "annotated/notes.txt", "own.jpg")],
+                             ["reader", "annotator", None])
+
+    def test_a_share_lapses_when_the_person_no_longer_reads_the_file(self):
+        self.share("user-1", "shared-with-2/shared.jpg")
+        with admin_conn(self.db) as c:
+            c.execute("DELETE FROM pinakes.acl_members WHERE person_id = %s AND role = 'reader'", (self.two,))
+        with self.as_person("user-2") as c:
+            self.assertFalse(c.execute("SELECT pinakes.sensitive_visible(NULL, %s)",
+                                       (self.ids["shared-with-2/shared.jpg"],)).fetchone()[0])
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT (SELECT array_agg(p.oid::regprocedure::text || '=' || pg_get_functiondef(p.oid) "
+                "                         ORDER BY p.proname) FROM pg_proc p "
+                "        WHERE p.pronamespace = 'pinakes'::regnamespace AND p.proname IN ('sensitive_visible', "
+                "        'my_file_role', 'set_file_metadata', 'sensitive_sharing', 'share_sensitive')), "
+                "(SELECT array_agg(grantee || ':' || routine_name || ':' || privilege_type "
+                "                 ORDER BY grantee, routine_name, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' AND routine_name IN "
+                " ('sensitive_visible', 'my_file_role', 'set_file_metadata', 'sensitive_sharing', 'share_sensitive')), "
+                "(SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) FROM information_schema.columns "
+                "        WHERE table_schema = 'pinakes' AND table_name = 'sensitive_shares'), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.sensitive_shares'::regclass), "
+                "(SELECT array_agg(indexdef ORDER BY indexdef) FROM pg_indexes WHERE tablename = 'sensitive_shares'), "
+                "(SELECT relrowsecurity FROM pg_class WHERE oid = 'pinakes.sensitive_shares'::regclass), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.table_privileges "
+                " WHERE table_schema = 'pinakes' AND table_name = 'sensitive_shares'), "
+                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
+                " WHERE schemaname = 'pinakes' AND tablename = 'metadata')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            with open(os.path.join(UPGRADES, "api-tokens.sql")) as f:     # sensitive_visible() as it was before
+                before = re.search(r"^CREATE OR REPLACE FUNCTION sensitive_visible\(.*?^\$\$;$", f.read(), re.M | re.S)
+            c.execute("DROP FUNCTION pinakes.my_file_role(bigint); "
+                      "DROP FUNCTION pinakes.set_file_metadata(bigint, text, jsonb, jsonb); "
+                      "DROP FUNCTION pinakes.sensitive_sharing(bigint); "
+                      "DROP FUNCTION pinakes.share_sensitive(bigint, int, boolean)")
+            c.execute("SET search_path = pinakes")
+            c.execute(before.group(0))
+            c.execute("DROP TABLE sensitive_shares")
+            c.execute("DROP POLICY metadata_visible ON metadata")
+            c.execute("CREATE POLICY metadata_visible ON metadata FOR SELECT USING ("
+                      "((file_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f WHERE f.file_id = metadata.file_id))"
+                      " OR (content_id IS NOT NULL AND EXISTS (SELECT 1 FROM files f "
+                      "WHERE f.content_id = metadata.content_id))) AND (NOT sensitive OR sensitive_visible(content_id, "
+                      "file_id)))")
+            c.execute("RESET search_path")
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["person-metadata.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "person-metadata.sql")) as f:
+                c.execute(f.read())
+            c.execute("RESET search_path")
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["person-metadata.sql"]).fetchone()[0])
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertIn("pinakes_app:share_sensitive:EXECUTE", fresh[1])

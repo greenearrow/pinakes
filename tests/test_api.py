@@ -144,6 +144,12 @@ class ApiCase(ServerCase):
             with open(os.path.join(UPGRADES, "files-policy.sql")) as f:
                 c.execute(f.read())
             c.execute("RESET search_path")
+            # and sensitive_visible() as person-metadata.sql, later still, replaces it (shared sensitive fields,
+            # ROADMAP 16)
+            with open(os.path.join(UPGRADES, "person-metadata.sql")) as f:
+                later = re.search(r"^CREATE OR REPLACE FUNCTION sensitive_visible\(.*?^\$\$;$", f.read(), re.M | re.S)
+            c.execute("SET search_path = pinakes; " + later.group(0))
+            c.execute("RESET search_path")
             self.assertEqual(c.execute(defs, args).fetchone() + c.execute(groups).fetchone(), fresh)
         return fresh
 

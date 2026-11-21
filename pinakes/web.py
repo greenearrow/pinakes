@@ -1,5 +1,6 @@
-"""pinakes-web: the web UI (Flask, served by waitress). Read-only on the catalog for now, plus sign-in, a second
-factor, the administrator's step-up, and API tokens; and the JSON API.
+"""pinakes-web: the web UI (Flask, served by waitress). Read-only on the catalog but for review marks, lineage
+decisions, a person's own metadata on a file and sharing its sensitive fields, each through its database function;
+plus sign-in, a second factor, the administrator's step-up, and API tokens; and the JSON API.
 
   pinakes-web --config /etc/pinakes/server.toml
 
@@ -63,7 +64,7 @@ import psycopg
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException, NotFound
 
-from . import auth, compat, queries, registry
+from . import auth, compat, extract, queries, registry
 from .server_config import load as load_server_config
 
 LOGIN_LIMIT = 5          # failed sign-ins per address
@@ -743,6 +744,12 @@ def create_app(cfg, connect=None):
         page["sensitive_hidden"] = [] if queries.sensitive_visible(g.db, file_id, f["content_id"]) else sorted(
             {fd.description or fd.name for s in page["metadata"] if s["schema"]
              for fd in s["schema"].fields.values() if fd.sensitive})
+        # entering metadata (owner, co-owner, annotator) and sharing the sensitive fields (owner, co-owner): ROADMAP 16
+        page["role"] = queries.my_file_role(g.db, file_id)
+        page["enterable"] = enterable(f) if page["role"] in ENTERS else []
+        page["sharing"] = queries.sensitive_sharing(g.db, file_id) if page["role"] in SHARES else []
+        page["entered"] = request.args.get("entered")
+        page["shared"] = request.args.get("shared")
         shown = "file %d" % file_id + (", with sensitive metadata" if any(m["sensitive"] for m in meta) else "")
         audit_shown([file_id] + [c["file_id"] for c in copies]
                     + [r["file_id"] for r in page["up"] + page["down"] + page["relatives"]], shown)
@@ -762,6 +769,67 @@ def create_app(cfg, connect=None):
             abort(400, "a relative is a file number")
         n = queries.decide_lineage(g.db, file_id, other, decision)
         return redirect(url_for("file", file_id=file_id, decided=n) + "#relatives")
+
+    def enterable(f):
+        """The schemas a person may enter on this file, with their fields: those whose MIME types fit its name's, as
+        the agent picks extractors (the common schema fits every file); fields of a person or a file left out (the
+        catalog names those)."""
+        mime = extract.mime_of(f["relpath"]) or ""
+        out = []
+        for s in reg:
+            if s.name != registry.COMMON and not extract._mime_fits(s.mime, mime):
+                continue
+            fields = [fd for fd in s.fields.values() if fd.type not in REFS and (fd.of or "text") not in REFS]
+            if fields:
+                out.append({"schema": s, "fields": fields})
+        return out
+
+    @app.route("/file/<int:file_id>/metadata", methods=["POST"])
+    @signed_in
+    def enter_metadata(file_id):
+        """Set or remove one field of the person's own metadata on a file (ROADMAP 16). The database decides who
+        may (the owner, a co-owner or an annotator); the registry decides what a value is."""
+        f = queries.file_by_id(g.db, file_id)
+        if f is None:
+            abort(404)
+        if queries.my_file_role(g.db, file_id) not in ENTERS:
+            abort(403, "only the owner, a co-owner or an annotator of a file enters its metadata")
+        name, dot, fname = request.form.get("field", "").partition(".")
+        allowed = {(e["schema"].name, fd.name) for e in enterable(f) for fd in e["fields"]}
+        if (name, fname) not in allowed:
+            abort(400, "not a field entered on this file")
+        schema = reg.schemas[name]
+        vals = queries.my_entered(g.db, file_id, name)
+        if request.form.get("remove"):
+            vals.pop(fname, None)
+        else:
+            try:
+                vals[fname] = parse_entry(schema.fields[fname], request.form.get("value", ""))
+            except ValueError as e:
+                abort(400, "%s: %s" % (fname, e))
+        keep, problems = extract.check_vals(schema, vals)
+        if problems:
+            abort(400, "; ".join(problems))
+        queries.set_file_metadata(g.db, file_id, schema, keep)
+        return redirect(url_for("file", file_id=file_id, entered=fname) + "#metadata")
+
+    @app.route("/file/<int:file_id>/share-sensitive", methods=["POST"])
+    @signed_in
+    def share_sensitive(file_id):
+        """Share the file's sensitive fields with one of its readers or annotators, or stop (ROADMAP 16): by its
+        owner or a co-owner only, as the database checks; it shares no file, only the fields of one already seen."""
+        if queries.file_by_id(g.db, file_id) is None:
+            abort(404)
+        who = _int(request.form.get("person"), None, 1, 2 ** 31 - 1)
+        give = {"share": True, "stop": False}.get(request.form.get("do"))
+        if who is None or give is None:
+            abort(400, "a person, and share or stop")
+        if queries.my_file_role(g.db, file_id) not in SHARES:
+            abort(403, "only the owner or a co-owner of a file shares its sensitive fields")
+        if who not in {r["person_id"] for r in queries.sensitive_sharing(g.db, file_id)}:
+            abort(400, "sensitive fields are shared only with a reader or annotator of the file")
+        queries.share_sensitive(g.db, file_id, who, give)
+        return redirect(url_for("file", file_id=file_id, shared="1" if give else "0") + "#sensitive")
 
     @app.route("/reports/at-risk")
     @signed_in
@@ -1002,6 +1070,51 @@ def create_app(cfg, connect=None):
         return render_template("access.html", rows=rows, pg=pg)
 
     return app
+
+
+ENTERS = ("owner", "co-owner", "annotator")      # who enters metadata on a file (ROADMAP 16)
+SHARES = ("owner", "co-owner")                   # who shares its sensitive fields
+REFS = ("person", "file")                        # types the catalog names, not a person typing
+
+
+def parse_entry(field, text):
+    """A value a person typed for a field (registry.Field), as the registry stores it: a list's items separated by
+    commas, a point as "LAT, LON", a duration in seconds or as H:MM:SS, a date as ISO 8601. ValueError if not."""
+    text = text.strip()
+    if not text:
+        raise ValueError("no value (remove the field instead)")
+    if field.type == "list":
+        item = registry.Field("", field.of or "text")
+        return [parse_entry(item, t) for t in text.split(",") if t.strip()]
+    if field.type == "text":
+        return text
+    if field.type == "date":
+        if not extract._DATE.match(text):
+            raise ValueError("a date is ISO 8601: YYYY, YYYY-MM, YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ")
+        return text
+    if field.type == "point":
+        lat, comma, lon = text.partition(",")
+        try:
+            if not comma:
+                raise ValueError
+            return {"lat": float(lat), "lon": float(lon)}
+        except ValueError:
+            raise ValueError("a place is LAT, LON in degrees") from None
+    if field.type == "duration" and ":" in text:
+        parts = text.split(":")
+        if len(parts) > 3 or not all(p.isdigit() for p in parts):
+            raise ValueError("a duration is seconds or H:MM:SS")
+        n = 0
+        for p in parts:
+            n = n * 60 + int(p)
+        return n
+    if field.type in ("number", "duration"):
+        try:
+            v = float(text)
+        except ValueError:
+            raise ValueError("not a number") from None
+        return int(v) if v.is_integer() and abs(v) < 2 ** 53 else v
+    raise ValueError("a %s isn't entered here" % field.type)
 
 
 SOURCES = ("person", "sidecar", "embedded", "derived")   # the order searches use (METADATA.md "Where values come from")

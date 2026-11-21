@@ -63,10 +63,6 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
     and which the reader refused.
 14. [Feature; also correctness] **Bundles and pairing**, per schema's rules. *Done when:* tests cover a photo with each
     sidecar form, RAW with JPEG, a book folder, and a bundle moved together counting as one move.
-16. [Feature; also security] **Person-entered metadata and sensitive fields** in the UI. Sensitive fields are kept
-    for owners and co-owners only, and shown on a file's page and in find (built: REARVIEW.md); left: entering
-    metadata, and an owner sharing sensitive fields with a reader. *Done when:* a shared file shows its non-sensitive fields to the
-    other person and hides the sensitive ones unless shared too.
 
 ## Managing files (DESIGN.md "Managing files")
 
@@ -103,7 +99,8 @@ stay on their forced SSH keys, and server maintenance stays a local command (`pi
 37's first part are built (REARVIEW.md). Left, in order:
 
 37. [Feature; also security] **Tagging from a folder.** Reviewing from a folder is built (REARVIEW.md); left:
-    `pinakes tag` and notes, once person-entered metadata exists (16), with the token's `tag` scope. *Done when:* tests
+    `pinakes tag` and notes, with the token's `tag` scope: person-entered metadata exists (16), and its
+    `set_file_metadata()` refuses every token until this opens it to that scope. *Done when:* tests
     cover an owner tagging from inside a folder, a reader refused, a token without the scope refused, a root outside
     the token's limit refused, and the tags shown in the web UI.
 40. [Security] **A protected admin API** (later): admin tokens with every function (`*`), each call audited; another

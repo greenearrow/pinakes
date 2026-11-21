@@ -317,7 +317,7 @@ were made while building, to keep going, and are open to change.
   step-up; readers and annotators of a shared folder see the rest of a photo's metadata, not where it was taken or
   who is in it. Someone who owns a copy of the same bytes sees them too: they hold the file. The schemas' indexes
   cover both rows, so a search by place returns only what the person may see. Sharing sensitive fields with a
-  reader, and person-entered metadata, wait for the UI half of 16. Until this, the agent kept them (exif and xmp
+  reader, and person-entered metadata, came with 16's last part (below). Until this, the agent kept them (exif and xmp
   version 1); version 2 sends them, so every photo is read once more. Older catalogs:
   `upgrades/metadata-sensitive.sql`, after `metadata-extracted.sql`.
 - **EXIF is read with the standard library** (`pinakes/exif.py`), not Pillow or exifread: the agent stays dependency
@@ -372,6 +372,26 @@ were made while building, to keep going, and are open to change.
   one condition per schema, its names written as literals from the registry so that each part uses that schema's
   partial index. A file matches by its content's metadata or its own. The search runs under the same row-level
   security, so a sensitive field (if a site maps one onto a common field) finds nothing for a reader.
+- **Entering metadata, and sharing a file's sensitive fields** (ROADMAP 16, its last part). A person's values are
+  the file's own (`metadata.file_id`, source `person`, `author`), so they follow it through moves and not to other
+  copies, and are their author's: each author has their own row per file and schema (and a second for its sensitive
+  fields, kept apart as extracted ones are), replaced whole by `set_file_metadata()`, and nobody else's are touched.
+  The owner, a co-owner or an annotator (the role that exists for it) enters; a reader can't, and a step-up gives no
+  right to, as entering is not looking. The application checks the values against the registry with the same
+  `extract.check_vals` the ingester uses (a person or a file reference is not typed in), the database checks who,
+  the schema's name and a size cap; the web role still has no write on the table. Entering on another person's
+  file is audited for its owners and co-owners, as a lineage decision is. The author sees their own sensitive
+  values even where they may not see the file's other sensitive fields. Sharing is per file: its owner or a
+  co-owner shares its sensitive fields with one of its readers or annotators (`share_sensitive()`), who then sees
+  the file's sensitive values and its content's, as an owner does; another file in the same shared folder keeps
+  its own. It shares no file: only with a person the file's enrollments already let see it, and a share counts only
+  while they still do. Who has them is shown to the owners only (`sensitive_sharing()`; the table is read through
+  that function and written through the other), and each share and its end is audited for the person and the other
+  owners. Per file, not per folder, because enrollments are still seeded from the server's config (ROADMAP 8); a
+  folder's share can come with enrolling. Both are web only: under a token the functions refuse, whatever its
+  scopes, until `pinakes tag` (ROADMAP 37) opens entering to the `tag` scope; sharing stays a person's act on the
+  web. Which schemas a file's form offers follows its name's MIME type, as the agent picks extractors
+  (`extract.mime_of`), and the common schema fits every file. Older catalogs: `upgrades/person-metadata.sql`.
 - **Hidden files** are those with a dot at the start of their name or of a folder's above them, or with the
   Windows hidden attribute, set on them or on a folder above, which Samba keeps in the `user.DOSATTRIB` extended
   attribute (`pinakes/hidden.py` reads every form Samba writes: the old hex text, and the NDR-encoded versions 1 to

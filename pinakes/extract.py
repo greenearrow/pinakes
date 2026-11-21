@@ -149,6 +149,15 @@ def missing(requires):
     return None
 
 
+_MIMES = mimetypes.MimeTypes(filenames=())
+
+
+def mime_of(relpath):
+    """A file's MIME type by its name, from the standard library's own table of types by suffix, not this machine's
+    /etc/mime.types: the same extractors run for the same names everywhere. None if unknown."""
+    return _MIMES.guess_type(relpath.rsplit("/", 1)[-1], strict=False)[0]
+
+
 def _mime_fits(patterns, mime):
     return any(p == "*/*" or p == mime or (p.endswith("/*") and mime.startswith(p[:-1])) for p in patterns)
 
@@ -170,9 +179,6 @@ class Extractors:
         self.on, self.off, self.skipped = {}, {}, {}
         self.known = set()
         self.opener = opener
-        # the standard library's own table of types by suffix, not this machine's /etc/mime.types: the same
-        # extractors run for the same names everywhere
-        self.mimes = mimetypes.MimeTypes(filenames=())
         for s in reg:
             if not s.extractor:
                 continue
@@ -193,7 +199,7 @@ class Extractors:
     def wanted(self, select, relpath, skipped=False):
         """{schema: version} of the extractors on here that apply to this name; select: a root's `metadata` (None:
         all). With skipped, also those that apply and are off here, as {schema: 0}."""
-        mime = self.mimes.guess_type(relpath.rsplit("/", 1)[-1], strict=False)[0]
+        mime = mime_of(relpath)
         if not mime:
             return {}
         out = {n: s.version for n, (s, _) in self.on.items()

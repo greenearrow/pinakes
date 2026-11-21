@@ -136,6 +136,12 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   administrator only in a step-up (audited for the owners), and nobody else; readers and annotators can't. The web
   role has no write on the table itself. Under a token (`pinakes review`), `mark_changes()` also needs the token's
   `review` scope and skips changes outside its roots.
+- Person-entered metadata is written only through `set_file_metadata()`: by the owner, a co-owner or an annotator
+  of the file, each their own values only, never in a step-up and never under a token (until `pinakes tag`, ROADMAP
+  37); entering on another person's file is audited for its owners. A file's sensitive fields are shared only through
+  `share_sensitive()`, by its owner or a co-owner, with a reader or annotator the file is already shared with; it
+  shares no file, lapses when that person no longer sees it, is audited for them and the other owners, and the list
+  of who has them (`sensitive_sharing()`) is the owners' only. The web role reads and writes neither table directly.
 - Lineage decisions (a relative confirmed or rejected) are written only through `decide_lineage()`: by the owner or a
   co-owner of the later file, with both files visible to them, or an administrator in a step-up; a decision that
   touches another person's file is audited for them. Under a token it needs the `review` scope and stays in its roots;
