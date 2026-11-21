@@ -404,6 +404,29 @@ class TestScrub(ScrubTree):
             self.assertEqual(set(r) - set(compat.BATCH_FIELDS[r["t"]]), set())
 
 
+class TestQueryPlans(unittest.TestCase):
+    """SQLite has no sqlite_stat1 here: the plan is the planner's guess, so the query that runs per file names its
+    index. One key (a filesystem holding one root) and several (an OR)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pinakes-scrub-plan-")
+        self.state = State(os.path.join(self.tmp, "state.sqlite"))
+
+    def tearDown(self):
+        self.state.db.close()
+        shutil.rmtree(self.tmp)
+
+    def plan(self, sql, args):
+        return " | ".join(r[3] for r in self.state.db.execute("EXPLAIN QUERY PLAN " + sql, args))
+
+    def test_one_inode_is_found_by_files_inode_with_one_root_or_several(self):
+        for keys in ([("r", 1)], [("r", 1), ("s", 1), ("t", 2)]):
+            w, args = scrub.Scrubber._where(keys)
+            plan = self.plan(scrub.INODE_SQL % w, [1, 2] + args)
+            self.assertIn("USING INDEX files_inode (dev=? AND ino=?)", plan, keys)
+            self.assertNotIn("sqlite_autoindex_files_1", plan, keys)
+
+
 class TestScrubChunked(ScrubTree):
     root_extra = 'chunks = { enabled = true, min_size = "1KiB" }'
 

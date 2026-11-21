@@ -37,6 +37,11 @@ DAY = 86400.0
 PAGE = 2000                       # inodes fetched from the state at a time
 NETWORK = frozenset(("nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs", "sshfs", "9p", "ceph", "glusterfs",
                      "fuse.glusterfs", "afs", "davfs", "fuse.rclone"))
+# one inode's rows, by files_inode: with one key the WHERE is a single root = ? AND dev = ?, and SQLite (no
+# sqlite_stat1) would search the primary key by root instead, reading the whole root for every file scrubbed
+INODE_SQL = ("SELECT root, relpath, size, mtime_ns, dev, ino, sha256, chunk_params, verified, scrub_error FROM files "
+             "INDEXED BY files_inode WHERE dev = ? AND ino = ? AND t = 'file' AND sha256 IS NOT NULL AND %s "
+             "ORDER BY root, relpath")
 MOUNTINFO = "/proc/self/mountinfo"
 BY_UUID = "/dev/disk/by-uuid"
 
@@ -385,10 +390,7 @@ class Scrubber:
                 self._inode(p["dev"], p["ino"], w, wargs, start, roots, res, out, updates)
 
     def _inode(self, dev, ino, w, wargs, start, roots, res, out, updates):
-        rows = [r for r in self.state.db.execute(
-            "SELECT root, relpath, size, mtime_ns, dev, ino, sha256, chunk_params, verified, scrub_error FROM files "
-            "WHERE dev = ? AND ino = ? AND t = 'file' AND sha256 IS NOT NULL AND %s ORDER BY root, relpath" % w,
-            [dev, ino] + wargs).fetchall() if r["root"] in roots]
+        rows = [r for r in self.state.db.execute(INODE_SQL % w, [dev, ino] + wargs).fetchall() if r["root"] in roots]
         here = None
         for r in rows:                # the first path that is still this file, unchanged since the scan
             path = os.path.join(roots[r["root"]].path, r["relpath"])
