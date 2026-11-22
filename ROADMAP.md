@@ -263,21 +263,25 @@ catalog's promise, not the disk's: whoever can read the files on the machine sti
     research-integrity case) an administrator's step-up is never held, it shows at once; instead a separate role, named
     in the site config (`[people.NAME] roles = ["auditor"]`), the database refusing anyone else, so a site with no
     auditor (a household's default) can hold nothing. Web only, with a second factor; no token, no `--as`, no assistant.
-    Each audit has three different people, enforced by the database: a requester, an approver, and the subjects, neither
-    of the first two among them (in a lab the subject may be the PI, who administers the site, so an administrator is
-    never the auditor's only check). Its scope is set before it opens (named people, folders and a time window), reaches
-    only that, and widening it needs a new audit; it is read-only (no marks, tags, shares, ownership changes or
-    sensitive-field sharing) and an export is recorded as part of it. A hold is capped (90 days by default, site
-    config); a renewal needs the approver again and is logged; at the cap the entries show on each subject's "Access to
-    your records" with nobody releasing them, complete: requester, approver, reason, scope, each folder seen with its
+    Each audit has three different people, enforced by the database: a requester (an auditor), an approver (another
+    auditor or an administrator), and the subjects, neither of the first two among them (in a lab the subject may be the
+    PI, who administers the site, so an administrator is never the auditor's only check). Its scope is set before it
+    opens (named people, folders and a time window), reaches only that, and widening it needs a new audit; sensitive
+    fields (GPS, people's names) are in it only when its scope names them before it opens, as the child safety case
+    needs; it is read-only (no marks, tags, shares, ownership changes or sensitive-field sharing) and an export is
+    recorded as part of it. A hold is capped (90 days by default, site config); a renewal needs the approver again and
+    is logged; at the cap the entries show on each subject's "Access to your records" with nobody releasing them,
+    complete: requester, approver, reason, scope (saying whether it held sensitive fields), each folder seen with its
     counts, and how long it was held. Every page shows everyone on the site how many audits are held and the latest date
     one ends, with no names. The database superuser and whoever runs the disks stay outside all of this (SECURITY.md).
-    Decided first: who may approve, and whether a scope can include sensitive fields. Owner decision 2026-11-22. After
-    80 (entries by folder). *Done when:* `pinakes access` and its `--json` are tested through the API: an audit with
-    requester and approver the same, or either a subject, refused by the database; a held entry absent from the
-    subject's `access` and present, complete, after the cap with no action; a renewal without the approver refused; the
-    held count right for a person who isn't the subject and shown on the web; an auditor's call outside the scope
-    finding nothing; a token refused every auditor function; and a site with no auditor configured refusing an audit.
+    Owner decisions 2026-11-22 (the role, the approver, sensitive fields). After 80 (entries by folder). *Done when:*
+    `pinakes access` and its `--json` are tested through the API: an audit with requester and approver the same, or
+    either a subject, or an approver who is neither auditor nor administrator, refused by the database; a held entry
+    absent from the subject's `access` and present, complete, after the cap with no action; a renewal without the
+    approver refused; the held count right for a person who isn't the subject and shown on the web; an auditor's call
+    outside the scope finding nothing; sensitive fields absent from an audit whose scope doesn't name them, present in
+    one that does, and the shown entry saying which; a token refused every auditor function; and a site with no auditor
+    configured refusing an audit.
 
 ## Sources and imports
 

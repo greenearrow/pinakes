@@ -125,15 +125,16 @@ where the site's config names an auditor; with none, no hold can exist.
 
 - The role is in the site config; the database refuses it to anyone else. Web only, with a second factor: no token,
   no `--as`, no assistant.
-- Three different people: a requester, an approver, and the subjects; the requester and approver are never the same
-  person nor among the subjects, enforced by the database. A subject may be the site's administrator, so an
-  administrator is never an audit's only check.
+- Three different people: a requester (an auditor), an approver (another auditor or an administrator), and the subjects;
+  the requester and approver are never the same person nor among the subjects, enforced by the database. A subject may
+  be the site's administrator, so an administrator is never an audit's only check.
 - The scope (people, folders, a time window) is set before it opens; the audit reaches only that, and widening it
-  needs a new audit. Read-only: no marks, tags, shares, ownership changes or sensitive-field sharing; an export is
-  recorded as part of it.
+  needs a new audit. Sensitive fields (GPS, people's names) are in it only when the scope names them before it opens
+  (a child's safety can need them). Read-only: no marks, tags, shares, ownership changes or sensitive-field sharing;
+  an export is recorded as part of it.
 - A hold is capped (default 90 days); a renewal needs the approver again and is logged. At the cap the entries show on
-  each subject's "Access to your records" by themselves, complete: requester, approver, reason, scope, each folder
-  seen with counts, and how long they were held.
+  each subject's "Access to your records" by themselves, complete: requester, approver, reason, scope (with whether it
+  held sensitive fields), each folder seen with counts, and how long they were held.
 - Every page shows everyone on the site how many audits are held and the latest date one ends, without names: a hold
   hides who is looked at, not that someone is. Collusion of requester and approver is the risk left; the count and the
   cap limit it. On a site of few people the count itself narrows who it could be.
