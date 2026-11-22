@@ -34,11 +34,16 @@ The site's administrator normally works as a person. To see someone else's recor
 The audit table is append-only for every role the application uses (no `UPDATE` or `DELETE` granted); only the
 database superuser could change it.
 
+A **standing view** (planned, ROADMAP 82 and 83; "Standing views" below) is not a role: it lets one named person see
+another's records within a reach, without a step-up, and only for a person the site's config names as viewable so.
+
 ## Ownership
 
 Every file row has one owner, set by the ingester from the site default owner and the folder rules (DESIGN.md
 "Ownership and enrollments"). Backup copies inherit the owner of the source file they mirror. A file no rule claims
-goes to the site default owner, never to "everyone".
+goes to the site default owner, never to "everyone"; or (planned, ROADMAP 84), under a rule that holds its folder
+unclaimed, to nobody: in no person's view, seen by administrators in a step-up and by operators as counts, until an
+administrator gives it to someone in a step-up.
 
 Owners can share a file, folder or bundle with a person or a group (read, or read and annotate), and enroll people in
 a folder as co-owners, readers or annotators. A household can have folders owned by a group.
@@ -61,7 +66,9 @@ application code. A policy allows a row when:
 - its owner is the current person, or
 - it is shared with the current person or one of their groups, or
 - the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
-  check also writes the audit row).
+  check also writes the audit row), or
+- (planned, ROADMAP 82) the current person holds a standing view of its owner that reaches it: a member of the row's
+  ACL with the view's own role, so it is the same array test, and a private folder's ACLs leave the view out.
 
 The history of the catalog's own writes (`edits`, `edit_items`, ROADMAP 62) is narrower: a person sees only their own
 edits and their groups', never another person's, not in a step-up either; and of an edit only the values on files
@@ -74,6 +81,35 @@ server" begins.
 
 `contents` (hash, size, type) is shared by all copies. A person reaches a content row only through a file they can
 see; there is no query by hash outside one's own files.
+
+## Standing views (planned: ROADMAP 82, 83)
+
+One person sees another's records within a reach, minus folders the person marks private, as an arrangement both can
+see. Kinds: *guardian* (a household: level *child*, everything but private folders; level *teenager*, only named
+folders) and *supervisor* (a lab: everything but folders the student marks *independent*, or only named project
+folders).
+
+- Who may be viewed so, and by whom, is site config (`[people.NAME] standing`), the same trust as `[people]` roles:
+  the database refuses a view of anyone else, so an adult or a collaborator never gets one through the web, the API
+  or a step-up. A view seeded from config is audited and shown on the person's page at the next `setup`.
+- An administrator sets its level and folders in a step-up with a reason, after a preview equal to the result.
+  Narrowing it is shown to the person with the reason. Ending it needs no step-up and can't be undone; entries
+  already written stay.
+- It is a reader's view: no review marks, tags, lineage decisions or shares; sensitive fields only through
+  `share_sensitive()`, as for any reader.
+- A private folder is the person's own to mark, and its backup copies follow it. The viewer sees that private folders
+  exist (one line, no name, count or size) and nothing of them: no row, count or copy in any report or export, and
+  not in copy reasoning ("safe to delete" for the viewer can't count a copy there). Reaching it is an ordinary
+  step-up, audited and shown as one.
+- Every look is on the person's "Access to your records" as its own kind, by folder with counts, never as a step-up.
+- Under a token: left out unless its maker adds it, with the warning that the records go to whoever runs the
+  assistant; never in a group token; no token sets, changes or ends one.
+- The operator page's per-person totals are unchanged by it.
+
+Open question for the owner: an institution may look at a student's independent work during a research-integrity
+inquiry. That is an ordinary step-up and, like every step-up, shows on the student's page at once. Whether an
+inquiry may delay that entry (and who decides, for how long) is a policy question; until decided, it shows at once,
+and the catalog never hides a step-up.
 
 ## Copies across owners
 
@@ -151,6 +187,12 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   co-owner of the later file, with both files visible to them, or an administrator in a step-up; a decision that
   touches another person's file is audited for them. Under a token it needs the `review` scope and stays in its roots;
   a group token never decides. The web role has no write on `lineage`.
+- Placeholder marks (ROADMAP 69) are written only through `mark_placeholder()`. A mark is on a content, so it changes
+  what every holder of those bytes is told: only a person who owns or co-owns every present file holding them marks
+  or unmarks, or an administrator in a step-up, audited for those files' owners and co-owners. Under a token it needs
+  the `review` scope and every holder in its roots; a group token never marks. A placeholder is seen by whoever sees
+  a file holding it, and its candidates are counted from the files the person sees. The site's rules are server
+  configuration, applied by the ingester. The web role has no write on `placeholders`.
 - The operator page (`/operator`) shows every person's totals per root and what a disk's loss would cost per disk
   and per host: counts, sizes and dates, never a path, a folder, a file's name or a person. The database gives them
   (`operator_roots()`, `operator_at_risk()`) only to an operator signed in on the web, never under a token. "If a
@@ -236,6 +278,8 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | The catalog is breached through the web UI or a stolen session | It holds no files and can reach none: the intruder gets what that person can see (names, hashes, metadata, previews), not file content, and no path to the disks. |
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
+| A parent or supervisor browses a child's or student's records casually | Only within a standing view the site's config allows for that person, never an adult's or a collaborator's; private folders out of it; every look on the person's page; beyond it a step-up. (Planned, ROADMAP 82, 83.) |
+| A new folder no rule claims becomes the default owner's, silently | A rule can hold a folder unclaimed: nobody's until an administrator gives it in a step-up. (Planned, ROADMAP 84.) |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
 | An assistant with an MCP token oversteps | The person's own view and the scopes they gave, no step-up, writes asked first, kept with the value before and undoable, revocable, logged. |
 | Protected work's records reach an outside service that would use them | Protected roots: hashes only, never extracted; left out of MCP tokens unless added deliberately. Encrypted offsite backups of the database are storage, not use. |
