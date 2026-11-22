@@ -78,6 +78,8 @@ UPGRADE_PROBES = {
     "person-metadata.sql": "to_regprocedure('pinakes.share_sensitive(bigint, int, boolean)') IS NOT NULL",
     "edits.sql": "to_regprocedure('pinakes.undo_edits(bigint[])') IS NOT NULL",
     "placeholders.sql": "to_regclass('pinakes.placeholders') IS NOT NULL",
+    "metadata-nocase.sql": "coalesce((SELECT p.prosrc LIKE '%WHEN ''ci''%' FROM pg_proc p "
+                           "WHERE p.oid = to_regprocedure('pinakes.enroll_metadata_indexes(jsonb)')), false)",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

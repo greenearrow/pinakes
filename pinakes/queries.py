@@ -838,16 +838,75 @@ def placeholder_of(conn, file_id):
     return r[0] if r else None
 
 
-def meta(conn, schema, field, value, limit=None, offset=0, sensitive=None, backups=None):
-    """The files whose content has metadata `schema` with `field` equal to `value` (as text). `sensitive`: whether the
-    field is one of its schema's sensitive fields (registry.Field.sensitive), whose values are kept in a row of their
-    own; None (not known) looks in both. Knowing it is what makes the query fast (ROADMAP 61): the test of the column
-    runs before the row-level policy, which otherwise asks sensitive_visible() of every sensitive row of the schema."""
+def meta_cond(schema, field, value, type=None, sensitive=None):
+    """One condition of `meta` (ROADMAP 70): `schema`.`field` and the value given, `type` the field's (registry.TYPES;
+    None: not in the registry), `sensitive` whether it is a sensitive field (None: not known, both rows looked in).
+    The value is trimmed. A text field (and one the registry doesn't know) matches without case and trimmed, as its
+    `ci` index has it; a date field given as YYYY, YYYY-MM or YYYY-MM-DD matches every date in it, else the date as
+    written; any other matches its value as text."""
+    if not (_FIELD.match(schema) and _FIELD.match(field)):
+        raise ValueError("not a schema and field: %s.%s" % (schema, field))
+    value = value.strip()
+    if not value:
+        raise ValueError("a value is needed: SCHEMA.FIELD=VALUE")
+    if type in (None, "text"):
+        how, args = "ci", (value,)
+    elif type == "date" and _DAY.match(value):
+        how, args = "range", date_bounds(value)
+    else:
+        how, args = "eq", (value,)
+    return {"schema": schema, "field": field, "how": how, "args": args, "sensitive": sensitive}
+
+
+def _meta_test(c, m):
+    """SQL for one meta_cond() on the metadata row `m`, and its arguments. Names are checked by meta_cond() and
+    written as literals, so that each matches its partial index; values stay parameters."""
+    v = "(%s.vals ->> '%s')" % (m, c["field"])
+    test = {"ci": "lower(btrim(%s)) = lower(%%s)" % v, "range": "%s >= %%s AND %s < %%s" % (v, v),
+            "eq": "%s = %%s" % v}[c["how"]]
+    return ("%s.schema = '%s' AND (%%s::boolean IS NULL OR %s.sensitive = %%s) AND %s"
+            % (m, c["schema"], m, test), (c["sensitive"], c["sensitive"]) + tuple(c["args"]))
+
+
+def meta(conn, conds, limit=None, offset=0, backups=None):
+    """The files whose content has metadata meeting every condition of `conds` (meta_cond()'s), with the first
+    condition's values (`vals`). Knowing a field's sensitivity is what makes the query fast (ROADMAP 61): the test of
+    the column runs before the row-level policy, which otherwise asks sensitive_visible() of every sensitive row of
+    the schema."""
+    if not conds:
+        raise ValueError("meta needs SCHEMA.FIELD=VALUE")
+    first, args = _meta_test(conds[0], "m")
+    where = [first]
+    for c in conds[1:]:
+        test, more = _meta_test(c, "m2")
+        where.append("EXISTS (SELECT 1 FROM pinakes.metadata m2 WHERE m2.content_id = f.content_id AND %s)" % test)
+        args += more
     return copies(conn, FILE_COLS + ", m.vals",
                   """FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
                      JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                     WHERE m.schema = %s AND (%s::boolean IS NULL OR m.sensitive = %s) AND m.vals ->> %s = %s""",
-                  (schema, sensitive, sensitive, field, value), "f.relpath, f.file_id", backups, limit, offset)
+                     WHERE """ + " AND ".join(where), args, "f.relpath, f.file_id", backups, limit, offset)
+
+
+def meta_values(conn, schema, field, type=None, sensitive=None, limit=None, offset=0):
+    """The values of `schema`.`field` (ROADMAP 70) with how many files hold each: `files` outside backup roots,
+    `backup_copies` in them; the most first. Counted from the present files the person sees, under row-level
+    security, so a sensitive field they may not see has no values. Text (and a field the registry doesn't know) is
+    one value whatever its case and spaces, shown as most files have it, as `meta` matches it; a date, per day."""
+    if not (_FIELD.match(schema) and _FIELD.match(field)):
+        raise ValueError("not a schema and field: %s.%s" % (schema, field))
+    v = "btrim(m.vals ->> '%s')" % field
+    key = {None: "lower(%s)" % v, "text": "lower(%s)" % v, "date": "left(%s, 10)" % v}.get(type, v)
+    shown = v if type != "date" else key
+    return rows(conn, """SELECT mode() WITHIN GROUP (ORDER BY """ + shown + """) AS value,
+                                count(*) FILTER (WHERE r.kind <> 'backup') AS files,
+                                count(*) FILTER (WHERE r.kind = 'backup') AS backup_copies, """ + TOTAL + """
+                         FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
+                         JOIN pinakes.roots r USING (root_id)
+                         WHERE m.schema = '""" + schema + """' AND (%s::boolean IS NULL OR m.sensitive = %s)
+                           AND """ + v + """ <> ''
+                         GROUP BY """ + key + """
+                         ORDER BY files DESC, backup_copies DESC, """ + key + PAGE,
+                (sensitive, sensitive, limit, offset))
 
 
 # A person's export of their own records (ROADMAP 45): the files they own (files.owner_id; shared, co-owned and a

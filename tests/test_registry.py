@@ -126,7 +126,8 @@ class TestSiteSchemas(RegistryCase):
         self.assertEqual(sorted(p.indexes()), sorted([
             ("photo", "photographer", "trgm"), ("photo", "taken", "date"), ("photo", "place", "geo"),
             ("photo", "iso", "num"), ("photo", "length", "num"), ("photo", "shown", "list"),
-            ("photo", "album", "ref"), ("photo", "document_id", "eq")]))
+            ("photo", "album", "ref"), ("photo", "document_id", "ci"),
+            ("photo", "document_id", "eq")]))             # an identity field: also as it is, for lineage
 
     def test_index_names_fit_postgresql(self):
         name, field = "a" * 20, "b" * 30

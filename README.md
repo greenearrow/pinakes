@@ -116,7 +116,7 @@ pinakes tag trip-photos --add trip   # tag every file under the folder: shown fi
 | A file's history, versions, origins | `pinakes history FILE`, `versions FILE`, `lineage FILE [--down]` |
 | What to restore, from which backup | `pinakes restores [PATH]` |
 | Growth per folder and week | `pinakes growth [FOLDER] [--weeks N]` |
-| Files by metadata | `pinakes meta SCHEMA.FIELD=VALUE` |
+| Files by metadata; a field's values | `pinakes meta SCHEMA.FIELD=VALUE...`, `pinakes meta SCHEMA.FIELD` |
 | What `SHA256SUMS` files say that the hashes don't | `pinakes manifests [PATH]` |
 | Machines that haven't scanned on time; the roots | `pinakes stale`, `pinakes roots` |
 | Who saw your records; what your tokens did | `pinakes access`, `pinakes edits` |

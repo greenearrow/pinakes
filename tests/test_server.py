@@ -2861,11 +2861,11 @@ class TestSchemaRegistry(ServerCase):
     def test_setup_makes_every_enrolled_fields_index(self):
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("schemas dc 1, exif 2, xmp 2, photo 1; 29 metadata indexes, 29 made, 0 dropped", out)
+        self.assertIn("schemas dc 1, exif 2, xmp 2, photo 1; 33 metadata indexes, 33 made, 0 dropped", out)
         self.assertEqual(self.md_indexes(), self.wanted())
-        self.assertEqual(len(self.wanted()), 29)
+        self.assertEqual(len(self.wanted()), 33)        # 29, and eq for the 4 identity fields (70)
         self.assertEqual(self.setup_cmd()[1].splitlines()[-1],
-                         "schemas dc 1, exif 2, xmp 2, photo 1; 29 metadata indexes, 0 made, 0 dropped")
+                         "schemas dc 1, exif 2, xmp 2, photo 1; 33 metadata indexes, 0 made, 0 dropped")
         # the indexes are partial, per schema: another schema's rows with the same field name don't reach them
         defs = dict(self.q("SELECT indexname, indexdef FROM pg_indexes WHERE indexname LIKE 'md\\_%%'"))
         self.assertIn("WHERE (schema = 'photo'::text)", defs["md_photo_iso_num"])
@@ -2876,12 +2876,13 @@ class TestSchemaRegistry(ServerCase):
         self.setup_cmd()
         cid = self.q("INSERT INTO pinakes.contents (sha256, size) VALUES ('\\x01', 1) RETURNING content_id")[0][0]
         self.q("INSERT INTO pinakes.metadata (content_id, schema, vals, source) VALUES (%s, 'photo', %s, 'embedded'),"
-               " (%s, 'dc', %s, 'embedded') RETURNING metadata_id",
+               " (%s, 'dc', %s, 'embedded'), (%s, 'xmp', '{\"document_id\": \"xmp.did:1\"}', 'embedded') "
+               "RETURNING metadata_id",
                (cid, json.dumps({"photographer": "User One", "taken": "2019-05-04T13:20:00Z",
                                  "place": {"lat": 47.5, "lon": 8.5}, "iso": 200, "length": 1.5, "shown": [1, 2],
                                  "album": 7, "document_id": "uuid:1"}),
                 cid, json.dumps({"title": "A walk", "creator": ["User One"], "subject": ["walk"],
-                                 "date": "2019-05-04"})))
+                                 "date": "2019-05-04"}), cid))
         # each search uses its index, when it is the table's only one (on two rows the planner would pick any index
         # that covers "schema = ...": every md_* one does)
         others = {r[0] for r in self.q("SELECT indexname FROM pg_indexes WHERE schemaname = 'pinakes' AND "
@@ -2893,7 +2894,10 @@ class TestSchemaRegistry(ServerCase):
                      "(vals -> 'place' ->> 'lat')::float8) <@ box '((8,47),(9,48))'", "md_photo_place_geo"),
                     ("schema = 'dc' AND vals ->> 'title' ILIKE '%walk%'", "md_dc_title_trgm"),
                     ("schema = 'dc' AND vals ->> 'date' >= '2019'", "md_dc_date_date"),
-                    ("schema = 'dc' AND vals -> 'subject' ? 'walk'", "md_dc_subject_list")]:
+                    ("schema = 'dc' AND vals -> 'subject' ? 'walk'", "md_dc_subject_list"),
+                    ("schema = 'xmp' AND lower(btrim(vals ->> 'document_id')) = 'xmp.did:1'",
+                     "md_xmp_document_id_ci"),                          # without case (ROADMAP 70)
+                    ("schema = 'xmp' AND vals ->> 'document_id' = 'xmp.did:1'", "md_xmp_document_id_eq")]:
                 with c.transaction(force_rollback=True):
                     for other in others - {idx}:
                         c.execute("DROP INDEX pinakes.%s" % other)
@@ -2908,7 +2912,7 @@ class TestSchemaRegistry(ServerCase):
         self.write_schema("photo", PHOTO_SCHEMA.replace('type = "number"\nindex = "range"', 'type = "number"'))
         rc, out, _ = self.setup_cmd()
         self.assertEqual(rc, 0)
-        self.assertIn("28 metadata indexes, 0 made, 1 dropped", out)
+        self.assertIn("32 metadata indexes, 0 made, 1 dropped", out)
         self.assertNotIn("md_photo_iso_num", self.md_indexes())
         os.remove(os.path.join(self.site, "photo.toml"))
         self.setup_cmd()
@@ -2964,10 +2968,36 @@ class TestSchemaRegistry(ServerCase):
             c.execute("DROP FUNCTION pinakes.enroll_metadata_indexes(jsonb)")
             with open(os.path.join(UPGRADES, "metadata-indexes.sql")) as f:
                 c.execute(f.read())
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["metadata-nocase.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "metadata-nocase.sql")) as f:     # ROADMAP 70: the ci kind
+                c.execute(f.read())
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["metadata-nocase.sql"]).fetchone()[0])
             c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone(), fresh)
         self.assertEqual(fresh[1:], (True, False, False))
         self.assertEqual(self.setup_cmd()[0], 0)
+
+    def test_an_older_catalogs_eq_indexes_become_ci(self):
+        """A catalog from before ROADMAP 70 has md_SCHEMA_FIELD_eq for each exact text field; setup after the
+        upgrade makes the ci ones and keeps eq only for identity fields; meta's match uses the ci index."""
+        self.conn.execute("SELECT pinakes.enroll_metadata_indexes(%s::jsonb)",
+                          (json.dumps([["exif", "make", "eq"], ["xmp", "document_id", "eq"]]),))
+        self.assertEqual(self.md_indexes(), {"md_exif_make_eq", "md_xmp_document_id_eq"})
+        rc, out, _ = self.setup_cmd()
+        self.assertEqual(rc, 0, out)
+        got = self.md_indexes()
+        self.assertEqual(got, self.wanted())
+        self.assertIn("md_exif_make_ci", got)
+        self.assertNotIn("md_exif_make_eq", got)
+        self.assertTrue({"md_xmp_document_id_ci", "md_xmp_document_id_eq"} <= got)
+        test, args = queries._meta_test(queries.meta_cond("exif", "make", " maker-1", "text", False), "m")
+        with admin_conn(self.db) as c, c.transaction(force_rollback=True):
+            for other in got - {"md_exif_make_ci"}:                  # as the test above: the only index there
+                c.execute("DROP INDEX pinakes.%s" % other)
+            c.execute("SET LOCAL enable_seqscan = off")
+            plan = "\n".join(r[0] for r in c.execute(
+                "EXPLAIN SELECT 1 FROM pinakes.metadata m WHERE " + test, args).fetchall())
+        self.assertIn("md_exif_make_ci", plan)
 
 
 PHOTO_SCHEMA = """
@@ -3141,7 +3171,7 @@ class TestExtracted(ServerCase):
         self.assertEqual([(r[0].hex(), r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows],
                          [(digest, "exif", jpegs.EXPECTED, "embedded", 2, "server-1", False),
                           (digest, "exif", {"gps": jpegs.GPS}, "embedded", 2, "server-1", True)])
-        found = queries.meta(self.conn, "exif", "make", "Maker-1")
+        found = queries.meta(self.conn, [queries.meta_cond("exif", "make", "Maker-1")])
         self.assertEqual(sorted(r["relpath"] for r in found), ["IMG_0001 (1).jpg", "people/user-1/IMG_0001.JPG"])
 
     def test_xmp_people_and_places_apart_and_found_by_its_id(self):
@@ -3152,10 +3182,11 @@ class TestExtracted(ServerCase):
         self.assertEqual(set(rows), {("exif", False), ("xmp", False), ("xmp", True)})
         self.assertEqual(rows[("xmp", False)], jpegs.XMP_EXPECTED)
         self.assertEqual(rows[("xmp", True)], jpegs.XMP_SENSITIVE)
-        found = queries.meta(self.conn, "xmp", "document_id", "xmp.did:doc-1")
+        found = queries.meta(self.conn, [queries.meta_cond("xmp", "document_id", "xmp.did:doc-1")])
         self.assertEqual([r["relpath"] for r in found], ["people/user-1/IMG_0003.JPG"])
         with self.as_person("user-2") as c:
-            self.assertEqual(queries.meta(c, "xmp", "document_id", "xmp.did:doc-1"), [])   # not hers to see
+            self.assertEqual(queries.meta(c, [queries.meta_cond("xmp", "document_id", "xmp.did:doc-1")]),
+                             [])                                                 # not hers to see
 
     def test_seen_only_by_who_can_see_a_copy(self):
         self.write("server-1", "store", "people/user-1/IMG_0001.JPG", jpegs.camera())

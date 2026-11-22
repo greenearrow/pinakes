@@ -364,15 +364,36 @@ ORDER BY up.depth, h.name;
 ## meta SCHEMA.FIELD=VALUE
 
 ```sql
--- pinakes meta exif.model='Camera-1'
-SELECT r.label AS root, f.relpath, m.vals ->> 'date_taken' AS taken
+-- pinakes meta exif.model='camera-1 ' exif.taken=2019-06
+SELECT r.label AS root, f.relpath, m.vals ->> 'taken' AS taken
 FROM metadata m
 JOIN present f ON f.content_id = m.content_id
 JOIN roots r USING (root_id)
 WHERE m.schema = 'exif'
   AND NOT m.sensitive                               -- model isn't a sensitive field: its values are in the plain row
-  AND m.vals ->> 'model' = 'Camera-1'               -- an expression index per indexed field serves this
+  AND lower(btrim(m.vals ->> 'model')) = lower('camera-1')  -- text without case, trimmed: the field's ci index
+  AND m.vals ->> 'taken' >= '2019-06'               -- a month of a date field: text order is time order
+  AND m.vals ->> 'taken' < '2019-07'
 ORDER BY taken;
+```
+
+## meta SCHEMA.FIELD
+
+A field's values, with how many files hold each, the most first (ROADMAP 70): text one value whatever its case and
+spaces, shown as most files have it; a date per day. Under row-level security, so a sensitive field's values only
+where the person may see them.
+
+```sql
+-- pinakes meta exif.make
+SELECT mode() WITHIN GROUP (ORDER BY btrim(m.vals ->> 'make')) AS value,
+       count(*) FILTER (WHERE r.kind <> 'backup') AS files,
+       count(*) FILTER (WHERE r.kind = 'backup') AS backup_copies
+FROM metadata m
+JOIN present f ON f.content_id = m.content_id
+JOIN roots r USING (root_id)
+WHERE m.schema = 'exif' AND NOT m.sensitive AND btrim(m.vals ->> 'make') <> ''
+GROUP BY lower(btrim(m.vals ->> 'make'))
+ORDER BY files DESC, backup_copies DESC, lower(btrim(m.vals ->> 'make'));
 ```
 
 ## extraction outcomes HOST:PATH

@@ -59,7 +59,7 @@ as is a type an index doesn't fit:
 
 | Type | Stored as | Index |
 |---|---|---|
-| `text` | a string | `exact` (B-tree), `trigram` |
+| `text` | a string | `exact` (B-tree, without case and trimmed; an identity field also as it is), `trigram` |
 | `number`, `duration` | a number (a duration in seconds) | `exact`, `range` (B-tree on the number) |
 | `date` | ISO 8601 text, as precise as known, times in UTC with `Z`, so text order is time order | `exact`, `range` |
 | `point` | `{"lat": ..., "lon": ...}` | `spatial` (GiST, PostgreSQL's own `point`; no PostGIS) |

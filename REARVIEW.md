@@ -1049,3 +1049,39 @@ placeholders list, the file page and its unmark, browse and find leaving them ou
 still listing them, the at-risk page's note, and user-2 marking nothing and refused the siblings of a file she can't
 see. The two ingester tests checked to fail without the ingester's check. All 518 tests pass (tools/test). Other Pythons
 and PostgreSQL versions not run; not run on a real catalog; not deployed.
+
+## 70. `meta` without knowing the exact value
+
+With this, ROADMAP 70 is built and no longer listed.
+
+**Built:** `pinakes meta SCHEMA.FIELD` lists the field's values among the files the person sees, the most first, with
+`files` (present files outside backup roots) and `backup_copies` (in them); text is one value whatever its case and
+spaces, shown as most files have it, a date one value per day (`GET /api/v1/meta-values?field=`, paged). `pinakes meta
+SCHEMA.FIELD=VALUE` matches a text field (and one no schema declares) without case and trimmed; a date field given as
+`YYYY`, `YYYY-MM` or `YYYY-MM-DD` matches every date in it, and as a full date its value as written; other types as
+before. More than one `FIELD=VALUE` lists the files meeting every one (`meta?field=...&value=...` again, in pairs; an
+unpaired one is a 400). Under row-level security as before, so a sensitive field's values are listed and matched only
+for whoever may see them. A new index kind, `ci` (`lower(btrim(value))`), for every exact-indexed text field, so the
+match stays an index lookup; an identity field keeps `eq` as well, for lineage's lookup by the value as it is.
+`upgrades/metadata-nocase.sql` (release 14) replaces `enroll_metadata_indexes()` with the new kind; `pinakes-ingest
+setup` then makes the `md_*_ci` indexes and drops the `eq` ones no identity field wants. `tools/bench-pages` times the
+new forms. QUERIES.md's `meta` block (it named a field, `date_taken`, that no schema has) shows the new match, and a
+block for the values.
+
+**Not as the roadmap said:** "a date field takes a range" is the three precisions, not an arbitrary from-to. A list
+field (`dc.subject`) is matched and listed by its JSON text, as before; its items are not.
+
+**Measured** on 2026-11-22 with `tools/bench-pages --only meta --only meta-values` (500,000 files, 40,000 metadata
+rows): `meta exif.make=Maker-1` 0.066 s (0.06 s at 69), the same as ` maker-1` 0.066 s, with `exif.taken=2019-06`
+besides 0.082 s, `meta-values` of `exif.make` 0.078 s and of `exif.taken` 0.080 s; every first page within 2 s.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py` `TestCliMeta`, the CLI
+against a real HTTP server on 127.0.0.1, on generated JPEGs (one with a backup copy, one in a folder shared with
+user-2, one of hers): a field's values and counts (plain, `--json`, a page of them, a field with none, `--backups`
+refused), text without case and trimmed and not by a part, two and three fields together, a date by year, month, day
+and as written, a month out of range refused; user-2's values absent from user-1's list and his from hers; GPS listed
+for its owner's token and, under user-2's, only her own photo's, by the list and by a value; the API's pairs, an
+unpaired field, an empty value and bad names refused. `tests/test_server.py` `TestSchemaRegistry`: the `ci` and `eq`
+indexes serving their searches, an older catalog's `eq` indexes becoming `ci` at setup (an identity field's kept), the
+meta match using `md_exif_make_ci`, and the upgrade file against the schema with its probe. All 527 tests pass
+(tools/test). Other Pythons and PostgreSQL versions not run; not run on a real catalog; not deployed.

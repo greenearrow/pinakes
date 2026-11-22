@@ -287,7 +287,7 @@ were made while building, to keep going, and are open to change.
   included, with no superuser step for each new schema. Building an index locks the table against writes while it
   runs: setup, not a batch, does it. Older catalogs: `upgrades/metadata-indexes.sql`, once, as the owner.
 - **An index is named by what it indexes** (`md_SCHEMA_FIELD_KIND`, the kind standing for the expression: `eq`,
-  `trgm`, `num`, `date`, `list`, `ref`, `geo`), so a field whose type or index changes gets a new index and the
+  `ci`, `trgm`, `num`, `date`, `list`, `ref`, `geo`), so a field whose type or index changes gets a new index and the
   old one is dropped. Schema names have no underscore and are at most 20 characters, field names at most 30, so names
   stay unique and within PostgreSQL's 63.
 - **Dates are ISO 8601 text**, indexed as text: a cast to `timestamptz` isn't immutable (it depends on the session's

@@ -637,7 +637,8 @@ class TestCli(ServerCase):
         self.assertIn("people/user-1/taxes.txt", changes)
         self.assertNotIn("diary", changes)
         self.assertIn("(none)", cli("meta", "dc.title=nothing"))
-        self.assertEqual(cli("meta", "dc.title", code=1), "pinakes: pinakes meta needs SCHEMA.FIELD=VALUE")
+        self.assertEqual(cli("meta", "dc.title"), "dc.title: no value among the files you can see\n(none)\n")
+        self.assertEqual(cli("meta", code=1), "pinakes: pinakes meta needs SCHEMA.FIELD or SCHEMA.FIELD=VALUE")
         self.assertEqual(cli("stale").split()[:4], ["name", "last_scan", "expected_every", "server-2"])  # never seen
         roots = cli("roots").splitlines()
         self.assertEqual(roots[0].split(), ["label", "host", "kind", "protected", "last_complete_on", "files",
@@ -2181,6 +2182,113 @@ class TestCliFold(ServerCase):
                                            headers={"Authorization": "Bearer " + secret})
         self.assertEqual(r.status_code, 400)
         self.assertIn("backups is all", r.get_json()["error"])
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliMeta(ServerCase):
+    """meta without knowing the exact value (ROADMAP 70): a field's values with counts, text matched without case and
+    trimmed, more than one FIELD=VALUE, a date field by year, month or day; counted only from the files the person
+    sees, and a sensitive field's values only for those who may see it."""
+
+    def setUp(self):
+        super().setUp()
+        import jpegs
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        a = jpegs.camera(make="Maker-1", when="2019:06:01 12:30:01")
+        for rel, data in (("people/user-1/photos/a.JPG", a),
+                          ("people/user-1/photos/b.JPG", jpegs.camera(make="MAKER-1", when="2019:07:02 12:30:02")),
+                          ("people/user-1/photos/c.JPG", jpegs.camera(make="Maker-3", when="2020:01:03 12:30:03")),
+                          ("people/user-1/shared-with-2/s.JPG",
+                           jpegs.camera(make="Maker-4", when="2020:02:04 12:30:04")),
+                          ("people/user-2/photos/d.JPG", jpegs.camera(make="Maker-2", when="2019:06:05 12:30:05"))):
+            self.write("server-1", "store", rel, data)
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/photos/a.JPG", a)
+        self.scan("server-1", "store")
+        self.scan("server-2", "snapshots")
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+
+    def values(self, field):
+        got = json.loads(self.cli("meta", field, "--json"))
+        self.assertEqual(sorted(got), ["limit", "offset", "rows", "total"])
+        return got["total"], [(r["value"], r["files"], r["backup_copies"]) for r in got["rows"]]
+
+    def names(self, *conds):
+        got = json.loads(self.cli("meta", *conds, "--json"))
+        return sorted(r["relpath"].rsplit("/", 1)[-1] for r in got["rows"])
+
+    def test_a_fields_values_with_counts(self):
+        self.assertEqual(self.values("exif.make"),
+                         (3, [("Maker-1", 2, 1), ("Maker-3", 1, 0), ("Maker-4", 1, 0)]))   # one value, any case
+        self.assertEqual(self.values("exif.taken"),
+                         (4, [("2019-06-01", 1, 1), ("2019-07-02", 1, 0), ("2020-01-03", 1, 0), ("2020-02-04", 1, 0)]))
+        out = self.cli("meta", "exif.make").splitlines()
+        self.assertEqual(out[0], "exif.make: 3 value(s) among the files you can see")
+        self.assertEqual(out[1].split(), ["files", "backup_copies", "value"])
+        self.assertEqual(out[2].split(), ["2", "1", "Maker-1"])
+        page = json.loads(self.cli("meta", "exif.make", "--limit", "1", "--offset", "1", "--json"))
+        self.assertEqual(([r["value"] for r in page["rows"]], page["total"]), (["Maker-3"], 3))
+        self.assertEqual(self.cli("meta", "exif.nothing"), "exif.nothing: no value among the files you can see\n"
+                                                           "(none)\n")
+        self.assertEqual(self.cli("meta", "exif.make", "--backups", code=1),
+                         "pinakes: --backups is for a list of files: pinakes meta SCHEMA.FIELD=VALUE")
+
+    def test_text_without_case_and_trimmed(self):
+        self.assertEqual(self.names("exif.make= maker-1 "), ["a.JPG", "b.JPG"])
+        self.assertEqual(self.names("exif.make=MAKER-3"), ["c.JPG"])
+        self.assertEqual(self.names("exif.make=Maker"), [])                    # the whole value, not a part
+        got = json.loads(self.cli("meta", "exif.make=maker-1", "--backups", "--json"))
+        self.assertEqual(got["total"], 3)                                       # the backup copy listed too
+
+    def test_more_than_one_field(self):
+        self.assertEqual(self.names("exif.make=maker-1", "exif.taken=2019-07"), ["b.JPG"])
+        self.assertEqual(self.names("exif.make=maker-1", "exif.model=model-1"), ["a.JPG", "b.JPG"])
+        self.assertEqual(self.names("exif.make=maker-1", "exif.taken=2020"), [])
+        self.assertEqual(self.cli("meta", "exif.make=maker-1", "exif.model", code=1),
+                         "pinakes: pinakes meta takes SCHEMA.FIELD alone, or SCHEMA.FIELD=VALUE (again for more)")
+
+    def test_a_date_by_year_month_or_day(self):
+        self.assertEqual(self.names("exif.taken=2019"), ["a.JPG", "b.JPG"])
+        self.assertEqual(self.names("exif.taken=2019-06"), ["a.JPG"])
+        self.assertEqual(self.names("exif.taken=2020-01-03"), ["c.JPG"])
+        self.assertEqual(self.names("exif.taken=2019-06-01T10:30:01Z"), ["a.JPG"])     # as written: that one
+        self.assertEqual(self.names("exif.taken=2019-08"), [])
+        self.assertIn("month must be in 1..12", self.cli("meta", "exif.taken=2019-13", code=1))
+
+    def test_a_second_persons_values_are_not_counted(self):
+        self.assertNotIn("Maker-2", [v for v, _, _ in self.values("exif.make")[1]])
+        self.assertEqual(self.names("exif.make=maker-2"), [])
+        self.cli.save(self.cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual(self.values("exif.make"), (2, [("Maker-2", 1, 0), ("Maker-4", 1, 0)]))
+        self.assertEqual(self.names("exif.make=maker-1"), [])
+
+    def test_a_sensitive_field_only_for_who_may_see_it(self):
+        """GPS (sensitive) is the owner's: their token lists its values; user-2's, a reader of the shared folder,
+        sees s.JPG's make and not its place, in the list or by a value."""
+        import jpegs
+        place = json.dumps(jpegs.GPS)
+        total, rows = self.values("exif.gps")
+        self.assertEqual((total, sum(f for _, f, _ in rows)), (1, 4))       # every photo of user-1 at one place
+        self.assertEqual(json.loads(rows[0][0]), jpegs.GPS)
+        self.cli.save(self.cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        self.assertIn("Maker-4", [v for v, _, _ in self.values("exif.make")[1]])
+        total, rows = self.values("exif.gps")
+        self.assertEqual((total, sum(f for _, f, _ in rows)), (1, 1))       # her own photo's only
+        self.assertEqual(self.names("exif.gps=" + place), ["d.JPG"])
+
+    def test_the_api_pairs_fields_and_values(self):
+        token = make_token(self, "user-1", client="laptop-4")
+        def get(q):
+            r = self.cli.app.test_client().get("/api/v1/" + q, headers={"Authorization": "Bearer " + token})
+            return r.status_code, r.get_json()
+        code, got = get("meta?field=exif.make&value=maker-1&field=exif.taken&value=2019-07")
+        self.assertEqual((code, [r["relpath"] for r in got["rows"]]), (200, ["people/user-1/photos/b.JPG"]))
+        self.assertEqual(get("meta?field=exif.make&value=maker-1&field=exif.taken"),
+                         (400, {"error": "each field= has its value=, in the same order"}))
+        self.assertEqual(get("meta?field=exif.make&value=+"), (400, {"error": "a value is needed: SCHEMA.FIELD=VALUE"}))
+        self.assertEqual(get("meta?field=exif.Make%27--&value=x")[0], 400)              # names checked, never SQL
+        self.assertEqual(get("meta-values?field=exif.make%27--")[0], 400)
+        self.assertEqual(get("meta-values?field=exif.make")[1]["total"], 3)
 
 
 class TestCliPages(ServerCase):

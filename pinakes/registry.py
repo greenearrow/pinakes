@@ -17,7 +17,7 @@ LIST_OF = ("text", "number", "date", "person", "file")
 # which index each type takes, and the index's kind: the kind names the index's expression in the database
 # (enroll_metadata_indexes() in schema.sql), so a field whose type or index changes gets a new index
 INDEXES = {
-    "text": {"exact": "eq", "trigram": "trgm"},
+    "text": {"exact": "ci", "trigram": "trgm"},     # exact: without case, trimmed (ROADMAP 70); see Schema.indexes
     "number": {"exact": "num", "range": "num"},
     "duration": {"exact": "num", "range": "num"},
     "date": {"exact": "date", "range": "date"},
@@ -67,8 +67,15 @@ class Schema:
                 + [(f.name, f.name, "shared") for f in fs if not f.parent])
 
     def indexes(self):
-        """(schema, field, kind) for every indexed field."""
-        return [(self.name, f.name, f.index_kind) for f in self.fields.values() if f.index]
+        """(schema, field, kind) for every indexed field. An identity field (exact text) also gets the plain `eq`:
+        its lookup in lineage matches the value as it is, while `meta` matches text without case (`ci`)."""
+        out = []
+        for f in self.fields.values():
+            if f.index:
+                out.append((self.name, f.name, f.index_kind))
+                if f.identity and f.index_kind == "ci":
+                    out.append((self.name, f.name, "eq"))
+        return out
 
 
 def index_name(schema, field, kind):

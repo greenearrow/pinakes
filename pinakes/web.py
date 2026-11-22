@@ -18,7 +18,11 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up|folder-copies?loc=ROOT:PATH
   changes?days=N&host=NAME&loc=ROOT:PATH&review=unreviewed|reviewed&what=KIND...
-  meta?field=SCHEMA.FIELD&value=VALUE
+  meta?field=SCHEMA.FIELD&value=VALUE    the files with that value: text without case, trimmed; a date field's YYYY,
+                                  YYYY-MM or YYYY-MM-DD every date in it; field= and value= again, in pairs, for
+                                  files meeting every one
+  meta-values?field=SCHEMA.FIELD  the field's values with the files holding each (files, backup_copies), the most
+                                  first; text one value whatever its case, a date per day
   POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
                                   only gone files and moves, only the person's own or co-owned, only in the
                                   token's roots; {"asked", "marked"}
@@ -810,15 +814,33 @@ def create_app(cfg, connect=None):
         return {"folder": loc, "files": shown[0]["total_rows"] if shown else 0, "unbacked": queries.unbacked(g.db, loc),
                 "shown": shown}
 
-    @api("meta")
-    def api_meta():
-        schema, dot, field = arg("field", "field=SCHEMA.FIELD").partition(".")
+    def field_of(text):
+        """(schema, field, the registry's Field or None) for SCHEMA.FIELD."""
+        schema, dot, field = text.strip().partition(".")
         if not dot or not field:
             raise ValueError("field is SCHEMA.FIELD")
         known = reg.schemas.get(schema)
-        known = known.fields.get(field) if known else None
-        return page(queries.meta, schema, field, request.args.get("value", ""),
-                    sensitive=known.sensitive if known else None, backups=backups())
+        return schema, field, known.fields.get(field) if known else None
+
+    @api("meta")
+    def api_meta():
+        fields, values = request.args.getlist("field"), request.args.getlist("value")
+        if not fields:
+            raise ValueError("field=SCHEMA.FIELD is needed")
+        if len(values) != len(fields):
+            raise ValueError("each field= has its value=, in the same order")
+        conds = []
+        for text, value in zip(fields, values):
+            schema, field, known = field_of(text)
+            conds.append(queries.meta_cond(schema, field, value, known.type if known else None,
+                                           known.sensitive if known else None))
+        return page(queries.meta, conds, backups=backups())
+
+    @api("meta-values")
+    def api_meta_values():
+        schema, field, known = field_of(arg("field", "field=SCHEMA.FIELD"))
+        return page(queries.meta_values, schema, field, known.type if known else None,
+                    sensitive=known.sensitive if known else None)
 
     # the web's reports, for `pinakes` (ROADMAP 55 to 59): the same queries under row-level security, without the
     # owner ids the web keeps for its step-up audit (a token never steps up)

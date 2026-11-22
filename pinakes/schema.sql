@@ -1003,6 +1003,7 @@ BEGIN
         END IF;
         how := CASE k
             WHEN 'eq'   THEN format('btree ((vals ->> %L))', f)
+            WHEN 'ci'   THEN format('btree ((lower(btrim(vals ->> %L))))', f)    -- text without case (ROADMAP 70)
             WHEN 'date' THEN format('btree ((vals ->> %L))', f)          -- ISO 8601 text: text order is time order
             WHEN 'trgm' THEN format('gin ((vals ->> %L) public.gin_trgm_ops)', f)
             WHEN 'num'  THEN format('btree (((vals ->> %L)::numeric))', f)

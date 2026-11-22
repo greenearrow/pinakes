@@ -55,7 +55,10 @@
                                        folders) and week, the files and bytes that came and went (8 weeks)
   pinakes at-risk                      what losing a disk or a machine would cost you: your files with no copy
                                        on another disk, per disk, per host and by top folder
-  pinakes meta SCHEMA.FIELD=VALUE
+  pinakes meta SCHEMA.FIELD=VALUE...   the files with that value (again for more: files with every one). Text
+                                       without case and trimmed; a date field takes YYYY, YYYY-MM or YYYY-MM-DD
+  pinakes meta SCHEMA.FIELD            the field's values among the files you can see, with how many files hold
+                                       each (outside backups, and backup copies), the most first; a date per day
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
   pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
@@ -665,10 +668,23 @@ def run(api, a, cfg):
                             "manifest": r["manifest_relpath"] if r["problem"] == "wrong" else ""}
                            for r in got["rows"]]
     elif a.cmd == "meta":
-        key, eq, value = need("SCHEMA.FIELD=VALUE").partition("=")
-        if not eq:
-            raise Failed("pinakes meta needs SCHEMA.FIELD=VALUE")
-        got = api.get("meta", field=key, value=value, **page)
+        given = [need("SCHEMA.FIELD or SCHEMA.FIELD=VALUE")] + (a.more or [])
+        pairs = [g.partition("=") for g in given]
+        if len(given) == 1 and not pairs[0][1]:                         # the field's values (ROADMAP 70)
+            if a.backups:
+                raise Failed("--backups is for a list of files: pinakes meta SCHEMA.FIELD=VALUE")
+            got = api.get("meta-values", field=given[0], limit=a.limit, offset=a.offset)
+            if not a.json:
+                print("%s: %s" % (given[0], "%d value(s) among the files you can see" % got["total"]
+                                  if got["total"] else "no value among the files you can see"))
+                _print(got["rows"], False, ["files", "backup_copies", "value"])
+                _page_line(got)
+                return
+            print(json.dumps(got, indent=1))
+            return
+        if any(not eq for _, eq, _ in pairs):
+            raise Failed("pinakes meta takes SCHEMA.FIELD alone, or SCHEMA.FIELD=VALUE (again for more)")
+        got = api.get("meta", field=[k for k, _, _ in pairs], value=[v for _, _, v in pairs], **page)
     else:                                                               # dupes, stale, roots
         got = api.get(a.cmd, **page)
     if a.json and a.cmd in PAGED:
@@ -1010,7 +1026,7 @@ def main(argv=None):
     ap.add_argument("--versions", action="store_true", help=argparse.SUPPRESS)      # before ROADMAP 39
     ap.add_argument("--config", help=argparse.SUPPRESS)
     a = ap.parse_intermixed_args(argv)          # options before or after the command and its argument
-    if a.more and a.cmd != "undo" and (a.cmd != "review" or len(a.more) > 1):
+    if a.more and a.cmd not in ("undo", "meta") and (a.cmd != "review" or len(a.more) > 1):
         ap.error("pinakes %s takes one argument" % a.cmd)
     a.path = a.more[0] if a.more and a.cmd == "review" else None
     try:

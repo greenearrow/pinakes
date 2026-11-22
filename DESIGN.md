@@ -371,7 +371,8 @@ pinakes undo EDIT...                   put back the values before those edits, u
 pinakes restores [PATH] [--back]       the changes marked restore, and the backup copies holding their content
 pinakes growth [FOLDER] [--weeks N]    per folder and week, the files and bytes that came and went
 pinakes at-risk                        what losing a disk or a machine would cost you, by disk, host and folder
-pinakes meta SCHEMA.FIELD=VALUE        files by metadata
+pinakes meta SCHEMA.FIELD=VALUE...     files by metadata (text without case; a date by YYYY[-MM[-DD]])
+pinakes meta SCHEMA.FIELD              the field's values, with how many files hold each
 pinakes stale                          hosts whose last scan is older than their schedule allows
 pinakes whoami                         whose token this is, its scopes and roots
 pinakes access                         who saw your records, and the calls made with your tokens
