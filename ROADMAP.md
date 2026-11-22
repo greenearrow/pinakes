@@ -176,6 +176,13 @@ UUID names with `.xmp` sidecars, nightly hard-linked snapshots of both on a back
     step-up accepts each factor it is configured for.
 23. [Security] **Rate limits on search, audit retention, removing a person** (their records, shares and sessions go;
     audit entries about them kept for the retention period). *Done when:* tests cover each.
+75. [Security] **The step-up's reason on the record of the people it saw:** SECURITY.md ("People and roles", step 3)
+    says each record seen in a step-up is logged with the reason, but `audit_view` writes only the page and a count; the
+    reason is in the `step_up` entry, which the people seen can't read. So their "Access to your records" shows that an
+    administrator looked, not why. Found by the demo household's test (`tests/test_web.py` TestDemo). Needs a schema
+    change and an upgrade file; entries already written keep no reason. *Done when:* `pinakes access` and `--json` are
+    tested through the API: the person seen gets each view with the step-up's reason, a person not seen gets nothing,
+    the reason the same as the `step_up` entry's; the web page says the same, and TestDemo asserts it.
 
 ## The command line, through an API
 
