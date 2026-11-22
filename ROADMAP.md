@@ -75,6 +75,50 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
     different owners, unsettled content, a protected or drop or backup root; the replaced inode reaches the trash; undo
     by copy is documented and tested.
 
+## Exclusions and routine churn
+
+Today every exclusion is an `exclude` glob in one root of one agent's config (DESIGN.md "Roots"): a backup root
+restates its source's globs by hand with its layout prefix, the same junk globs are repeated per root and per machine,
+a new exclude turns the files already catalogued under it into unreviewed gone files (the agent prunes them in its
+walk; the server knows nothing of excludes), and files that rotate out on a schedule (nightly dumps kept N days,
+snapshot pruning, log rotation) are marked `intended` by hand every day. In order:
+
+63. [Feature; also security] **Expected rules for rotation:** a glob under a root (`ROOT:app/backups/*.sql.gz`) whose
+    gone files are marked `intended` by the rule as they arrive; the files stay catalogued, so whether one was ever
+    backed up stays answerable. A rule marks only what its maker could mark by hand, checked each time it applies,
+    not only when made; each mark is the rule's, shown in `pinakes edits` and undone by `pinakes undo`. Server only,
+    no protocol change. *Done when:* `pinakes expected add|remove ROOT:GLOB` and `pinakes expected` (the rules, with
+    what each marked) and their `--json` are tested through the API: a rotated file marked as it arrives, a file
+    outside the glob left unreviewed, a second person's rule refused files they can't mark, the marks in `edits` and
+    undone by `undo`; and the web page.
+64. [Correctness; also feature] **A preview of an exclusion, and "excluded", not "gone":** before an exclude takes
+    effect, "this would drop N files (B bytes) from ROOTS, M with no copy elsewhere", from the catalog; after it, the
+    files that left because they were excluded are recorded as excluded and need no review. Needs the agent to tell
+    the server why files left (a protocol change). Decided first: whether the agent sends its patterns (which can name
+    what never left the machine) or only the fact that a path is now excluded. *Done when:* `pinakes exclude-preview
+    ROOT:GLOB` and `--json` are tested through the API, under row-level security (a person counts only what they
+    see); a scan after the exclude records exactly the files the preview counted as excluded, none of them gone or
+    unreviewed (`pinakes changes --what excluded`); and the web page.
+65. [Operability; also security] **One site-wide exclude list,** in `server.toml`, applying to every root beside the
+    per-root `exclude`. It must reach the agents, since privacy excludes have to stop the walk on the machine: either
+    sent with the batch acknowledgement and applied from the next scan (a protocol change), or the agent's
+    `exclude_from = FILE` with the site distributing one file; decided first. The server's list only adds excludes: it
+    can never make an agent read what its local config leaves out or a protected root hides (SECURITY.md). No person
+    command: the list is the operator's config, and its patterns may name private things. *Done when:* tests show an
+    agent applying the site list from its next scan, a site list unable to remove a local exclude, the preview of 64
+    for a change to it, and `pinakes-ingest excludes` showing the list and which agents have applied it.
+66. [Operability] **A backup root inherits its source's excludes through `mirrors`:** the agent applies the source
+    root's globs (its own and the site's) to each backup path mapped back through `layout`; the backup's own `exclude`
+    is only for what is its own (partial transfers). Agent and config only, after 65 (the source's list must reach the
+    backup's machine); no person command, since nothing new is asked. *Done when:* tests on generated trees show a
+    backup root leaving out exactly what its source leaves out, through a prefixed layout, and a glob added to the
+    source reaching the backup without editing its config.
+67. [Feature] **Candidates for a rule:** a report of the folders whose gone files are always marked intended, or that
+    lose files on a schedule (about one per interval, the same name pattern), each offered as an exclude (64) or an
+    expected rule (63). `changes --tree` counts the noise per folder but doesn't say "the same thing every day". *Done
+    when:* `pinakes candidates [PATH]` and `--json` are tested through the API on a generated rotating tree and a
+    folder marked by hand, under row-level security; and the web page.
+
 ## Sources and imports
 
 20. [Feature] **Another catalog's checksums** (a photo library's SHA-1s), for files the agent doesn't see. Needs SHA-1
