@@ -119,6 +119,48 @@ snapshot pruning, log rotation) are marked `intended` by hand every day. In orde
     when:* `pinakes candidates [PATH]` and `--json` are tested through the API on a generated rotating tree and a
     folder marked by hand, under row-level security; and the web page.
 
+## Copies, metadata and plain answers
+
+Found walking a photographer's questions against a live catalog (a primary photo root, an app's upload folder of
+UUID names with `.xmp` sidecars, nightly hard-linked snapshots of both on a backup root):
+
+68. [Feature; also correctness] **Primary copies first, backups folded,** one rule for every list that holds copies
+    (`find`, `where`, `meta`, and any later one): primary and drop rows first, backup copies folded into a count per
+    content ("+ in 6 snapshots"), with an option to list them. Today the lists sort by root label, so a backup root's
+    snapshots fill the first pages, and the primary rows come pages later. *Done when:* `find`, `where` and `meta`
+    and their `--json` are tested through the API on a generated tree with snapshots: the primary rows first, the
+    fold's count equal to the backup copies a person can see, the option listing them all, totals unchanged.
+69. [Correctness] **No "certain" copy link between unrelated files that share small, common bytes:** byte-identical
+    sidecars of five different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same
+    sha256, certain". True of the bytes, false of the work. Wanted: no `copied_from` edge, or one marked "same bytes,
+    different work", for content shared by several files of different names or bundles; with 14, a sidecar takes its
+    photo's identity. Decided first: the rule (size, how many holders, sidecar by schema) and whether existing edges
+    are redone by an upgrade. *Done when:* `pinakes lineage` and `pinakes relatives` and their `--json` are tested
+    through the API on generated identical sidecars of different photos (no certain copy) and a sidecar that was
+    copied (still linked).
+70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
+    counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
+    (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as
+    now. *Done when:* each form and its `--json` are tested through the API, a second person's values absent from the
+    list, and a sensitive field absent under a token.
+71. [Correctness] **Say what a metadata answer can't see:** EXIF is read from JPEG only (`schemas/exif.toml`), so
+    `meta exif.make=...` leaves the RAWs out and says nothing. Under a `meta` answer: "EXIF is read from
+    JPEG only; N other image files under your roots aren't searched", N counted under row-level security. *Done
+    when:* `pinakes meta` and its `--json` (the count as a field) are tested through the API on generated JPEGs and
+    RAWs, and the web page says the same.
+72. [Feature] **One file's metadata from the command line:** `pinakes meta FILE` with each schema's fields, their
+    sources and the extraction outcome ("refused: truncated", "nothing found"), today on the web page only. *Done
+    when:* it and its `--json` are tested through the API, sensitive fields left out under a token, a second person's
+    file refused as by `where`.
+73. [Correctness] **Plain `relatives` and `lineage` show what matters:** gone copies marked (the JSON has `gone_on`,
+    the table doesn't), and long paths cut in the middle so the name and its extension stay (`.../IMG_1881.CR2`, not
+    `.../IMG_1881`); the same cut in every table that shortens paths. *Done when:* `pinakes relatives` and `pinakes
+    lineage` are tested through the API with a gone relative and a long path, and `--json` unchanged.
+74. [Correctness] **`only-here` with nothing to list says why:** "none: all N files have a copy on another disk", with
+    the folder's last scan date, not "(none)", which reads the same as an empty folder. *Done when:* `pinakes
+    only-here` is tested through the API on a folder fully copied and an empty one, and `--json` carries N and the
+    scan date.
+
 ## Sources and imports
 
 20. [Feature] **Another catalog's checksums** (a photo library's SHA-1s), for files the agent doesn't see. Needs SHA-1
