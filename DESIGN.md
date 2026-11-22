@@ -373,7 +373,7 @@ pinakes growth [FOLDER] [--weeks N]    per folder and week, the files and bytes 
 pinakes at-risk                        what losing a disk or a machine would cost you, by disk, host and folder
 pinakes meta SCHEMA.FIELD=VALUE...     files by metadata (text without case; a date by YYYY[-MM[-DD]])
 pinakes meta SCHEMA.FIELD              the field's values, with how many files hold each
-pinakes stale                          hosts whose last scan is older than their schedule allows
+pinakes stale                          hosts holding your files whose last scan is older than their schedule allows
 pinakes whoami                         whose token this is, its scopes and roots
 pinakes access                         who saw your records, and the calls made with your tokens
 pinakes export [PART] [--csv]          your own records

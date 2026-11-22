@@ -2,7 +2,7 @@
 {% from "_files.html" import hidden_toggle with context %}
 {% block body %}
 <h1>Roots</h1>
-<p class="muted">The folders each machine scans. Counts are the files you can see.</p>
+<p class="muted">The folders each machine scans that hold files you can see. Counts are those files.</p>
 {{ hidden_toggle(None, hidden_left_out, url_for('home')) }}
 <div class="scroll"><table>
   <tr><th>Root</th><th>Host</th><th>Kind</th><th class="num">Files</th><th>Last complete scan</th></tr>
@@ -11,13 +11,14 @@
       {% if r.protected %}<span class="tag">protected</span>{% endif %}</td>
       <td>{{ r.host }}</td><td>{{ r.kind }}</td><td class="num">{{ r.files }}</td>
       <td>{{ r.last_complete_on or 'never' }}</td></tr>
-  {% else %}<tr><td colspan="5" class="muted">No roots have reported yet.</td></tr>{% endfor %}
+  {% else %}<tr><td colspan="5" class="muted">No root holds a file you can see.</td></tr>{% endfor %}
 </table></div>
 {% if stale %}
 <h2>Not heard from</h2>
+<p class="muted">{% if every_host %}Hosts{% else %}Hosts holding files you can see{% endif %} that haven't reported as often as they should{% if every_host %}: every host, as you are an operator{% endif %}.</p>
 <div class="scroll"><table>
-  <tr><th>Host</th><th>Last scan</th><th>Expected every</th></tr>
-  {% for s in stale %}<tr><td>{{ s.name }}</td><td>{{ s.last_scan or 'never' }}</td><td>{{ s.expected_every }}</td></tr>{% endfor %}
+  <tr><th>Host</th><th>Last scan</th><th>Should report</th></tr>
+  {% for s in stale %}<tr><td>{{ s.name }}</td><td>{% if s.last_scan %}<span title="{{ s.last_scan }}">{{ ago(s.age_s) }}</span>{% else %}never{% endif %}</td><td>{{ every(s.expected_every_s) }}</td></tr>{% endfor %}
 </table></div>
 {% endif %}
 {% endblock %}

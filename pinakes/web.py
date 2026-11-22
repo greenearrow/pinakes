@@ -11,7 +11,9 @@ the roots the token may (every root but the protected ones unless it names them)
 for the person. GET only for now; a token needs the `read` scope for these calls:
 
   whoami                          the token's person, kind, scopes and roots (any token)
-  roots, stale, dupes             as the CLI's commands (stale: an ops token too)
+  roots, stale, dupes             as the CLI's commands (stale: an ops token too). roots: those holding a file you
+                                  see; stale: of hosts holding one (an ops token: every host), age_s and
+                                  expected_every_s in seconds, and "of" saying which
   releases                        (ops tokens only) this server's release, protocol and schema, and each agent's
                                   last check-in: hosts, numbers and times, never a root, person or file
   find?q=NAME-OR-GLOB              placeholders=hide: without the files of placeholders, counted (placeholders_hidden)
@@ -93,7 +95,7 @@ import psycopg
 from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, session, url_for
 from werkzeug.exceptions import HTTPException, NotFound
 
-from . import auth, compat, extract, queries, registry
+from . import auth, compat, extract, queries, registry, words
 from .server_config import load as load_server_config
 
 LOGIN_LIMIT = 5          # failed sign-ins per address
@@ -524,11 +526,14 @@ def create_app(cfg, connect=None):
 
     @api("roots")
     def api_roots():
-        return {"rows": queries.roots(g.db)}
+        return {"rows": queries.roots(g.db, seen_only=True)}       # only those holding a file you see (ROADMAP 79)
 
     @api("stale", ("read", "ops"))
     def api_stale():
-        return {"rows": queries.stale(g.db)}
+        """An ops token: every host; a person's: only those holding a file they see (ROADMAP 79). Operator powers are
+        never a person token's (SECURITY.md), so an operator's own token is answered as a person."""
+        every = g.kind == "ops"
+        return {"rows": queries.stale(g.db, every), "of": "every host" if every else "hosts holding your files"}
 
     @api("find")
     def api_find():
@@ -954,9 +959,11 @@ def create_app(cfg, connect=None):
     @app.route("/")
     @signed_in
     def home():
-        roots = queries.roots(g.db, hidden=show_hidden())
+        roots = queries.roots(g.db, hidden=show_hidden(), seen_only=True)          # ROADMAP 79
         hidden_left_out = 0 if show_hidden() else sum(r["hidden_files"] for r in roots)
-        return render_template("home.html", roots=roots, stale=queries.stale(g.db), hidden_left_out=hidden_left_out)
+        every = "operator" in g.roles               # an operator signed in on the web: every host
+        return render_template("home.html", roots=roots, stale=queries.stale(g.db, every), every_host=every,
+                               hidden_left_out=hidden_left_out, ago=words.ago, every=words.every)
 
     @app.route("/find")
     @signed_in

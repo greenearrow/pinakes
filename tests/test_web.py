@@ -1510,6 +1510,24 @@ class TestDemo(unittest.TestCase):
         self.assertIn("<td>view</td><td>page: file %d" % project, page)
         self.assertNotIn("User One", self.login("user-4").get("/access").get_data(as_text=True))
 
+    def test_a_person_s_home_page_shows_what_concerns_them(self):
+        """ROADMAP 79: the child's home page leaves out the sibling's laptop, its root and its silence; the sibling's
+        says it, in words; the operator's names every late host."""
+        child = self.login("user-4").get("/").get_data(as_text=True)
+        self.assertNotIn("downloads-2", child)
+        self.assertNotIn("laptop-2", child)
+        self.assertNotIn("Not heard from", child)
+        teen = self.login("user-3").get("/").get_data(as_text=True)
+        self.assertIn("downloads-2", teen)
+        self.assertIn("Hosts holding files you can see that haven't reported", teen)
+        row = re.search(r"<tr><td>laptop-2</td><td>(.*?)</td><td>(.*?)</td></tr>", teen)
+        self.assertRegex(row.group(1), r'<span title="[^"]+">\d+ days ago</span>')
+        self.assertEqual(row.group(2), "every day")
+        self.assertNotRegex(re.sub(r"<[^>]+>", "", teen), r"\d:\d\d:\d\d")    # no raw time or interval shown
+        operator = self.login("user-1").get("/").get_data(as_text=True)
+        self.assertIn("every host, as you are an operator", operator)
+        self.assertIn("<tr><td>laptop-2</td>", operator)
+
     def test_the_laptop_that_is_mostly_off_is_stale(self):
         with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
             self.assertEqual([r["name"] for r in queries.stale(c)], ["laptop-2"])

@@ -1163,10 +1163,19 @@ def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped
                   offset)
 
 
-def stale(conn):
-    return rows(conn, """SELECT name, last_scan, expected_every FROM pinakes.hosts
-                         WHERE expected_every IS NOT NULL AND (last_scan IS NULL OR last_scan < now() - expected_every)
-                         ORDER BY last_scan NULLS FIRST""")
+def stale(conn, every=True):
+    """Hosts whose last scan is older than their schedule allows, with its age and the schedule in seconds. Without
+    `every` (a person's question, ROADMAP 79), only the hosts holding a present file the person sees, under
+    row-level security: another person's laptop being off is not theirs to be told."""
+    return rows(conn, """SELECT h.name, h.last_scan, h.expected_every,
+                                extract(epoch FROM now() - h.last_scan)::bigint AS age_s,
+                                extract(epoch FROM h.expected_every)::bigint AS expected_every_s
+                         FROM pinakes.hosts h
+                         WHERE h.expected_every IS NOT NULL
+                           AND (h.last_scan IS NULL OR h.last_scan < now() - h.expected_every)
+                           AND (%s OR EXISTS (SELECT 1 FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                                              WHERE r.host_id = h.host_id))
+                         ORDER BY h.last_scan NULLS FIRST""", (every,))
 
 
 # A root's scrub is behind (DESIGN.md "Scrub") when its last run is older than a full pass, or a file still there
@@ -1275,9 +1284,10 @@ def operator_at_risk(conn):
     return {"disks": [r for r in out if r["scope"] == "disk"], "hosts": [r for r in out if r["scope"] == "host"]}
 
 
-def roots(conn, hidden=True):
+def roots(conn, hidden=True, seen_only=False):
     """Every root with the files the person can see in it (under a token, only the roots it may see); without
-    `hidden`, not counting the hidden ones, which `hidden_files` still counts. Every root's counts come from one
+    `hidden`, not counting the hidden ones, which `hidden_files` still counts. `seen_only` (a person's list, ROADMAP
+    79): only the roots holding a file the person sees, hidden or not. Every root's counts come from one
     grouped pass over the files the person can see: two counts per root read them once per count (ROADMAP 48)."""
     return rows(conn, """SELECT r.label, h.name AS host, r.kind, r.protected, r.last_complete_on,
                                 coalesce(c.files, 0) AS files, coalesce(c.hidden_files, 0) AS hidden_files
@@ -1285,8 +1295,9 @@ def roots(conn, hidden=True):
                          LEFT JOIN (SELECT f.root_id, count(*) FILTER (WHERE %s OR NOT f.hidden) AS files,
                                            count(*) FILTER (WHERE f.hidden) AS hidden_files
                                     FROM pinakes.present f GROUP BY f.root_id) c USING (root_id)
-                         WHERE pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots())
-                         ORDER BY h.name, r.label""", (hidden,))
+                         WHERE (pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots()))
+                           AND (NOT %s OR coalesce(c.files, 0) + coalesce(c.hidden_files, 0) > 0)
+                         ORDER BY h.name, r.label""", (hidden, seen_only))
 
 
 def root_choices(conn):

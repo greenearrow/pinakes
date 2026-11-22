@@ -1170,3 +1170,34 @@ the pattern's own `(` and `.`, files of that name listed and not counted; `tests
 tools/bench-pages (500,000 files): find 1.56 s for a common name, 0.48 s for a glob, 0.59 s for a name nothing has
 (1.21, 0.19 and 0.20 s before: the count reads every path). Other Pythons and PostgreSQL versions not run; not run on a
 real catalog; not deployed.
+
+## 79. A person's home page shows what concerns them
+
+With this, ROADMAP 79 is built and no longer listed.
+
+**Built:** `pinakes roots` (the API's `roots`) and the home page list only the roots holding a file the person sees,
+hidden or not, under row-level security (`queries.roots(seen_only=True)`); `whoami`'s roots, which are a token's, are
+unchanged, and the operator page still lists every root. `pinakes stale` (the API's `stale`) and the home page's "Not
+heard from" name, for a person, only the hosts holding a present file they see (`queries.stale(every=False)`), so a
+child isn't told a sibling's laptop is off; every late host for an ops token and for an operator signed in on the web,
+never under a person token, an operator's own included (SECURITY.md: operator powers are never a token's). The API's
+`stale` adds `age_s` and `expected_every_s` (seconds) and `of` ("every host" or "hosts holding your files"); the plain
+output and the page give ages in words, "4 days ago" and "every day" (`pinakes/words.py`, standard library), the exact
+time on the page's hover, and "none: every one of the hosts holding your files has reported in time" for none.
+SECURITY.md says so. A server before this sends no `of`, and the command prints the raw values as before.
+
+**Not as the roadmap said:** "the people with files on that host" is the people who see a file there (their own,
+co-owned or shared with them), the same rule as everything else a person is shown. `--json` of `stale` keeps
+`last_scan` and `expected_every` raw beside the seconds (76's rule for `--json` is still to come).
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py`
+`TestCli.test_roots_and_stale_are_what_concerns_the_person`, the CLI against a real HTTP server on 127.0.0.1: a host
+never heard from told to an ops token and to no person (its operator's person token included), a backup root of one
+person's files four days silent told to him in words ("4 days ago", "every day") and its root in his roots, neither to
+a second person, and both gone from his once his files there are; `tests/test_web.py`
+`TestDemo.test_a_person_s_home_page_shows_what_concerns_them`, the demo household: the child's home page without the
+sibling's laptop, its root or "Not heard from", the sibling's with it in words and no raw time, the operator's naming
+every late host.
+All 541 tests pass (tools/test). tools/bench-pages (500,000 files): roots 0.15 s (0.12 s before), stale 0.007 s, with no
+late host in the bench, so the per-host check under row-level security wasn't timed on a large catalog. Other Pythons
+and PostgreSQL versions not run; not run on a real catalog; not deployed.

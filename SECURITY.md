@@ -268,6 +268,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   (`operator_roots()`, `operator_at_risk()`) only to an operator signed in on the web, never under a token. "If a
   disk failed" shows a person their own at-risk files by folder, under row-level security, counting only the copies
   they can see; an administrator sees everyone's only in a step-up, audited for the owners.
+- A person's roots (the home page, `pinakes roots`) are those holding a file they see, and their "Not heard from"
+  (`pinakes stale`) only the hosts holding one, both under row-level security: another person's laptop, its root
+  and whether it is off are not theirs to be told. Every late host is told to an operator signed in on the web and
+  to an ops token, never to a person token, an operator's included. (Hosts' names and staleness are not secret:
+  `/health` names them.)
 - `/health` is the one page without sign-in, for monitoring: whether the database answers, and per host its newest
   batch, last complete scan, whether it is stale, its scrub's dates, and how many of its roots its batches no longer
   name. It names hosts and nothing else (no root, person or file, no

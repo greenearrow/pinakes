@@ -617,6 +617,43 @@ class TestCli(ServerCase):
         got = json.loads(cli("backed-up", mine, "--json"))
         self.assertEqual((got["total"], got["with_backup"], got["without_backup"]), (1, 0, 1))
 
+    def test_roots_and_stale_are_what_concerns_the_person(self):
+        """ROADMAP 79: roots lists only the roots holding a file the person sees; stale answers a person only for the
+        hosts holding one, an ops token for every host; the plain output says the ages in words."""
+        cli = self.cli
+        # server-2 has never reported: stale for an ops token, nobody's concern as a person
+        self.assertEqual(json.loads(cli("stale", "--json")), [])
+        self.assertEqual(cli("stale"), "none: every one of the hosts holding your files has reported in time\n")
+        cli.save(cli.home_token(), make_token(self, "user-1", scopes=("ops",), client="deploy"))
+        self.assertEqual([r["name"] for r in json.loads(cli("stale", "--json"))], ["server-2"])
+        self.assertEqual(cli("stale").splitlines()[1].split(), ["server-2", "never", "every", "day"])
+        # his backup on server-2, scanned, then four days without a word
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/taxes.txt", b"his")
+        self.scan("server-2", "snapshots")
+        self.conn.execute("UPDATE pinakes.hosts SET last_scan = now() - interval '4 days 2 hours' "
+                          "WHERE name = 'server-2'")
+        cli.save(cli.home_token(), make_token(self, "user-1"))
+        got = json.loads(cli("stale", "--json"))
+        self.assertEqual([(r["name"], r["age_s"] // 3600, r["expected_every_s"]) for r in got],
+                         [("server-2", 98, 86400)])
+        out = cli("stale").splitlines()
+        self.assertEqual((out[0].split(), out[1].split()), (["host", "last_scan", "expected"],
+                                                            ["server-2", "4", "days", "ago", "every", "day"]))
+        self.assertEqual([r["label"] for r in json.loads(cli("roots", "--json"))], ["store", "snapshots"])
+        # hers: nothing of hers on server-2, so neither its root nor its silence
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual([r["label"] for r in json.loads(cli("roots", "--json"))], ["store"])
+        self.assertNotIn("snapshots", cli("roots"))
+        self.assertEqual(json.loads(cli("stale", "--json")), [])
+        self.assertEqual(cli("stale"), "none: every one of the hosts holding your files has reported in time\n")
+        # his files gone from server-2: its root and its silence leave his answers too (an operator's own token is a
+        # person's, as at the start: no operator power under a token, SECURITY.md)
+        self.conn.execute("UPDATE pinakes.files SET gone_on = current_date WHERE relpath LIKE '2026-01-01_0140/%'")
+        cli.save(cli.home_token(), make_token(self, "user-1"))
+        self.assertEqual(json.loads(cli("stale", "--json")), [])
+        self.assertEqual([r["label"] for r in json.loads(cli("roots", "--json"))], ["store"])
+
     def test_find_a_name_only_a_folder_has(self):
         """find of a name only a folder has (ROADMAP 77) says so, "no file is named so; N files are under folders named
         so", N counted outside backups and under row-level security: another person's folder of that name isn't."""
@@ -717,7 +754,7 @@ class TestCli(ServerCase):
         self.assertIn("(none)", cli("meta", "dc.title=nothing"))
         self.assertEqual(cli("meta", "dc.title"), "dc.title: no value among the files you can see\n(none)\n")
         self.assertEqual(cli("meta", code=1), "pinakes: pinakes meta needs SCHEMA.FIELD or SCHEMA.FIELD=VALUE")
-        self.assertEqual(cli("stale").split()[:4], ["name", "last_scan", "expected_every", "server-2"])  # never seen
+        self.assertEqual(cli("stale"), "none: every one of the hosts holding your files has reported in time\n")
         roots = cli("roots").splitlines()
         self.assertEqual(roots[0].split(), ["label", "host", "kind", "protected", "last_complete_on", "files",
                                             "hidden_files"])

@@ -64,8 +64,9 @@
                                        each (outside backups, and backup copies), the most first; a date per day
                                        Both say how many other image files a JPEG-only schema (EXIF, XMP)
                                        can't search
-  pinakes stale
-  pinakes roots                        every root you can see: host, kind, files, last complete scan
+  pinakes stale                        hosts holding files you can see that haven't reported in time: how long
+                                       ago they did, and how often they should
+  pinakes roots                        every root holding a file you can see: host, kind, files, last complete scan
   pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
   pinakes whoami                       whose token this is, its kind, scopes and the roots it may see
   pinakes access                       your access record: who saw your records, and the calls made with your
@@ -98,6 +99,7 @@ shows only what that person (or, with a group token, that group) may see, and ne
 """
 
 import argparse
+import contextlib
 import csv
 import datetime
 import getpass
@@ -112,6 +114,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import words
 from .config import tomllib
 
 CLIENT_CONFIGS = ("~/.config/pinakes/client.toml", "/etc/pinakes/client.toml")
@@ -706,12 +709,26 @@ def run(api, a, cfg):
             print("%d file(s) of placeholders not listed: without --hide-placeholders they are"
                   % got["placeholders_hidden"])
         return
+    if a.cmd == "stale" and not a.json and "of" in got:                 # a server before ROADMAP 79: raw values
+        print(stale_lines(got))
+        return
     if a.cmd == "only-here" and not count(got) and "files" in got:      # a server before ROADMAP 74: "(none)"
         print(only_here_none(got, where))
         return
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
         _page_line(got)
+
+
+def stale_lines(got):
+    """pinakes stale in words (ROADMAP 79): each late host, when it last reported and how often it should."""
+    if not got["rows"]:
+        return "none: every one of the %s has reported in time" % got["of"]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        _print([{"host": r["name"], "last_scan": words.ago(r["age_s"]), "expected": words.every(r["expected_every_s"])}
+                for r in got["rows"]], False)
+    return out.getvalue().rstrip("\n")
 
 
 def only_here_none(got, where):
