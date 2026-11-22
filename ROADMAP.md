@@ -296,19 +296,12 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 ## Before the MCP server
 
 The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this came first, and helps the command
-line and the web UI as much. 61, 62, 68 and 69's first part are built (REARVIEW.md). Left: the items below, moved here
-from the persona reviews ("Copies, metadata and plain answers", "A household's answers") because each changes what the
-API tells a model, which repeats an answer where a person would doubt it. Also before 24, the part of two items left
-where they are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes edits` and
-`--json` (an MCP write's preview names its files the same way); their web halves can follow.
+line and the web UI as much. 61, 62, 68 and 69 are built (REARVIEW.md). Left: the items below, moved here from the
+persona reviews ("Copies, metadata and plain answers", "A household's answers") because each changes what the API tells
+a model, which repeats an answer where a person would doubt it. Also before 24, the part of two items left where they
+are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes edits` and `--json`
+(an MCP write's preview names its files the same way); their web halves can follow.
 
-69. [Correctness] **Placeholders, the rest** (the first part is built: REARVIEW.md 69). Hidden or not: placeholders
-    out of `find` and folder listings only when the person asks (off by default), shown folded with a count. The
-    web: a file's page says its content is a placeholder and marks or unmarks it, and a page of the candidates.
-    `pinakes at-risk` and the operator's totals still count a placeholder's other holders as copies, and folder
-    copies match folders by them. *Done when:* `pinakes find` with the option and its `--json` (the count hidden) and
-    `pinakes at-risk` and its `--json` are tested through the API on generated placeholders, and the web pages say the
-    same.
 70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
     counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
     (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as

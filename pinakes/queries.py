@@ -137,10 +137,23 @@ def _order_by(sorts, sort, direction, default):
     return order(sorts, sort, direction, default)[len(" ORDER BY "):]
 
 
-def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc", backups=None):
+PLACEHOLDERS = (True, False, "only")
+
+
+def _placeholders_cond(placeholders):
+    """A filter on files f by placeholders (ROADMAP 69): True every file, False none of a placeholder's, "only"
+    only those."""
+    if placeholders not in PLACEHOLDERS:
+        raise ValueError("placeholders is shown, hidden or only")
+    return {True: "", False: " AND NOT " + _PLACEHOLDER % "f", "only": " AND " + _PLACEHOLDER % "f"}[placeholders]
+
+
+def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc", backups=None, placeholders=True):
+    """Files by name or glob. `placeholders` False leaves out the files of placeholders, "only" lists only them."""
     like = _like(pattern, wildcards=True)
     return copies(conn, FILE_COLS, """FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                                      JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %s""", (like,),
+                                      JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %s"""
+                  + _placeholders_cond(placeholders), (like,),
                   _order_by(FILE_SORT, sort, direction, "f.name, h.name, f.file_id"), backups, limit, offset)
 
 
@@ -315,12 +328,13 @@ def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
 FOLDER_COPIES_SORT = {"size": ("bytes",), "files": ("files",), "where": ("folder",), "relation": ("relation",)}
 NEAR_PERCENT = 10      # "nearly the same": every file of the folder is in the other, at most this share (min. 1) edited
 
-# A folder is the set of its files' (path inside it, content): the whole subtree, empty files and symlinks left out
-# (they all hash alike or hold no data), backup roots too (a backup copying a folder is its job). Only what the scope
-# asks about is built (ROADMAP 61: building every folder's entries of the catalog took 5.7 s for a folder of 2,000 files
-# among 500,000): the entries of the scope's folders (es), the entries of every file holding one of their contents
-# (ec, where another folder holding them is found), and each candidate other folder's files looked up by path (by
-# index). An entry is a file in one of its ancestor folders, the root's own folder ('') included.
+# A folder is the set of its files' (path inside it, content): the whole subtree, empty files, placeholders (ROADMAP
+# 69) and symlinks left out (they all hash alike or hold no data), backup roots too (a backup copying a folder is its
+# job). Only what the scope asks about is built (ROADMAP 61: building every folder's entries of the catalog took 5.7 s
+# for a folder of 2,000 files among 500,000): the entries of the scope's folders (es), the entries of every file
+# holding one of their contents (ec, where another folder holding them is found), and each candidate other folder's
+# files looked up by path (by index). An entry is a file in one of its ancestor folders, the root's own folder ('')
+# included.
 _ENTRIES = """SELECT x.root_id, d.dir, substr(x.relpath, CASE WHEN d.dir = '' THEN 1 ELSE length(d.dir) + 2 END) AS rel,
                      x.content_id, x.size
               FROM %s x CROSS JOIN LATERAL (
@@ -331,6 +345,7 @@ _FOLDER_COPIES = """
 WITH sf AS (SELECT f.root_id, f.relpath, f.content_id, c.size
             FROM pinakes.present f JOIN pinakes.roots r USING (root_id) JOIN pinakes.contents c USING (content_id)
             WHERE r.label = %(root)s AND r.kind <> 'backup' AND c.size > 0 AND NOT f.is_symlink
+              AND NOT """ + _PLACEHOLDER % "c" + """
               AND (%(path)s = '' OR f.relpath ~>=~ %(lo)s AND f.relpath ~<~ %(hi)s)),
 es AS (SELECT * FROM (""" + _ENTRIES % "sf" + """) e
        WHERE %(path)s = '' OR e.dir = %(path)s OR left(e.dir, length(%(path)s) + 1) = %(path)s || '/'),
@@ -358,9 +373,10 @@ od AS MATERIALIZED (SELECT DISTINCT rb, db, db || '/' AS lo, db || '0' AS hi FRO
 nc AS MATERIALIZED (
     SELECT o.rb, o.db, (SELECT count(*) FROM pinakes.present f JOIN pinakes.contents oc USING (content_id)
                         WHERE o.db <> '' AND f.root_id = o.rb AND f.relpath ~>=~ o.lo AND f.relpath ~<~ o.hi
-                          AND NOT f.is_symlink AND oc.size > 0)
+                          AND NOT f.is_symlink AND oc.size > 0 AND NOT """ + _PLACEHOLDER % "oc" + """)
                      + (SELECT count(*) FROM pinakes.present f JOIN pinakes.contents oc USING (content_id)
-                        WHERE o.db = '' AND f.root_id = o.rb AND NOT f.is_symlink AND oc.size > 0) AS n
+                        WHERE o.db = '' AND f.root_id = o.rb AND NOT f.is_symlink AND oc.size > 0
+                          AND NOT """ + _PLACEHOLDER % "oc" + """) AS n
     FROM od o),
 -- each entry of the folder against the file at the same path in the other: the same content, another, or none
 pe AS MATERIALIZED (SELECT c.ra, c.da, c.rb, c.db, ea.rel, ea.content_id, ea.size,
@@ -372,7 +388,7 @@ pairs AS (SELECT pe.ra, pe.da, pe.rb, pe.db, count(*) FILTER (WHERE o.content_id
           FROM pe LEFT JOIN LATERAL (SELECT f.content_id FROM pinakes.present f
                                      JOIN pinakes.contents oc USING (content_id)
                                      WHERE f.root_id = pe.rb AND f.relpath = pe.opath AND NOT f.is_symlink
-                                       AND oc.size > 0) o ON true
+                                       AND oc.size > 0 AND NOT """ + _PLACEHOLDER % "oc" + """) o ON true
           GROUP BY pe.ra, pe.da, pe.rb, pe.db),
 res AS (SELECT p.ra, p.da, p.rb, p.db, p.bytes, na.n AS files, nb.n AS other_files, p.shared, p.differing,
                CASE WHEN p.shared = na.n AND na.n = nb.n THEN 'same'
@@ -1009,12 +1025,13 @@ def _common_cond(mapping, test):
 
 
 def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped_date=(), limit=None, offset=0,
-            sort=None, direction="asc", hidden=True, backups=None):
+            sort=None, direction="asc", hidden=True, backups=None, placeholders=True):
     """Files by name, by common fields, or both: `creator`, a substring, over every (schema, field) in
     `mapped_creator`; `dated`, (first, after) with either None for no bound, over every one in `mapped_date`
     (from date_bounds(): "from a day" is its first, "to a day" the next one's). Metadata on a file's content or on
     the file itself counts. Row-level security decides which metadata is searched, so a sensitive field the person
-    may not see finds nothing. Without `hidden`, no hidden file. `backups` as copies() takes it."""
+    may not see finds nothing. Without `hidden`, no hidden file. `backups` as copies() takes it, `placeholders` as
+    find() does."""
     where, args = [], []
     if name:
         where.append("f.name ILIKE %s")
@@ -1036,7 +1053,8 @@ def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped
     if not hidden:
         where.append("NOT f.hidden")
     return copies(conn, FILE_COLS, """FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                                      JOIN pinakes.hosts h USING (host_id) WHERE """ + " AND ".join(where),
+                                      JOIN pinakes.hosts h USING (host_id) WHERE """ + " AND ".join(where)
+                  + _placeholders_cond(placeholders),
                   tuple(args), _order_by(FILE_SORT, sort, direction, "f.name, h.name, f.file_id"), backups, limit,
                   offset)
 
@@ -1190,9 +1208,10 @@ def unbacked(conn, loc):
                            HAVING count(b.file_id) = 0) x""", (root, _prefix(path), path)).fetchone()[0]
 
 
-def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True):
+def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=True, placeholders=True):
     """The folders and files directly in a folder that the person can see; without `hidden`, none of the hidden
-    files (a folder whose files are all hidden doesn't show). An entry is hidden when all its files are."""
+    files (a folder whose files are all hidden doesn't show). An entry is hidden when all its files are. Without
+    `placeholders`, none of a placeholder's files (ROADMAP 69), the same way."""
     root, path = split_location(loc)
     pre = _prefix(path)
     depth = path.count("/") + 1 if path else 0
@@ -1202,7 +1221,8 @@ def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=
                                     array_length(string_to_array(f.relpath, '/'), 1) > %s + 1 AS deeper,
                                     f.file_id, f.size, f.mtime, f.dev, f.ino, f.hidden
                              FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                             WHERE r.label = %s AND f.relpath LIKE %s""" + ("" if hidden else " AND NOT f.hidden") + """)
+                             WHERE r.label = %s AND f.relpath LIKE %s""" + ("" if hidden else " AND NOT f.hidden")
+                + _placeholders_cond(bool(placeholders)) + """)
                          SELECT entry, bool_or(deeper) AS is_folder, count(*) AS files,
                                 (SELECT sum(s.size) FROM (SELECT DISTINCT ON (x.dev, x.ino) x.size FROM e x
                                                           WHERE x.entry = e.entry) s) AS size,
@@ -1210,6 +1230,15 @@ def listing(conn, loc, limit=None, offset=0, sort=None, direction="asc", hidden=
                                 bool_and(hidden) AS hidden, """ + TOTAL + """
                          FROM e GROUP BY entry"""
                 + order(LISTING_SORT, sort, direction, "2 DESC, 1") + PAGE, (depth, depth, root, pre, limit, offset))
+
+
+def placeholders_in(conn, loc, hidden=True):
+    """How many files of placeholders the person can see in a folder, at any depth (without `hidden`, of those not
+    hidden): what a listing without them leaves out."""
+    root, path = split_location(loc)
+    return conn.execute("SELECT count(*) FROM pinakes.present f JOIN pinakes.roots r USING (root_id) "
+                        "WHERE r.label = %s AND f.relpath LIKE %s" + ("" if hidden else " AND NOT f.hidden")
+                        + _placeholders_cond("only"), (root, _prefix(path))).fetchone()[0]
 
 
 def hidden_in(conn, loc):

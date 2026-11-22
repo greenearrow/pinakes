@@ -60,6 +60,62 @@ class TestWeb(ServerCase):
         self.assertIn("store", c.get("/").get_data(as_text=True))
         self.assertEqual(self.client().get("/").status_code, 302)          # signed out: to the sign-in page
 
+    def test_placeholders_marked_on_the_web_and_left_out_of_browse_and_find_on_request(self):
+        """ROADMAP 69 on the web: the candidates page and its marks, a file's page, and the toggle in browse and
+        find (placeholders listed unless the person asks), counting what it leaves out."""
+        for i in range(3):
+            self.write("server-1", "store", "people/user-1/game/data/map_%d.dat" % i, b"\0" * 200)
+        self.scan("server-1", "store")
+        maps = [self.file_id("people/user-1/game/data/map_%d.dat" % i) for i in range(3)]
+        c, _ = self.login("user-1", "correct horse battery")
+        page = c.get("/reports/placeholders").get_data(as_text=True)
+        self.assertIn("held under 3 or more names outside backups", page)
+        self.assertIn("store:people/user-1/game/data/map_0.dat</a>", page)
+        self.assertIn("No placeholder you can see.", c.get("/reports/placeholders?marked=1").get_data(as_text=True))
+        tok = self.csrf(c, "/reports/placeholders")
+        self.assertEqual(c.post("/reports/placeholders/mark", data={"file": maps[0], "do": "mark"}).status_code, 400)
+        self.assertEqual(c.post("/reports/placeholders/mark", data={"csrf": tok, "do": "maybe", "file": maps[0]})
+                         .status_code, 400)
+        r = c.post("/reports/placeholders/mark", data={"csrf": tok, "file": [maps[0], maps[1]], "do": "mark"})
+        self.assertEqual((r.status_code, r.headers["Location"]), (302, "/reports/placeholders?marked_n=1&asked=2"))
+        page = c.get(r.headers["Location"]).get_data(as_text=True)
+        self.assertIn("Marked or unmarked 1 of 2; the rest:", page)            # the second: the same content
+        self.assertIn("No candidate.", page)
+        self.assertIn("map_0.dat</a>", c.get("/reports/placeholders?marked=1").get_data(as_text=True))
+        page = c.get("/file/%d" % maps[2]).get_data(as_text=True)
+        self.assertIn("A placeholder (marked)", page)
+        self.assertIn("Not a placeholder</button>", page)
+        # browse and find list them until asked not to, then count them
+        folder = "/browse/store/people/user-1/game/data/"
+        self.assertIn("map_1.dat", c.get(folder).get_data(as_text=True))
+        self.assertIn("Leave out placeholders", c.get("/find?q=map").get_data(as_text=True))
+        r = c.post("/placeholder-files", data={"csrf": tok, "hide": "1", "next": folder})
+        self.assertEqual((r.status_code, r.headers["Location"]), (302, folder))
+        page = c.get(folder).get_data(as_text=True)
+        self.assertNotIn("map_1.dat", page)
+        self.assertIn("3 file(s) of placeholders not listed.", page)
+        page = c.get("/find?q=map").get_data(as_text=True)
+        self.assertNotIn("map_1.dat", page)
+        self.assertIn("3 file(s) of placeholders not listed.", page)
+        self.assertIn("map_1.dat", c.get("/reports/only-here?loc=store:people/user-1/game/").get_data(as_text=True))
+        self.assertIn("a placeholder's other holders", c.get("/reports/at-risk").get_data(as_text=True))
+        c.post("/placeholder-files", data={"csrf": tok, "hide": "0", "next": folder})
+        self.assertIn("map_1.dat", c.get(folder).get_data(as_text=True))
+        # unmarked from the file's page, back to it
+        r = c.post("/reports/placeholders/mark", data={"csrf": tok, "file": maps[2], "do": "unmark",
+                                                        "next": "/file/%d" % maps[2]})
+        self.assertEqual(r.headers["Location"], "/file/%d?placeholder=1#placeholder" % maps[2])
+        page = c.get(r.headers["Location"]).get_data(as_text=True)
+        self.assertIn("Not a placeholder.", page)
+        self.assertIn("Done.", page)
+        # user-2 can't see them: nothing marked, and a file she can't see is a 404 on the siblings page
+        c2, _ = self.login("user-2", "staple pony 12345")
+        tok2 = self.csrf(c2, "/reports/placeholders")
+        r = c2.post("/reports/placeholders/mark", data={"csrf": tok2, "file": maps[0], "do": "mark"})
+        self.assertEqual(r.headers["Location"], "/reports/placeholders?marked_n=0&asked=1")
+        self.assertEqual(c2.get("/reports/placeholders?file=%d" % maps[0]).status_code, 404)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.placeholders"), [(0,)])
+
     def test_hidden_files_left_out_of_browse_and_find_until_shown(self):
         self.write("server-1", "store", "people/user-1/.profile", b"profile")
         self.write("server-1", "store", "people/user-1/.cache-dir/thing.txt", b"thing")

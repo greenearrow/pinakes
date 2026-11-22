@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_pager.html" import pager, th with context %}
-{% from "_files.html" import hidden_toggle with context %}
+{% from "_files.html" import hidden_toggle, placeholder_toggle with context %}
 {% block title %}{{ root }}:{{ path }} · pinakes{% endblock %}
 {% block body %}
 <h1><a href="{{ url_for('browse', root=root, path='') }}">{{ root }}</a>{% for name, p in crumbs %} / <a href="{{ url_for('browse', root=root, path=p) }}">{{ name }}</a>{% endfor %}</h1>
@@ -10,6 +10,7 @@
   <a href="{{ url_for('report', name='backed-up', loc=root ~ ':' ~ path) }}">Backed up?</a>
 </p>
 {{ hidden_toggle(pg, hidden_left_out) }}
+{{ placeholder_toggle(pg, placeholders_left_out) }}
 {{ pager(pg, "entries") }}
 <div class="scroll"><table>
   <tr>{{ th(pg, "name", "Name") }}{{ th(pg, "files", "Files", "num") }}{{ th(pg, "size", "Size", "num") }}{{ th(pg, "newest", "Newest") }}</tr>

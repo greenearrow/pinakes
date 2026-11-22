@@ -80,6 +80,14 @@ def replaced_function(upgrade, name):
     return "SET search_path = pinakes; " + text[start:text.index("END $$;", start) + len("END $$;")]
 
 
+def replaced_sql_function(upgrade, name):
+    """As replaced_function(), for a LANGUAGE sql function: through its closing $$;."""
+    with open(os.path.join(UPGRADES, upgrade)) as f:
+        text = f.read()
+    start = text.index("CREATE OR REPLACE FUNCTION %s(" % name)
+    return "SET search_path = pinakes; " + text[start:text.index("\n$$;", start) + len("\n$$;")]
+
+
 @contextlib.contextmanager
 def in_time_zone(tz):
     """This process's local time zone set to tz (the server's, as the web and CLI would see it)."""
@@ -2455,6 +2463,32 @@ min_folders = 1
             self.assertEqual(queries.only_here(c, "downloads:"), [])
             self.assertEqual(len(queries.where(c, self.side[1], backups="fold")), 6)     # stepped up: hers too
 
+    def test_a_placeholders_own_backups_still_count_and_folder_copies_dont_match_by_them(self):
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        game = "people/user-1/game/world/data/"
+        self.write("server-2", "snapshots", "2026-01-01/" + game + "map_0.dat", b"\0" * 210)
+        self.scan("server-2", "snapshots")
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.files WHERE backup_of = %s",
+                                (self.file("store", game + "map_0.dat"),)), [(1,)])
+        with self.as_person("user-1") as c:
+            lonely = sorted(r["relpath"] for r in queries.only_here(c, "store:" + game))
+            self.assertEqual(lonely, [game + "map_%d.dat" % i for i in (1, 2, 3)])   # map_0 has its snapshot
+            risky = sorted(r[0] for r in c.execute("SELECT relpath FROM pinakes.at_risk() WHERE relpath LIKE %s",
+                                                     (game + "%",)).fetchall())
+            self.assertEqual(risky, [game + "map_%d.dat" % i for i in (1, 2, 3)])
+        # two folders alike only in a placeholder's files (and one real file) aren't copies of one another
+        for d in ("people/user-1/game/a/", "people/user-1/game/b/"):
+            for i in range(3):
+                self.write("server-1", "store", d + "map_%d.dat" % i, b"\0" * 210)
+        self.write("server-1", "store", "people/user-1/game/a/level.bin", b"world a")
+        self.write("server-1", "store", "people/user-1/game/b/level.bin", b"world b")
+        self.write("server-1", "store", "people/user-1/game/c/level.bin", b"world a")
+        self.scan("server-1", "store")
+        with self.as_person("user-1") as c:
+            got = {(r["folder"], r["other"], r["relation"])
+                   for r in queries.folder_copies(c, "store:people/user-1/game/a")}
+        self.assertEqual(got, {("store:people/user-1/game/a", "store:people/user-1/game/c", "same")})
+
     def test_who_marks(self):
         self.assertEqual(self.mark("user-1", self.side[0]), 0)                 # user-2 holds the bytes too
         self.assertEqual(self.mark("user-2", self.hers), 0)                    # and user-1 does
@@ -2516,7 +2550,8 @@ min_folders = 1
                          (3, 65536, 0.2))
 
     def test_upgrade_file_matches_the_schema(self):
-        defs = ("SELECT pg_get_functiondef('pinakes.mark_placeholder(bigint, boolean)'::regprocedure), "
+        defs = ("SELECT pg_get_functiondef('pinakes.mark_placeholder(bigint, boolean)'::regprocedure) || "
+                "pg_get_functiondef('pinakes.at_risk()'::regprocedure), "
                 "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
                 " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
                 " AND routine_name = 'mark_placeholder'), "
@@ -2534,6 +2569,11 @@ min_folders = 1
         with admin_conn(self.db) as c:
             fresh = c.execute(defs).fetchone()
             c.execute("DROP FUNCTION pinakes.mark_placeholder(bigint, boolean); DROP TABLE pinakes.placeholders")
+            with open(os.path.join(UPGRADES, "operator.sql")) as f:          # at_risk() as it was before
+                old = re.search(r"^CREATE FUNCTION at_risk\(\).*?^\$\$;$", f.read(), re.M | re.S).group(0)
+            c.execute("SET search_path = pinakes; " + old.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION"))
+            self.assertNotEqual(c.execute("SELECT pg_get_functiondef('pinakes.at_risk()'::regprocedure)").fetchone()[0],
+                                fresh[0][fresh[0].index("CREATE OR REPLACE FUNCTION pinakes.at_risk"):])
             self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["placeholders.sql"]).fetchone()[0])
             with open(os.path.join(UPGRADES, "placeholders.sql")) as f:
                 c.execute(f.read())
@@ -3889,8 +3929,9 @@ class TestAtRisk(ServerCase):
             self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["operator.sql"]).fetchone()[0])
             with open(os.path.join(UPGRADES, "operator.sql")) as f:
                 c.execute(f.read())
-            c.execute("RESET search_path")
             self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["operator.sql"]).fetchone()[0])
+            c.execute(replaced_sql_function("placeholders.sql", "at_risk"))   # placeholders aren't copies (69)
+            c.execute("RESET search_path")
             self.assertEqual(c.execute(defs).fetchone()[0], fresh)
 
 

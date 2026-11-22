@@ -58,6 +58,14 @@
 </table></div>
 {% endif %}
 
+{% if f.content_id and f.size %}
+<p id="placeholder" class="muted">{% if placeholder %}A placeholder ({{ 'marked' if placeholder == 'marked' else 'by the site rule ' ~ placeholder[5:] }}): an app's default bytes, so the other files holding them are no copies of this one; its own backups are.{% else %}Not a placeholder.{% endif %}
+  {% if placeholder_done is not none %}{{ 'Done.' if placeholder_done else 'Nothing changed: a file holding the same bytes isn’t yours or co-owned, or a site rule made it one.' }}{% endif %}
+  {% if not placeholder %}<a href="{{ url_for('placeholders', file=f.file_id) }}">Likely siblings</a>{% endif %}</p>
+{% if not placeholder or placeholder == 'marked' %}<form method="post" action="{{ url_for('mark_placeholders') }}" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="file" value="{{ f.file_id }}"><input type="hidden" name="next" value="{{ url_for('file', file_id=f.file_id) }}">
+  <button name="do" value="{{ 'unmark' if placeholder else 'mark' }}">{{ 'Not a placeholder' if placeholder else 'Mark a placeholder: no copies of one another' }}</button></form>{% endif %}
+{% endif %}
+
 <h2>Every copy</h2>
 {{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc, backups=true) }}{{ pager(pc, "paths") }}
 

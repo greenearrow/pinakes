@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "_pager.html" import pager, th with context %}
+{% block title %}Placeholders · pinakes{% endblock %}
+{% block body %}
+<h1>Placeholders</h1>
+<p class="muted">An app's default bytes held under many names (the same minimal sidecar beside every photo, the objects a game writes with nothing stored in them) aren't copies of one another. Marked, or matched by a site rule, a placeholder gets no copy link, and only-here, safe to delete, duplicates and If a disk failed count only its own backups as its copies. You mark a content only where every file holding it is yours or co-owned.</p>
+<p>{% if marked %}<a href="{{ url_for('placeholders') }}">Candidates</a> · <strong>Placeholders</strong>{% else %}<strong>Candidates</strong> · <a href="{{ url_for('placeholders', marked=1) }}">Placeholders</a>{% endif %}</p>
+{% if done is not none %}<p>Marked or unmarked {{ done }} of {{ asked }}{% if done < asked %}; the rest: a file holding the same bytes isn't yours or co-owned, or a site rule made it one{% endif %}.</p>{% endif %}
+{% if like %}<p>Likely siblings of <a href="{{ url_for('file', file_id=like.file_id) }}">{{ like.root }}:{{ like.relpath }}</a> ({{ fmt_size(like.size) }}{% if like_placeholder %}, a placeholder{% endif %}): candidates with its extension and a size within {{ (within * 100)|round|int }}%.</p>
+{% elif marked %}<p class="muted">Every placeholder you can see, by a person's mark or a site rule.</p>
+{% else %}<p class="muted">Contents of at most {{ fmt_size(max_size) }} held under {{ min_names }} or more names outside backups, not placeholders yet, the most names first, counted from the files you can see.</p>{% endif %}
+<form method="post" action="{{ url_for('mark_placeholders') }}"><input type="hidden" name="csrf" value="{{ csrf }}">
+{{ pager(pg, "contents") }}
+<div class="scroll"><table>
+  <tr><th></th><th>An example</th>{{ th(pg, "size", "Size", "num") }}<th>Extension</th>{{ th(pg, "holders", "Files", "num") }}{{ th(pg, "names", "Names", "num") }}{{ th(pg, "folders", "Folders", "num") }}<th>Placeholder</th></tr>
+  {% for r in rows %}<tr><td>{% if not r.placeholder or r.placeholder == 'marked' %}<input type="checkbox" name="file" value="{{ r.file_id }}" aria-label="this content">{% endif %}</td>
+    <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.root }}:{{ r.relpath }}</a>{% if not marked %} · <a href="{{ url_for('placeholders', file=r.file_id) }}">siblings</a>{% endif %}</td>
+    <td class="num">{{ fmt_size(r.size) }}</td><td>{{ r.exts|join(', ') }}</td><td class="num">{{ r.holders }}</td>
+    <td class="num">{{ r.names }}</td><td class="num">{{ r.folders }}</td><td>{{ r.placeholder or '' }}</td></tr>
+  {% else %}<tr><td colspan="8" class="muted">{% if marked %}No placeholder you can see.{% else %}No candidate.{% endif %}</td></tr>{% endfor %}
+</table></div>
+{{ pager(pg, "contents") }}
+{% if rows %}<button name="do" value="{{ 'unmark' if marked else 'mark' }}">{{ 'Unmark the ones ticked' if marked else 'Mark the ones ticked as placeholders' }}</button>{% endif %}
+</form>
+{% endblock %}

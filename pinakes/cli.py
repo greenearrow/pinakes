@@ -1,7 +1,8 @@
 """pinakes: ask the catalog from a shell on any machine, through its API, as the person whose token it holds.
 
   pinakes                              inside a scanned folder: its files, backups, copies and changes in numbers
-  pinakes find NAME-OR-GLOB
+  pinakes find NAME-OR-GLOB [--hide-placeholders]   --hide-placeholders: without the files of placeholders (an
+                                       app's default bytes: `pinakes placeholders --marked`), counted
   pinakes where FILE                   every copy and backup of the file
   pinakes only-here [PATH]             files under the folder (or the file) with no copy on another disk
   pinakes safe-to-delete [PATH]        files under it with no kept copy on another disk (none: safe), and the
@@ -576,12 +577,15 @@ def run(api, a, cfg):
             _print([{"link": "%s:%s" % (l["root"], l["relpath"]), "target": l["link_target"]} for l in links], False)
         return
     page = {"limit": a.limit, "offset": a.offset} if a.cmd in PAGED else {}
+    if a.hide_placeholders and a.cmd != "find":
+        raise Failed("--hide-placeholders is for find")
     if a.backups and a.cmd not in FOLDS:
         raise Failed("--backups is for %s" % ", ".join(FOLDS))
     if a.cmd in FOLDS:
         page["backups"] = "all" if a.backups else None
     if a.cmd == "find":
-        got = api.get("find", q=need("a name or glob"), **page)
+        got = api.get("find", q=need("a name or glob"), placeholders="hide" if a.hide_placeholders else None,
+                      **page)
     elif a.cmd in FILE:
         got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None, **page)
     elif a.cmd in FOLDER:
@@ -672,6 +676,9 @@ def run(api, a, cfg):
         return
     if a.cmd in FOLDS:
         _print_copies(got)
+        if got.get("placeholders_hidden"):
+            print("%d file(s) of placeholders not listed: without --hide-placeholders they are"
+                  % got["placeholders_hidden"])
         return
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
@@ -981,6 +988,7 @@ def main(argv=None):
     ap.add_argument("--reject", metavar="OTHER", help="relatives: reject it (never suggested again)")
     ap.add_argument("--clear", metavar="OTHER", help="relatives: clear the decision on it")
     ap.add_argument("--marked", action="store_true", help="placeholders: the placeholders there are")
+    ap.add_argument("--hide-placeholders", action="store_true", help="find: without the files of placeholders")
     ap.add_argument("--siblings", action="store_true", help="placeholder: the file's likely siblings too")
     ap.add_argument("--unmark", action="store_true", help="placeholder: unmark it")
     ap.add_argument("--what", action="append", metavar="KIND",

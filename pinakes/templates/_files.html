@@ -22,6 +22,14 @@
 
 {# Show or leave out hidden files in browse and find, for this session; `left_out`, when known, says how many.
    Back to the list's first page, by its pager's own URL: only whitelisted sorts, never the request as sent. #}
+{% macro placeholder_toggle(p, left_out=None) %}
+<form method="post" action="{{ url_for('placeholder_files') }}" class="toggle"><input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="next" value="{{ p.url(page=1) }}"><input type="hidden" name="hide" value="{{ '0' if hide_placeholders else '1' }}">
+  <span class="muted">{% if not hide_placeholders %}Placeholders (an app's default bytes) are listed.{% elif left_out %}{{ left_out }} file(s) of placeholders not listed.{% else %}Placeholders are not listed.{% endif %}</span>
+  <button>{{ 'List placeholders' if hide_placeholders else 'Leave out placeholders' }}</button>
+</form>
+{% endmacro %}
+
 {% macro hidden_toggle(p, left_out=None, next=None) %}
 <form method="post" action="{{ url_for('hidden_files') }}" class="toggle"><input type="hidden" name="csrf" value="{{ csrf }}">
   <input type="hidden" name="next" value="{{ next or p.url(page=1) }}"><input type="hidden" name="show" value="{{ '0' if show_hidden else '1' }}">

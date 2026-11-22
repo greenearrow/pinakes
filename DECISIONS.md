@@ -610,4 +610,7 @@ were made while building, to keep going, and are open to change.
   of their files; else an administrator in a step-up, audited. A site rule's placeholder is the rule's: a person
   neither marks nor unmarks it, and tidy drops it when no rule matches. Marks aren't edits (ROADMAP 62): an unmark is
   the undo, and a step-up mark is in the audit. Rules are applied by the ingester to the contents a scan touched (a
-  holder gone elsewhere is caught by the next scan of that content or by tidy), and by tidy to all.
+  holder gone elsewhere is caught by the next scan of that content or by tidy), and by tidy to all. Listed unless
+  asked: `find --hide-placeholders`, and on the web a toggle for the session like hidden files', each saying how many
+  files it leaves out; reports (only-here, at-risk) always count them. At-risk and the operator's totals take a
+  placeholder's own backups as its only copies, and folder copies leave its files out as they do empty ones.

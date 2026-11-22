@@ -111,7 +111,7 @@ pinakes tag trip-photos --add trip   # tag every file under the folder: shown fi
 | How well a folder is backed up | `pinakes backed-up [PATH]`, `pinakes backups [FOLDER]` |
 | What losing a disk or machine would cost | `pinakes at-risk` |
 | Duplicates, and folders that copy others | `pinakes dupes`, `pinakes folder-copies [FOLDER]` |
-| An app's default bytes that look like copies | `pinakes placeholders [FILE] [--marked]` |
+| An app's default bytes that look like copies | `pinakes placeholders [FILE] [--marked]`, `find --hide-placeholders` |
 | What changed | `pinakes changes [PATH] [--days N] [--what KIND] [--tree]` |
 | A file's history, versions, origins | `pinakes history FILE`, `versions FILE`, `lineage FILE [--down]` |
 | What to restore, from which backup | `pinakes restores [PATH]` |

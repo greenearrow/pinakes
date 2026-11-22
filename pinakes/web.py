@@ -14,7 +14,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   roots, stale, dupes             as the CLI's commands (stale: an ops token too)
   releases                        (ops tokens only) this server's release, protocol and schema, and each agent's
                                   last check-in: hosts, numbers and times, never a root, person or file
-  find?q=NAME-OR-GLOB
+  find?q=NAME-OR-GLOB              placeholders=hide: without the files of placeholders, counted (placeholders_hidden)
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up|folder-copies?loc=ROOT:PATH
   changes?days=N&host=NAME&loc=ROOT:PATH&review=unreviewed|reviewed&what=KIND...
@@ -325,10 +325,15 @@ def create_app(cfg, connect=None):
         return {"csrf": session["csrf"], "person": g.get("person"), "display": g.get("display"),
                 "stepped_up": g.get("stepped_up"), "roles": g.get("roles", []), "fmt_size": fmt_size,
                 "fmt_meta": fmt_meta, "show_hidden": bool(session.get("show_hidden")),
+                "hide_placeholders": bool(session.get("hide_placeholders")),
                 "per_page": PER_PAGE}
 
     def show_hidden():
         return bool(session.get("show_hidden"))
+
+    def placeholders_shown():
+        """Whether find and browse list the files of placeholders (ROADMAP 69): yes, unless the person asked not to."""
+        return not session.get("hide_placeholders")
 
     def signed_in(view):
         @functools.wraps(view)
@@ -518,7 +523,15 @@ def create_app(cfg, connect=None):
 
     @api("find")
     def api_find():
-        return page(queries.find, arg("q", "q=NAME-OR-GLOB"), backups=backups())
+        """placeholders=hide leaves out the files of placeholders (ROADMAP 69) and counts them, placeholders_hidden."""
+        q, shown = arg("q", "q=NAME-OR-GLOB"), request.args.get("placeholders", "").strip()
+        if shown not in ("", "hide"):
+            raise ValueError("placeholders is hide, or left out to list them")
+        if not shown:
+            return page(queries.find, q, backups=backups())
+        out = page(queries.find, q, backups=backups(), placeholders=False)
+        out["placeholders_hidden"] = queries.page_total(queries.find(g.db, q, limit=1, placeholders="only"))
+        return out
 
     @api("where")
     def api_where():
@@ -905,10 +918,13 @@ def create_app(cfg, connect=None):
         if searched:
             results = pg.done(queries.find_by(g.db, q, by, mapped["creator"], dated, mapped["date"],
                                               pg.per, pg.offset, hidden=show_hidden(),
-                                              backups="all" if pg.all_backups else "fold", **pg.order))
+                                              backups="all" if pg.all_backups else "fold",
+                                              placeholders=placeholders_shown(), **pg.order))
+        placeholders_left_out = 0 if placeholders_shown() or not searched else queries.page_total(queries.find_by(
+            g.db, q, by, mapped["creator"], dated, mapped["date"], 1, hidden=show_hidden(), placeholders="only"))
         audit_shown([r["file_id"] for r in results], "find")
         return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
-                               results=results, pg=pg)
+                               results=results, pg=pg, placeholders_left_out=placeholders_left_out)
 
     @app.route("/browse/<root>/", defaults={"path": ""})
     @app.route("/browse/<root>/<path:path>")
@@ -916,8 +932,10 @@ def create_app(cfg, connect=None):
     def browse(root, path):
         pg = Pager(sorts=queries.LISTING_SORT)
         loc = "%s:%s" % (root, path)
-        entries = pg.done(queries.listing(g.db, loc, pg.per, pg.offset, hidden=show_hidden(), **pg.order))
+        entries = pg.done(queries.listing(g.db, loc, pg.per, pg.offset, hidden=show_hidden(),
+                                          placeholders=placeholders_shown(), **pg.order))
         hidden_left_out = 0 if show_hidden() else queries.hidden_in(g.db, loc)
+        placeholders_left_out = 0 if placeholders_shown() else queries.placeholders_in(g.db, loc, show_hidden())
         audit_shown([e["file_id"] for e in entries if e["file_id"]], "browse %s:%s" % (root, path))
         crumbs = []
         acc = ""
@@ -925,7 +943,7 @@ def create_app(cfg, connect=None):
             acc = acc + "/" + part if acc else part
             crumbs.append((part, acc))
         return render_template("browse.html", root=root, path=path, entries=entries, crumbs=crumbs, pg=pg,
-                               hidden_left_out=hidden_left_out)
+                               hidden_left_out=hidden_left_out, placeholders_left_out=placeholders_left_out)
 
     @app.route("/hidden-files", methods=["POST"])
     @signed_in
@@ -935,6 +953,49 @@ def create_app(cfg, connect=None):
         nxt = request.form.get("next", "")
         # this site's own path only: "//host" and "/\\host" are other sites to a browser
         return redirect(nxt if nxt[:1] == "/" and nxt[1:2] not in ("/", "\\") else url_for("home"))
+
+    @app.route("/placeholder-files", methods=["POST"])
+    @signed_in
+    def placeholder_files():
+        """List or leave out the files of placeholders in browse and find, for this session (ROADMAP 69); listed
+        unless asked."""
+        session["hide_placeholders"] = request.form.get("hide") == "1"
+        nxt = request.form.get("next", "")
+        return redirect(nxt if nxt[:1] == "/" and nxt[1:2] not in ("/", "\\") else url_for("home"))
+
+    @app.route("/reports/placeholders")
+    @signed_in
+    def placeholders():
+        """Placeholder candidates, every placeholder (marked=1), or a file's likely siblings (file=ID): ROADMAP 69."""
+        marked = bool(request.args.get("marked"))
+        like = _int_arg("file", None, 1, 2 ** 62)
+        f = queries.file_by_id(g.db, like) if like else None
+        if like and not f:
+            abort(404)
+        pg = Pager(sorts=queries.PLACEHOLDER_SORT)
+        rows = pg.done(queries.placeholders(g.db, cfg.placeholder_min_names, cfg.placeholder_max_size, marked,
+                                            like, cfg.placeholder_siblings_within, pg.per, pg.offset, **pg.order))
+        audit_shown([r["file_id"] for r in rows] + ([like] if like else []), "report placeholders")
+        return render_template("placeholders.html", rows=rows, pg=pg, marked=marked, like=f,
+                               like_placeholder=queries.placeholder_of(g.db, like) if like else None,
+                               min_names=cfg.placeholder_min_names, max_size=cfg.placeholder_max_size,
+                               within=cfg.placeholder_siblings_within, done=_int_arg("marked_n", None, 0, 10 ** 6),
+                               asked=_int_arg("asked", None, 0, 10 ** 6))
+
+    @app.route("/reports/placeholders/mark", methods=["POST"])
+    @signed_in
+    def mark_placeholders():
+        """Mark files' contents placeholders, or unmark them (ROADMAP 69): the database marks only what the person
+        may (the owner or a co-owner of every holder, or an administrator in a step-up), and the page says how many."""
+        mark = {"mark": True, "unmark": False}.get(request.form.get("do"))
+        ids = [_int(x, None, 1, 2 ** 62) for x in request.form.getlist("file")]
+        if mark is None or not ids or None in ids or len(ids) > TAG_BATCH:
+            abort(400, "mark or unmark, and the files")
+        n = sum(queries.mark_placeholder(g.db, i, mark) for i in dict.fromkeys(ids))
+        back = request.form.get("next", "")
+        if back[:6] == "/file/" and back[6:].split("?")[0].split("#")[0].isdigit():
+            return redirect(back.split("?")[0].split("#")[0] + "?placeholder=%d#placeholder" % n)
+        return redirect(url_for("placeholders", marked_n=n, asked=len(set(ids))))
 
     @app.route("/file/<int:file_id>")
     @signed_in
@@ -952,7 +1013,9 @@ def create_app(cfg, connect=None):
                 "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset, **ph.order)), "ph": ph,
                 "up": queries.lineage(g.db, file_id, "up"), "down": queries.lineage(g.db, file_id, "down"),
                 "relatives": queries.relatives(g.db, file_id),
-                "decided": _int_arg("decided", None, 0, 10 ** 9)}
+                "decided": _int_arg("decided", None, 0, 10 ** 9),
+                "placeholder": queries.placeholder_of(g.db, file_id) if f["content_id"] else None,
+                "placeholder_done": _int_arg("placeholder", None, 0, 10 ** 6)}
         meta = queries.file_metadata(g.db, file_id, f["content_id"])
         page["metadata"] = metadata_view(reg, meta)
         page["extractions"] = [dict(e, title=reg.schemas[e["schema"]].title if e["schema"] in reg.schemas

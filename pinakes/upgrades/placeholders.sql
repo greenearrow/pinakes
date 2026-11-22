@@ -1,6 +1,7 @@
 -- Upgrade a catalog built before placeholders (ROADMAP 69); release 14. Run once as the schema's owner:
 --   psql -d pinakes -v ON_ERROR_STOP=1 -1 -f placeholders.sql
--- then `pinakes-ingest tidy`, which applies the site's [[placeholders.rule]] to every content.
+-- then `pinakes-ingest tidy`, which applies the site's [[placeholders.rule]] to every content. It also replaces
+-- at_risk() (operator.sql, release 8): a placeholder's other holders aren't copies of it.
 -- A new catalog gets the same from schema.sql; tests/test_server.py checks the two agree.
 
 SET search_path = pinakes;
@@ -74,6 +75,44 @@ END $$;
 ALTER TABLE placeholders ENABLE ROW LEVEL SECURITY;    -- seen by whoever sees a file holding the content
 CREATE POLICY placeholders_visible ON placeholders FOR SELECT USING (
     EXISTS (SELECT 1 FROM files f WHERE f.content_id = placeholders.content_id));
+
+-- What a disk's loss would cost (ROADMAP 42): every present file but a symlink with no readable copy on another
+-- host, and whether it has none on another device of its own host either (disk_only: lost with its disk, not only
+-- with its machine). Copies are counted as only-here counts them (queries._COPIES): a hard link is no copy, a file
+-- the scrub couldn't read is none until it reads again, a copy in any root counts, and a device the catalog doesn't
+-- know (dev NULL) is never another disk. A placeholder's other holders are no copy of it (ROADMAP 69): only its own
+-- backups (backup_of) are. Row-level security applies to the caller: a person counts only the copies they can see,
+-- so their answer errs toward "at risk", never away from it.
+CREATE OR REPLACE FUNCTION at_risk()
+RETURNS TABLE (file_id bigint, root_id int, host_id int, dev bigint, ino bigint, size bigint, relpath text,
+               owner_id int, disk_only boolean)
+LANGUAGE sql STABLE SET search_path = pinakes AS $$
+    WITH c AS (
+        SELECT f.content_id, min(r.host_id) AS min_host, max(r.host_id) AS max_host,
+               min(f.dev) AS min_dev, max(f.dev) AS max_dev
+        FROM present f JOIN roots r ON r.root_id = f.root_id
+        WHERE f.content_id IS NOT NULL AND f.unreadable_on IS NULL AND NOT f.is_symlink
+          AND NOT EXISTS (SELECT 1 FROM placeholders p WHERE p.content_id = f.content_id)
+        GROUP BY f.content_id),
+    b AS (                                                      -- a placeholder's own backups
+        SELECT f.backup_of, f.content_id, min(r.host_id) AS min_host, max(r.host_id) AS max_host,
+               min(f.dev) AS min_dev, max(f.dev) AS max_dev
+        FROM present f JOIN roots r ON r.root_id = f.root_id JOIN placeholders p ON p.content_id = f.content_id
+        WHERE f.backup_of IS NOT NULL AND f.unreadable_on IS NULL AND NOT f.is_symlink
+        GROUP BY f.backup_of, f.content_id)
+    SELECT f.file_id, f.root_id, r.host_id, f.dev, f.ino, f.size, f.relpath, f.owner_id,
+           (f.dev IS NULL OR k.min_dev IS NULL OR (k.min_dev = f.dev AND k.max_dev = f.dev)) AS disk_only
+    FROM present f JOIN roots r ON r.root_id = f.root_id
+    LEFT JOIN placeholders p ON p.content_id = f.content_id
+    LEFT JOIN c ON c.content_id = f.content_id AND p.content_id IS NULL
+    LEFT JOIN b ON b.backup_of = f.file_id AND b.content_id = f.content_id
+    CROSS JOIN LATERAL (
+        SELECT CASE WHEN p.content_id IS NULL THEN c.min_host ELSE least(r.host_id, b.min_host) END AS min_host,
+               CASE WHEN p.content_id IS NULL THEN c.max_host ELSE greatest(r.host_id, b.max_host) END AS max_host,
+               CASE WHEN p.content_id IS NULL THEN c.min_dev ELSE least(f.dev, b.min_dev) END AS min_dev,
+               CASE WHEN p.content_id IS NULL THEN c.max_dev ELSE greatest(f.dev, b.max_dev) END AS max_dev) k
+    WHERE NOT f.is_symlink AND (k.min_host IS NULL OR (k.min_host = r.host_id AND k.max_host = r.host_id))
+$$;
 
 REVOKE ALL ON placeholders FROM PUBLIC;
 REVOKE ALL ON FUNCTION mark_placeholder(bigint, boolean) FROM PUBLIC;

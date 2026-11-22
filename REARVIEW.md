@@ -990,10 +990,9 @@ rows, the link back, and the sort links keeping `backups=all`; `test_web_wiring`
 query; both checked to fail with the web change undone. All 506 tests pass (tools/test). Other Pythons and PostgreSQL
 versions not run; not run on a real catalog; not deployed.
 
-## 69. Placeholders: common bytes aren't copies (first part)
+## 69. Placeholders: common bytes aren't copies
 
-Design: DECISIONS.md "Placeholders"; SECURITY.md. What is left (hiding them from `find` and listings, the web,
-at-risk and folder copies) is ROADMAP 69.
+Design: DECISIONS.md "Placeholders"; SECURITY.md. With this, ROADMAP 69 is built and no longer listed.
 
 **Built:** `placeholders` (a content, a person's mark or a site rule's) and `mark_placeholder(file, mark)` in the
 database (`upgrades/placeholders.sql`, release 14, protocol 7): only the owner or a co-owner of every present file
@@ -1005,34 +1004,48 @@ candidates, and `[[placeholders.rule]]` (name, ext, max_size, min_names, min_fol
 contents each scan touches and by `pinakes-ingest tidy` to all (and dropping what a removed rule made). A placeholder
 gets no lineage edge by its hash, and the ones before are left out of `lineage` and `relatives` and give no source when
 lineage is worked out again (kept in the table: an unmark brings them back); the name and identity rules may still link
-its files. Its other holders are no copy for only-here, safe-to-delete, `where`, folding and dupes; its own backups
-(`backup_of`) are. `GET /api/v1/placeholders` (candidates; `marked=1`; `loc=` or `file=`: a file's likely siblings, with
-`file`), `POST /api/v1/placeholder` (`{"files": [...], "placeholder": true|false}`, at most 1,000); `pinakes
-placeholders [FILE] [--marked]` and `pinakes placeholder FILE [--siblings] [--unmark] [--yes]` and their `--json`.
-`tools/bench-pages` times both list calls.
+its files. Its other holders are no copy for only-here, safe-to-delete, `where`, folding, dupes, folder copies, at-risk
+and the operator's totals (`at_risk()` replaced in the same upgrade file); its own backups (`backup_of`) are. `GET
+/api/v1/placeholders` (candidates; `marked=1`; `loc=` or `file=`: a file's likely siblings, with `file`), `POST
+/api/v1/placeholder` (`{"files": [...], "placeholder": true|false}`, at most 1,000); `pinakes placeholders [FILE]
+[--marked]` and `pinakes placeholder FILE [--siblings] [--unmark] [--yes]` and their `--json`. `tools/bench-pages` times
+both list calls. `pinakes find --hide-placeholders` (`find?placeholders=hide`) leaves out their files and counts them
+(`placeholders_hidden`); listed by default. The web: a Placeholders page (candidates, `marked=1`, a file's siblings,
+marked or unmarked by ticking, saying how many of those asked it changed), a file's page saying whether its content is
+one (marked, or by which rule) with a button to mark or unmark it and a link to its siblings, and Leave out placeholders
+in browse and find for the session, beside the hidden files' toggle, counting what it leaves out; the at-risk page says
+how it counts them.
 
-**Not as the roadmap said:** "its existing undecided hash edges go" became "are left out of every answer": deleted,
-an unmark couldn't bring them back without lineage worked out again for every holder. Marks aren't in `pinakes
-edits` (ROADMAP 62); an unmark is their undo. "At least a configured number of each" (names and folders) is names for
+**Not as the roadmap said:** "its existing undecided hash edges go" became "are left out of every answer": deleted, an
+unmark couldn't bring them back without lineage worked out again for every holder. Marks aren't in `pinakes edits`
+(ROADMAP 62); an unmark is their undo. "At least a configured number of each" (names and folders) is names for
 candidates and both for rules: in the real catalog's sizing, folders alone pointed at snapshots and real copies.
 
-**Measured** on 2026-11-22 with `tools/bench-pages` (500,000 files, as 61; the generated catalog has no placeholders,
-so this is the cost of the checks, not of many marks): find of a name in 298,890 files 0.94 s (0.88 s at 68), where
-0.01 s, lineage and relatives 0.01 s, only-here of a root 0.69 s, dupes 0.79 s, meta 0.06 s, `placeholders` 0.72 s (a
-pass over every small file), `placeholders marked=1` 0.01 s; every first page within 2 s.
+**Measured** on 2026-11-22 with `tools/bench-pages` (500,000 files, as 61; the generated catalog has no placeholders, so
+this is the cost of the checks, not of many marks): find of a name in 298,890 files 0.94 s (0.88 s at 68), where 0.01 s,
+lineage and relatives 0.01 s, only-here of a root 0.69 to 0.78 s, dupes 0.79 s, meta 0.06 s, folder copies 0.11 s (as at
+61), `placeholders` 0.63 to 0.72 s (a pass over every small file), `placeholders marked=1` 0.01 s, at-risk 1.94 s (1.78
+s at 61: the closest to the 2 s limit); every first page within 2 s.
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py` `TestCliPlaceholders`,
 the CLI against a real HTTP server on 127.0.0.1, on generated trees: identical sidecars of five different photos (two
-more on a laptop) and two variants, generated defaults of a game in two versions matched by a site rule: the
-candidates and their counts, a second person's holder not counted and she seeing none; a file's siblings; once marked,
-no certain copy in `pinakes lineage` (both ways) and `pinakes relatives`, only-here listing them, gone from dupes,
-`where` only the file; a sidecar that was copied still `copied_from`, certain; the rule's variant unmarked with no
-certain copy (the name rule still says "possible"); an unmark bringing the copy link back; `--siblings` asking, then
-marking 2 of 3 (the third held by user-2 too); a rule's not unmarked; a token without the review scope, outside its
-roots, a group token and bad API bodies. `tests/test_server.py` `TestPlaceholders`: a rule at the scan and tidy
-following the config (a person's mark kept, a second run changing nothing); no edge written for a new holder, the old
-ones kept and hidden; who marks (another person holding the bytes, a reader, an administrator without and with a
+more on a laptop) and two variants, generated defaults of a game in two versions matched by a site rule: the candidates
+and their counts, a second person's holder not counted and she seeing none; a file's siblings; once marked, no certain
+copy in `pinakes lineage` (both ways) and `pinakes relatives`, only-here listing them, gone from dupes, `where` only the
+file; a sidecar that was copied still `copied_from`, certain; the rule's variant unmarked with no certain copy (the name
+rule still says "possible"); an unmark bringing the copy link back; `--siblings` asking, then marking 2 of 3 (the third
+held by user-2 too); a rule's not unmarked; a token without the review scope, outside its roots, a group token and bad
+API bodies; `find --hide-placeholders` and its `--json` (seven files left out and counted, listed again without it,
+refused by other commands, a bad API value), `pinakes at-risk` and its `--json` (five more files at risk on the store,
+two on the laptop, once their copies are a placeholder's). `tests/test_server.py` `TestPlaceholders`: a rule at the scan
+and tidy following the config (a person's mark kept, a second run changing nothing); no edge written for a new holder,
+the old ones kept and hidden; who marks (another person holding the bytes, a reader, an administrator without and with a
 step-up, audited for the other owner; unmarked and marked again unaudited once only hers is gone); no person; the web
-role's write refused; the config's checks; the upgrade against the schema. The two ingester tests checked to fail
-without the ingester's check. All 514 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not run
-on a real catalog; not deployed.
+role's write refused; the config's checks; a placeholder's own snapshot keeping it out of only-here and `at_risk()`
+while the others are in; two folders alike only in placeholders not folder copies; the upgrade against the schema,
+`at_risk()` too. `tests/test_web.py` `test_placeholders_marked_on_the_web_and_left_out_of_browse_and_find_on_request`:
+the candidates page, marking two files of one content (1 of 2), a missing CSRF token and a bad action refused, the
+placeholders list, the file page and its unmark, browse and find leaving them out on request and counting 3, only-here
+still listing them, the at-risk page's note, and user-2 marking nothing and refused the siblings of a file she can't
+see. The two ingester tests checked to fail without the ingester's check. All 518 tests pass (tools/test). Other Pythons
+and PostgreSQL versions not run; not run on a real catalog; not deployed.

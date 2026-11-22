@@ -3,7 +3,7 @@
 {% macro disk(d) %}{{ d.host }} · {% if d.dev is none %}a device not known{% else %}device {{ d.dev }}{% endif %}{% endmacro %}
 {% block body %}
 <h1>If a disk failed</h1>
-<p class="muted">Files you can see with no copy you can see on another disk: another machine, or another device of the same one. A hard link is not a copy, a file the scrub couldn't read is none until it reads again, and copies only someone else can see don't count. Each file stored once on its disk counts once.</p>
+<p class="muted">Files you can see with no copy you can see on another disk: another machine, or another device of the same one. A hard link is not a copy, a file the scrub couldn't read is none until it reads again, a placeholder's other holders (an app's default bytes) are none but its own backups, and copies only someone else can see don't count. Each file stored once on its disk counts once.</p>
 <h2>Per disk</h2>
 <div class="scroll"><table>
   <tr><th>Disk</th><th>Roots</th><th class="num">Files lost</th><th class="num">Size</th></tr>

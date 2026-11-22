@@ -1424,6 +1424,30 @@ min_names = 3
         self.assertEqual([(r["evidence"], r["confidence"]) for r in json.loads(cli("lineage", second, "--json"))],
                          [("same sha256", "certain")])
 
+    def test_find_leaves_placeholders_out_on_request_and_at_risk_counts_them(self):
+        cli = self.as_("user-1")
+        every = json.loads(cli("find", "*.xmp", "--json"))
+        self.assertNotIn("placeholders_hidden", every)
+        at_risk = {h["host"]: h["files"] for h in json.loads(cli("at-risk", "--json"))["hosts"]}
+        cli("placeholder", "store:%sIMG_0001.xmp" % self.PHOTOS)
+        got = json.loads(cli("find", "*.xmp", "--hide-placeholders", "--json"))
+        self.assertEqual(got["placeholders_hidden"], 7)                           # five in the store, two on the laptop
+        self.assertEqual(got["total"], every["total"] - 7)
+        self.assertNotIn(self.PHOTOS + "IMG_0001.xmp", [r["relpath"] for r in got["rows"]])
+        out = cli("find", "*.xmp", "--hide-placeholders")
+        self.assertEqual(out.splitlines()[-1],
+                         "7 file(s) of placeholders not listed: without --hide-placeholders they are")
+        self.assertEqual(json.loads(cli("find", "*.xmp", "--json"))["total"], every["total"])   # listed by default
+        self.assertIn("is for find", cli("where", "store:%sIMG_0001.xmp" % self.PHOTOS, "--hide-placeholders",
+                                         code=1))
+        # at-risk: the sidecars' copies on the other machine aren't copies any more
+        now = {h["host"]: h["files"] for h in json.loads(cli("at-risk", "--json"))["hosts"]}
+        self.assertEqual((now["server-1"] - at_risk["server-1"], now["laptop-1"] - at_risk.get("laptop-1", 0)), (5, 2))
+        secret = make_token(self, "user-1", client="laptop-3")
+        r = cli.app.test_client().get(web.API + "find?q=*.xmp&placeholders=some",
+                                      headers={"Authorization": "Bearer " + secret})
+        self.assertEqual(r.status_code, 400)
+
     def test_siblings_marked_together_and_what_is_refused(self):
         cli = self.as_("user-1")
         first = "store:%sIMG_0001.xmp" % self.PHOTOS
