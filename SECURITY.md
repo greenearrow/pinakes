@@ -21,7 +21,7 @@ database, with an audit trail. They are not cryptographic.
 | **person** | See and manage their own files and what is shared with them. Everyone who signs in is a person. |
 | **operator** | Run the system: hosts, roots, agents, health, schedules. Sees counts, sizes, ages and errors per root, never file names or metadata of other people. |
 | **administrator** | Everything, but only during a **step-up session**. Outside one, an administrator is just a person. |
-| **auditor** (planned, ROADMAP 86) | Read, in one approved audit of named people and folders, entries that may be held for a capped time. Only if the site's config names one; none by default. "Auditors" below. |
+| **auditor** (planned, ROADMAP 86) | Read, in one approved audit of named people and folders, entries that may be held for a capped time. Every administrator has it unless the site's config takes it away; others only if the config names them. "Auditors" below. |
 
 The site's administrator normally works as a person. To see someone else's records they step up:
 
@@ -120,11 +120,14 @@ decision, 2026-11-22). An inquiry that must not alert its subject uses an audito
 
 ## Auditors (planned: ROADMAP 86)
 
-An auditor sees records in one audit whose entries may be held from their subjects for a capped time. It exists only
-where the site's config names an auditor; with none, no hold can exist.
+An auditor sees records in one audit whose entries may be held from their subjects for a capped time. A held audit is
+for cases where warning its subject is dangerous (grooming, self-harm, someone else involved, an inquiry); for
+anything else a step-up, shown at once, is the normal path. These are the defaults; each site sets its own within the
+limits in "What no site can change" below, and shows its policy to everyone in it.
 
-- The role is in the site config; the database refuses it to anyone else. Web only, with a second factor: no token,
-  no `--as`, no assistant.
+- Every administrator has the role unless the site's config takes it from them, so a site can keep an administrator
+  to step-ups only; anyone else has it only if the config names them, and the database refuses it to everyone else. A
+  site with no one holding it can hold nothing. Web only, with a second factor: no token, no `--as`, no assistant.
 - Three different people: a requester (an auditor), an approver (another auditor or an administrator), and the subjects;
   the requester and approver are never the same person nor among the subjects, enforced by the database. A subject may
   be the site's administrator, so an administrator is never an audit's only check.
@@ -135,10 +138,41 @@ where the site's config names an auditor; with none, no hold can exist.
 - A hold is capped (default 90 days); a renewal needs the approver again and is logged. At the cap the entries show on
   each subject's "Access to your records" by themselves, complete: requester, approver, reason, scope (with whether it
   held sensitive fields), each folder seen with counts, and how long they were held.
-- Every page shows everyone on the site how many audits are held and the latest date one ends, without names: a hold
-  hides who is looked at, not that someone is. Collusion of requester and approver is the risk left; the count and the
-  cap limit it. On a site of few people the count itself narrows who it could be.
+- A **solo hold** has no approver, and is allowed only while exactly one person on the site is an administrator or
+  an auditor (a single parent running the server, who could read the disks anyway; an approver brought in from
+  outside would cost the subject more privacy, not less). Its cap is shorter (default 14 days), it can't be renewed,
+  it shows by itself at the cap, and its entry says it was held alone with no approver, with the reason and every
+  folder seen. Making a site solo is a policy change, shown to everyone at once.
+- Every page shows everyone on the site how many audits are held (solo ones included) and the latest date one ends,
+  without names: a hold hides who is looked at, not that someone is. Collusion of requester and approver is the risk
+  left; the count and the cap limit it. On a site of few people the count itself narrows who it could be.
 - The limit, as for step-ups: the database superuser, root on the catalog server and whoever runs the disks are
+  outside all of this.
+
+## What no site can change (planned: ROADMAP 87)
+
+The rules in "Standing views" and "Auditors", and the caps, levels and flags behind them, are defaults: a household
+or a lab sets its own in the site's config. What a site has set is shown to everyone in it, in words, generated from
+the settings the server runs (a page and `pinakes policy`): at account creation, and again after every change until
+the person has opened it. Each change is recorded with what changed, when, and the person `setup` names (the
+operator's word: a config file has no signed-in author).
+
+A setting can make a site stricter than the default, and looser only within these, each enforced in the database or
+the agent, not by the page; `setup` refuses a config that goes past one:
+
+- Visibility is row-level security in the database, never a filter in the application.
+- The audit table is append-only for every role the application uses.
+- Every step-up shows on the people's page at once; only an auditor's audit is ever held, and every hold shows by
+  itself at its cap, which no setting removes.
+- Requester, approver and subject of an audit are three different people, except in a solo hold, which is allowed
+  only while one person on the site is an administrator or an auditor.
+- A standing view only of a person the config names as viewable so, never extending to step-up powers, and every look
+  on the person's page.
+- No token or assistant steps up, audits, or sets, changes or ends a standing view.
+- Pinakes never gives access to a file (DESIGN.md "Principles").
+- The server can't widen an agent's local config: `managed`, protected roots and opaque folding are the machine's own.
+- The policy page itself, and the record of its changes, can't be turned off.
+- And the limit no setting changes: the database superuser, root on the catalog server and whoever runs the disks are
   outside all of this.
 
 ## Copies across owners
@@ -309,7 +343,8 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
 | A parent or supervisor browses a child's or student's records casually | Only within a standing view the site's config allows for that person, never an adult's or a collaborator's; private folders out of it, at *teenager* without a trace; sensitive fields by level; every look on the person's page; beyond it a step-up. (Planned, ROADMAP 82, 83.) |
-| An inquiry has to look without alerting its subject | An auditor named in config, three different people, a scope set first, read-only, a capped hold that ends by itself, a held count on every page. A step-up is never held. (Planned, ROADMAP 86.) |
+| An inquiry has to look without alerting its subject | An auditor (administrators by default), three different people (or a solo hold, shorter and unrenewable, only on a site with one administrator or auditor), a scope set first, read-only, a capped hold that ends by itself, a held count on every page. A step-up is never held. (Planned, ROADMAP 86.) |
+| A site quietly loosens its own rules | Its policy is shown to everyone, from the running config, after every change, with each change recorded; a few guarantees no setting removes. (Planned, ROADMAP 87.) |
 | A new folder no rule claims becomes the default owner's, silently | A rule can hold a folder unclaimed: nobody's until an administrator gives it in a step-up. (Planned, ROADMAP 84.) |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
 | An assistant with an MCP token oversteps | The person's own view and the scopes they gave, no step-up, writes asked first, kept with the value before and undoable, revocable, logged. |
