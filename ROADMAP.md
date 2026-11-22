@@ -124,30 +124,6 @@ snapshot pruning, log rotation) are marked `intended` by hand every day. In orde
 Found walking a photographer's questions against a live catalog (a primary photo root, an app's upload folder of
 UUID names with `.xmp` sidecars, nightly hard-linked snapshots of both on a backup root):
 
-68. [Feature; also correctness] **Primary copies first, backups folded,** one rule for every list that holds copies
-    (`find`, `where`, `meta`, and any later one): primary and drop rows first, backup copies folded into a count per
-    content ("+ in 6 snapshots"), with an option to list them. Today the lists sort by root label, so a backup root's
-    snapshots fill the first pages, and the primary rows come pages later. *Done when:* `find`, `where` and `meta`
-    and their `--json` are tested through the API on a generated tree with snapshots: the primary rows first, the
-    fold's count equal to the backup copies a person can see, the option listing them all, totals unchanged.
-69. [Correctness] **No "certain" copy link between unrelated files that share small, common bytes:** byte-identical
-    sidecars of five different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same
-    sha256, certain". True of the bytes, false of the work. Wanted: no `copied_from` edge, or one marked "same bytes,
-    different work", for content shared by several files of different names or bundles; with 14, a sidecar takes its
-    photo's identity. Decided first: the rule (size, how many holders, sidecar by schema) and whether existing edges
-    are redone by an upgrade. *Done when:* `pinakes lineage` and `pinakes relatives` and their `--json` are tested
-    through the API on generated identical sidecars of different photos (no certain copy) and a sidecar that was
-    copied (still linked).
-70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
-    counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
-    (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as
-    now. *Done when:* each form and its `--json` are tested through the API, a second person's values absent from the
-    list, and a sensitive field absent under a token.
-71. [Correctness] **Say what a metadata answer can't see:** EXIF is read from JPEG only (`schemas/exif.toml`), so
-    `meta exif.make=...` leaves the RAWs out and says nothing. Under a `meta` answer: "EXIF is read from
-    JPEG only; N other image files under your roots aren't searched", N counted under row-level security. *Done
-    when:* `pinakes meta` and its `--json` (the count as a field) are tested through the API on generated JPEGs and
-    RAWs, and the web page says the same.
 72. [Feature] **One file's metadata from the command line:** `pinakes meta FILE` with each schema's fields, their
     sources and the extraction outcome ("refused: truncated", "nothing found"), today on the web page only. *Done
     when:* it and its `--json` are tested through the API, sensitive fields left out under a token, a second person's
@@ -156,10 +132,6 @@ UUID names with `.xmp` sidecars, nightly hard-linked snapshots of both on a back
     the table doesn't), and long paths cut in the middle so the name and its extension stay (`.../IMG_1881.CR2`, not
     `.../IMG_1881`); the same cut in every table that shortens paths. *Done when:* `pinakes relatives` and `pinakes
     lineage` are tested through the API with a gone relative and a long path, and `--json` unchanged.
-74. [Correctness] **`only-here` with nothing to list says why:** "none: all N files have a copy on another disk", with
-    the folder's last scan date, not "(none)", which reads the same as an empty folder. *Done when:* `pinakes
-    only-here` is tested through the API on a folder fully copied and an empty one, and `--json` carries N and the
-    scan date.
 
 ## A household's answers
 
@@ -174,24 +146,11 @@ themself, on the web and with the command against a running `pinakes-web`:
     UTC with its offset only in `--json`. *Done when:* `pinakes changes`, `history`, `roots`, `stale`, `edits`,
     `undo`, `access` and `restores` and their `--json` are tested through the API with the clock just past midnight
     UTC and the site's zone behind it: each date the site's, the same on the web pages that show them, `--json` in UTC.
-77. [Feature] **Find by a folder's name too:** `find beach`, where only a folder is named so, answers "no file
-    matches", and the person looking for "the beach photos" is told there are none. Wanted: folders matched as well,
-    or "no file is named so; N files are under folders named so", counted under row-level security. *Done when:*
-    `pinakes find` and its `--json` are tested through the API on a generated tree with a matching folder and no
-    matching file, a second person's folder of that name not counted; and the web page says the same.
 78. [Feature] **Edits and undo on the web, each edit naming its folder:** `/edits` is a 404 and the account page only
     mentions `pinakes undo`; an edit that marked a folder is listed by its first file. Wanted: an Edits page with
     undo (a preview, then the undo, refused as the command refuses), and each edit named by its folder ("N files
     under FOLDER"). *Done when:* `pinakes edits` and `--json` name the folder, tested through the API; the web page's
     undo is tested for an edit undone, one refused for a later edit, and another person's edit not shown.
-79. [Security; also correctness] **A person's home page shows what concerns them:** a child's home page lists every
-    root and host, a sibling's laptop with 0 files among them, and a "Not heard from" box saying that laptop is off,
-    in raw values (`2026-11-17 19:47:14.251293-05:00`, `1 day, 0:00:00`; `pinakes stale` prints the same). Wanted:
-    roots holding nothing the person can see left off their home page and `pinakes roots`; "Not heard from" for
-    operators and for the people with files on that host; ages in words ("4 days ago"). *Done when:* `pinakes roots`
-    and `pinakes stale` and their `--json` are tested through the API: a person with nothing on a root doesn't get it,
-    `stale` answers a person only for hosts holding their files and an operator for all, and the plain output says
-    the age in words; and the home page says the same.
 80. [Security] **Every step-up entry names its folders:** a person seen in a step-up gets an entry per page, as
     SECURITY.md asks ("which records (by folder, with counts)"), but a find's entry says only "page: find; records:
     1". Also: the web's detail shows Python values (`until: None`, `scopes: ['read']`), and a sensitive-share entry
@@ -257,18 +216,64 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 ## Before the MCP server
 
 The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this came first, and helps the
-command line and the web UI as much. 61 and 62 are built (REARVIEW.md); nothing is left here.
+command line and the web UI as much. 61 and 62 are built (REARVIEW.md). Left: the items below, moved here from the
+persona reviews ("Copies, metadata and plain answers", "A household's answers") because each changes what the API
+tells a model, which repeats an answer where a person would doubt it. Also before 24, the part of two items left
+where they are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes
+edits` and `--json` (an MCP write's preview names its files the same way); their web halves can follow.
+
+68. [Feature; also correctness] **Primary copies first, backups folded,** one rule for every list that holds copies
+    (`find`, `where`, `meta`, and any later one): primary and drop rows first, backup copies folded into a count per
+    content ("+ in 6 snapshots"), with an option to list them. Today the lists sort by root label, so a backup root's
+    snapshots fill the first pages, and the primary rows come pages later. *Done when:* `find`, `where` and `meta`
+    and their `--json` are tested through the API on a generated tree with snapshots: the primary rows first, the
+    fold's count equal to the backup copies a person can see, the option listing them all, totals unchanged.
+69. [Correctness] **No "certain" copy link between unrelated files that share small, common bytes:** byte-identical
+    sidecars of five different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same
+    sha256, certain". True of the bytes, false of the work. Wanted: no `copied_from` edge, or one marked "same bytes,
+    different work", for content shared by several files of different names or bundles; with 14, a sidecar takes its
+    photo's identity. Decided first: the rule (size, how many holders, sidecar by schema) and whether existing edges
+    are redone by an upgrade. *Done when:* `pinakes lineage` and `pinakes relatives` and their `--json` are tested
+    through the API on generated identical sidecars of different photos (no certain copy) and a sidecar that was
+    copied (still linked).
+70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
+    counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
+    (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as
+    now. *Done when:* each form and its `--json` are tested through the API, a second person's values absent from the
+    list, and a sensitive field absent under a token.
+71. [Correctness] **Say what a metadata answer can't see:** EXIF is read from JPEG only (`schemas/exif.toml`), so
+    `meta exif.make=...` leaves the RAWs out and says nothing. Under a `meta` answer: "EXIF is read from
+    JPEG only; N other image files under your roots aren't searched", N counted under row-level security. *Done
+    when:* `pinakes meta` and its `--json` (the count as a field) are tested through the API on generated JPEGs and
+    RAWs, and the web page says the same.
+74. [Correctness] **`only-here` with nothing to list says why:** "none: all N files have a copy on another disk", with
+    the folder's last scan date, not "(none)", which reads the same as an empty folder. *Done when:* `pinakes
+    only-here` is tested through the API on a folder fully copied and an empty one, and `--json` carries N and the
+    scan date.
+77. [Feature] **Find by a folder's name too:** `find beach`, where only a folder is named so, answers "no file
+    matches", and the person looking for "the beach photos" is told there are none. Wanted: folders matched as well,
+    or "no file is named so; N files are under folders named so", counted under row-level security. *Done when:*
+    `pinakes find` and its `--json` are tested through the API on a generated tree with a matching folder and no
+    matching file, a second person's folder of that name not counted; and the web page says the same.
+79. [Security; also correctness] **A person's home page shows what concerns them:** a child's home page lists every
+    root and host, a sibling's laptop with 0 files among them, and a "Not heard from" box saying that laptop is off,
+    in raw values (`2026-11-17 19:47:14.251293-05:00`, `1 day, 0:00:00`; `pinakes stale` prints the same). Wanted:
+    roots holding nothing the person can see left off their home page and `pinakes roots`; "Not heard from" for
+    operators and for the people with files on that host; ages in words ("4 days ago"). *Done when:* `pinakes roots`
+    and `pinakes stale` and their `--json` are tested through the API: a person with nothing on a root doesn't get it,
+    `stale` answers a person only for hosts holding their files and an operator for all, and the plain output says
+    the age in words; and the home page says the same.
 
 ## Soon: add-on modules
 
 Optional pieces that sit on the API and tokens, not in the core: a site that doesn't install one loses nothing.
 
 24. [Feature; also security] **MCP server**, an add-on module (DESIGN.md "Wish: an MCP server"), on the API and tokens
-    of 34, after 61 and 62: the read-only queries, and review marks, tags and notes and lineage decisions with the
-    review and tag scopes, each write a preview and then an apply; streamable HTTP behind the proxy, each connection
-    with its own person's token. No new powers in the core, and the core runs without it (the token form's note on what
-    an assistant receives is built: REARVIEW.md "Before 24"). A person asks through their assistant; what it did they
-    see with `pinakes access` and `pinakes edits`. *Done when:* tests show a token acting as one person under row-level
-    security, two connections with two people's tokens each seeing only their own, never stepping up, leaving protected
-    roots out unless added, every call logged, a write changing nothing before its apply, and that write listed by
-    `pinakes edits` and undone by `pinakes undo`.
+    of 34, after 61 and 62 and the items under "Before the MCP server": the read-only queries, and review marks, tags
+    and notes and lineage decisions with the review and tag scopes, each write a preview and then an apply; streamable
+    HTTP behind the proxy, each connection with its own person's token. No new powers in the core, and the core runs
+    without it (the token form's note on what an assistant receives is built: REARVIEW.md "Before 24"). A person asks
+    through their assistant; what it did they see with `pinakes access` and `pinakes edits`. *Done when:* tests show a
+    token acting as one person under row-level security, two connections with two people's tokens each seeing only their
+    own, never stepping up, leaving protected roots out unless added, every call logged, a write changing nothing before
+    its apply, and that write listed by `pinakes edits` and undone by `pinakes undo`.
