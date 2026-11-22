@@ -206,6 +206,10 @@ def build(pghost, pguser, db):
         scan("store")
         # laptop-2 is off most of the time: its last complete scan was days ago
         conn.execute("UPDATE pinakes.hosts SET last_scan = now() - interval '4 days' WHERE name = 'laptop-2'")
+        conn.execute("UPDATE pinakes.roots SET last_complete_on = last_complete_on - 4 WHERE label = 'downloads-2'")
+        conn.execute("UPDATE pinakes.scans SET started_on = started_on - 4, began_at = began_at - interval '4 days', "
+                     "started_at = started_at - interval '4 days' WHERE root_id = (SELECT root_id FROM pinakes.roots "
+                     "WHERE label = 'downloads-2')")
         for i, name in enumerate(PEOPLE, 1):
             conn.execute("INSERT INTO pinakes.credentials (person_id, password_hash, totp_secret) SELECT person_id, "
                          "%s, %s FROM pinakes.people WHERE name = %s",

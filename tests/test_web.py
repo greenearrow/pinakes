@@ -1373,6 +1373,9 @@ class TestDemo(unittest.TestCase):
     def test_the_laptop_that_is_mostly_off_is_stale(self):
         with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
             self.assertEqual([r["name"] for r in queries.stale(c)], ["laptop-2"])
+        with admin_conn(self.db) as c:          # the roots page's last complete scan is as old as the host's
+            self.assertTrue(c.execute("SELECT last_complete_on < current_date - 2 FROM pinakes.roots "
+                                      "WHERE label = 'downloads-2'").fetchone()[0])
         page = self.login("user-3").get("/reports/only-here?loc=downloads-2:").get_data(as_text=True)
         self.assertIn("school/project.odt", page)
 
