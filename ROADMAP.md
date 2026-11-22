@@ -255,12 +255,13 @@ catalog's promise, not the disk's: whoever can read the files on the machine sti
     it folds is the machine's own agent config, per root like `managed`, so the machine's owner decides (a parent on a
     child's laptop, a student on their own, the PI on the lab's server): on the agent (one record, a protocol change;
     the parts and their prune churn never leave the machine) or on the server (every part sent, folded in queries). The
-    server can't change it. Owner decision 2026-11-22. *Done when:* `pinakes find`, `dupes`, `safe-to-delete`,
-    `only-here`, `folder-copies` and `changes` and their `--json` are tested through the API on a generated
-    restic-shaped and borg-shaped folder and a LUKS-headed file, folded on the agent and on the server: each appears as
-    one opaque thing, the agent-folded one with no part in the catalog, none of its parts in `dupes` or
-    `safe-to-delete`, a pruned pack no review item, two copies of the repository one copy of the other; and the web page
-    says the same.
+    server can't change it; the agent reports each root's setting at its check-in (its label and one word, a small
+    protocol addition), and 87's page shows it with that date. Owner decisions 2026-11-22. *Done when:* `pinakes find`,
+    `dupes`, `safe-to-delete`, `only-here`, `folder-copies` and `changes` and their `--json` are tested through the API
+    on a generated restic-shaped and borg-shaped folder and a LUKS-headed file, folded on the agent and on the server:
+    each root's setting reported at check-in and recorded with its date; each appears as one opaque thing, the
+    agent-folded one with no part in the catalog, none of its parts in `dupes` or `safe-to-delete`, a pruned pack no
+    review item, two copies of the repository one copy of the other; and the web page says the same.
 86. [Security] **An auditor, whose views can be held** (SECURITY.md "Auditors"): for an inquiry (a lab's
     research-integrity case) an administrator's step-up is never held, it shows at once; instead a separate role, named
     in the site config (`[people.NAME] roles = ["auditor"]`) and held by every administrator unless the config takes it
@@ -276,24 +277,27 @@ catalog's promise, not the disk's: whoever can read the files on the machine sti
     part of it. A hold is capped (90 days by default, site config); a renewal needs the approver again and is logged; at
     the cap the entries show on each subject's "Access to your records" with nobody releasing them, complete: requester,
     approver, reason, scope (saying whether it held sensitive fields), each folder seen with its counts, and how long it
-    was held. A **solo hold**, without an approver, only while exactly one person on the site is an administrator or an
-    auditor (a single parent who runs the server and could read the disks anyway, where an approver brought in would
-    cost the subject more privacy, not less): a shorter cap (14 days by default), no renewal, released by itself, and
-    its entry says "held by user-1 alone, with no approver, for 14 days" with the reason and every folder seen. It is
-    for cases where a warning is dangerous (grooming, self-harm, someone else involved); for ordinary behaviour a
-    step-up, shown at once, is the path, and the pages say so. Every page shows everyone on the site how many audits are
-    held, solo ones included, and the latest date one ends, with no names. The database superuser and whoever runs the
-    disks stay outside all of this (SECURITY.md). Owner decisions 2026-11-22 (the role and administrators holding it,
-    the approver, sensitive fields, solo holds). After 80 (entries by folder). *Done when:* `pinakes access` and its
-    `--json` are tested through the API: an audit with requester and approver the same, or either a subject, or an
-    approver who is neither auditor nor administrator, or a requester whose auditor role the config took away, refused
-    by the database; a solo hold refused on a site with a second administrator or auditor, and one allowed shown at its
-    14 days, with no action, saying it was held alone, and refused a renewal; a held entry absent from the subject's
-    `access` and present, complete, after the cap with no action; a renewal without the approver refused; the held
-    count, solo holds included, right for a person who isn't the subject and shown on the web; an auditor's call outside
-    the scope finding nothing; sensitive fields absent from an audit whose scope doesn't name them, present in one that
-    does, and the shown entry saying which; a token refused every auditor function; and a site with no auditor
-    configured refusing an audit.
+    was held. A **solo hold**, without an approver, only once exactly one person on the site has been an administrator
+    or an auditor for a waiting period (30 days by default, site config, never below the floor in SECURITY.md "What no
+    site can change"; the clock restarts whenever a second one is added), so taking the role from the other parent
+    doesn't open one at once, and a step-up is always there meanwhile (a single parent who runs the server and could
+    read the disks anyway, where an approver brought in would cost the subject more privacy, not less): a shorter cap
+    (14 days by default), no renewal, released by itself, and its entry says "held by user-1 alone, with no approver,
+    for 14 days" with the reason and every folder seen. It is for cases where a warning is dangerous (grooming,
+    self-harm, someone else involved); for ordinary behaviour a step-up, shown at once, is the path, and the pages say
+    so. Every page shows everyone on the site how many audits are held, solo ones included, and the latest date one
+    ends, with no names. The database superuser and whoever runs the disks stay outside all of this (SECURITY.md). Owner
+    decisions 2026-11-22 (the role and administrators holding it, the approver, sensitive fields, solo holds and their
+    waiting period). After 80 (entries by folder). *Done when:* `pinakes access` and its `--json` are tested through the
+    API: an audit with requester and approver the same, or either a subject, or an approver who is neither auditor nor
+    administrator, or a requester whose auditor role the config took away, refused by the database; a solo hold refused
+    on a site with a second administrator or auditor, and within the waiting period after the second one's role was
+    taken away, and one allowed shown at its 14 days, with no action, saying it was held alone, and refused a renewal; a
+    held entry absent from the subject's `access` and present, complete, after the cap with no action; a renewal without
+    the approver refused; the held count, solo holds included, right for a person who isn't the subject and shown on the
+    web; an auditor's call outside the scope finding nothing; sensitive fields absent from an audit whose scope doesn't
+    name them, present in one that does, and the shown entry saying which; a token refused every auditor function; and a
+    site with no auditor configured refusing an audit.
 87. [Security; also operability] **The site's policy, in words, from the config it runs:** 82 to 86 are the default
     contract, and each household or lab sets its own within limits (whether administrators are auditors, the caps, solo
     holds, the private line at *child*, sensitive fields by level, supervisors told of moves into independent folders,
@@ -301,18 +305,20 @@ catalog's promise, not the disk's: whoever can read the files on the machine sti
     can read and `pinakes policy`, generated from the settings the server is running, never a document written beside
     them: what the administrators, auditors, guardians and supervisors here may see, of whom (by name to the people it
     concerns, by role to everyone else), and how each look is recorded; and each root's opaque folding as its agent last
-    reported it (85; the agent's config decides, the server only reports). Beside it, the guarantees no site configures
-    away, each enforced in the database or the agent, not by the page (SECURITY.md "What no site can change"): a setting
-    can make a site stricter than the default and looser only within them, and `setup` refuses a config that goes past
-    one. A person sees the policy when their account is made and again at their next sign-in after it changes, until
-    they have opened it (seeing it is required; agreeing isn't asked). Every change is on record and on the page: what
-    changed, in words, and when; who changed it, as the person `setup` names (`--by`), which is the operator's word,
-    since a config file has no signed-in author. *Done when:* `pinakes policy` and its `--json` are tested through the
-    API on the demo household and a generated lab: the words match the running settings (a cap or a level changed in
-    config changes them after `setup`, and nothing else does); a person not concerned by a guardian view sees it by role
-    and not by name; each fixed guarantee listed, and a config that loosens one refused by `setup`; a policy change
-    recorded with its time and named maker, and shown to every person at their next sign-in until opened; the web page
-    says the same.
+    reported it at check-in, with that date (85; the agent's config decides, the server only reports). Beside it, the
+    guarantees no site configures away, each enforced in the database or the agent, not by the page (SECURITY.md "What
+    no site can change"): a setting can make a site stricter than the default and looser only within them, and `setup`
+    refuses a config that goes past one. A person sees the policy when their account is made and again at their next
+    sign-in after it changes, until they have opened it (seeing it is required; agreeing isn't asked). Every change is
+    on record and on the page: what changed, in words, and when; who changed it, as the person `setup` names (`--by`),
+    shown as the operator's word: whoever can edit the config is root on the server, already outside the guarantees, so
+    a required sign-in would add ceremony, not protection (owner decision 2026-11-22). *Done when:* `pinakes policy` and
+    its `--json` are tested through the API on the demo household and a generated lab: the words match the running
+    settings (a cap or a level changed in config changes them after `setup`, and nothing else does); a person not
+    concerned by a guardian view sees it by role and not by name; each fixed guarantee listed, and a config that loosens
+    one refused by `setup`; a policy change recorded with its time and the `--by` name shown as the operator's word; a
+    root's folding shown with the date its agent reported it; and shown to every person at their next sign-in until
+    opened; the web page says the same.
 
 ## Sources and imports
 

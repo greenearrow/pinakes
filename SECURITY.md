@@ -138,9 +138,11 @@ limits in "What no site can change" below, and shows its policy to everyone in i
 - A hold is capped (default 90 days); a renewal needs the approver again and is logged. At the cap the entries show on
   each subject's "Access to your records" by themselves, complete: requester, approver, reason, scope (with whether it
   held sensitive fields), each folder seen with counts, and how long they were held.
-- A **solo hold** has no approver, and is allowed only while exactly one person on the site is an administrator or
-  an auditor (a single parent running the server, who could read the disks anyway; an approver brought in from
-  outside would cost the subject more privacy, not less). Its cap is shorter (default 14 days), it can't be renewed,
+- A **solo hold** has no approver, and is allowed only once exactly one person on the site has been an administrator
+  or an auditor for a waiting period (default 30 days; the clock restarts whenever a second one is added), so taking
+  the role from the other parent doesn't open one at once; a step-up is always there meanwhile. It is for a single
+  parent running the server, who could read the disks anyway, where an approver brought in from outside would cost
+  the subject more privacy, not less. Its cap is shorter (default 14 days), it can't be renewed,
   it shows by itself at the cap, and its entry says it was held alone with no approver, with the reason and every
   folder seen. Making a site solo is a policy change, shown to everyone at once.
 - Every page shows everyone on the site how many audits are held (solo ones included) and the latest date one ends,
@@ -154,8 +156,8 @@ limits in "What no site can change" below, and shows its policy to everyone in i
 The rules in "Standing views" and "Auditors", and the caps, levels and flags behind them, are defaults: a household
 or a lab sets its own in the site's config. What a site has set is shown to everyone in it, in words, generated from
 the settings the server runs (a page and `pinakes policy`): at account creation, and again after every change until
-the person has opened it. Each change is recorded with what changed, when, and the person `setup` names (the
-operator's word: a config file has no signed-in author).
+the person has opened it. Each change is recorded with what changed, when, and the person `setup` names (`--by`),
+shown as the operator's word: whoever can edit the config is root on the server, already outside the guarantees.
 
 A setting can make a site stricter than the default, and looser only within these, each enforced in the database or
 the agent, not by the page; `setup` refuses a config that goes past one:
@@ -165,7 +167,8 @@ the agent, not by the page; `setup` refuses a config that goes past one:
 - Every step-up shows on the people's page at once; only an auditor's audit is ever held, and every hold shows by
   itself at its cap, which no setting removes.
 - Requester, approver and subject of an audit are three different people, except in a solo hold, which is allowed
-  only while one person on the site is an administrator or an auditor.
+  only once one person on the site has been the only administrator or auditor for a waiting period of at least 7
+  days, whatever the config says.
 - A standing view only of a person the config names as viewable so, never extending to step-up powers, and every look
   on the person's page.
 - No token or assistant steps up, audits, or sets, changes or ends a standing view.
@@ -194,7 +197,9 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
   `SSH_ORIGINAL_COMMAND`), the ingester reads the agent's release and protocol (numbers only, at most 4 KiB),
   records them for the key's host, and answers this server's release and protocol, whether its schema is
   applied, and the last batch number applied for that host (with its header's digest). No root, file or person is
-  named either way; anything else asked for is still read as a batch.
+  named either way; anything else asked for is still read as a batch. Planned (ROADMAP 85): the check-in also names
+  each of the host's roots by its label, with one word for where opaque containers fold there, and nothing more; the
+  ingester refuses a label the host isn't enrolled for, as it does in a batch.
 - A batch from an agent whose protocol this server doesn't work with (`pinakes/compat.py`) is refused before
   anything is applied; the reason goes to the agent and to the server's system log.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
