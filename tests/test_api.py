@@ -581,6 +581,20 @@ class TestCli(ServerCase):
         self.cli = CliRun(self, "user-1")
         self.addCleanup(self.cli.close)
 
+    def test_find_a_name_with_an_underscore_or_a_percent_sign(self):
+        """LIKE's own wildcards are text in a name: a name with _ or % and no * or ? is found anywhere in a name,
+        as any other, and matches only itself, not any character."""
+        for name in ("map_0.dat", "mapX0.dat", "50% off.txt", "500 off.txt"):
+            self.write("server-1", "store", "people/user-1/n/" + name, name.encode())
+        self.scan("server-1", "store")
+        def names(q):
+            return sorted(r["relpath"].rsplit("/", 1)[-1] for r in json.loads(self.cli("find", q, "--json"))["rows"])
+        self.assertEqual(names("map_"), ["map_0.dat"])                  # before: only a file named "map_"
+        self.assertEqual(names("p_0"), ["map_0.dat"])
+        self.assertEqual(names("0%"), ["50% off.txt"])
+        self.assertEqual(names("map?0*"), ["mapX0.dat", "map_0.dat"])  # ? and * still wildcards
+        self.assertEqual(names("map_*"), ["map_0.dat"])
+
     def test_backed_up_says_how_many_have_a_backup(self):
         """The page is sorted unbacked first, so page 1 of a mostly backed-up folder can be all zeros: the answer
         counts every file with a backup and without, above the rows and in --json; under row-level security."""

@@ -38,9 +38,8 @@ def _like(text, wildcards=False):
     """ILIKE pattern for a substring, LIKE's own wildcards escaped; with `wildcards`, * and ? work as wildcards, and
     a pattern with none matches anywhere in the text."""
     like = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    if wildcards:
-        like = like.replace("*", "%").replace("?", "_")
-        return like if "%" in like or "_" in like else "%" + like + "%"
+    if wildcards and ("*" in text or "?" in text):      # the text's own, not an escaped % or _ of LIKE's
+        return like.replace("*", "%").replace("?", "_")
     return "%" + like + "%"
 
 
