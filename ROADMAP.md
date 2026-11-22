@@ -216,18 +216,12 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 ## Before the MCP server
 
 The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this came first, and helps the
-command line and the web UI as much. 61 and 62 are built (REARVIEW.md). Left: the items below, moved here from the
+command line and the web UI as much. 61, 62 and 68 are built (REARVIEW.md). Left: the items below, moved here from the
 persona reviews ("Copies, metadata and plain answers", "A household's answers") because each changes what the API
 tells a model, which repeats an answer where a person would doubt it. Also before 24, the part of two items left
 where they are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes
 edits` and `--json` (an MCP write's preview names its files the same way); their web halves can follow.
 
-68. [Feature; also correctness] **Primary copies first, backups folded,** one rule for every list that holds copies
-    (`find`, `where`, `meta`, and any later one): primary and drop rows first, backup copies folded into a count per
-    content ("+ in 6 snapshots"), with an option to list them. Today the lists sort by root label, so a backup root's
-    snapshots fill the first pages, and the primary rows come pages later. *Done when:* `find`, `where` and `meta`
-    and their `--json` are tested through the API on a generated tree with snapshots: the primary rows first, the
-    fold's count equal to the backup copies a person can see, the option listing them all, totals unchanged.
 69. [Correctness] **No "certain" copy link between unrelated files that share small, common bytes:** byte-identical
     sidecars of five different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same
     sha256, certain". True of the bytes, false of the work. Wanted: no `copied_from` edge, or one marked "same bytes,

@@ -27,6 +27,7 @@ except ImportError:  # Flask missing
     web = None
 
 NONE = {"rows": [], "total": 0, "limit": 100, "offset": 0}         # an empty list's answer (ROADMAP 61)
+NONE_FOLDED = dict(NONE, folded=0)                                  # find, where and meta's (ROADMAP 68)
 PASSWORDS = {"user-1": "correct horse battery", "user-2": "staple pony 12345", "user-3": "kettle lantern 909"}
 
 
@@ -283,7 +284,7 @@ class TestApi(ApiCase):
         self.assertEqual([r["label"] for r in self.get("roots", his)[1]["rows"]], ["store"])
         self.assertNotIn("downloads:letter.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.paths("where?loc=store:people/user-1/taxes.txt", his), ["store:people/user-1/taxes.txt"])
-        self.assertEqual(self.get("find?q=letter.txt", his), (200, NONE))
+        self.assertEqual(self.get("find?q=letter.txt", his), (200, NONE_FOLDED))
         # the web session sees both copies
         with self.app_conn() as c:
             c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-1")),))
@@ -1859,6 +1860,120 @@ class TestCliReports(ServerCase):
 
 
 @unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliFold(ServerCase):
+    """Primary copies first, backups folded (ROADMAP 68): find, where and meta list the primary and drop rows first,
+    each with the backup copies of its content as a count, a content only in backups once (its newest snapshot), and
+    `folded` the backup copies left out; --backups (backups=all) lists every copy, primary and drop rows first. The
+    backup root's label sorts before the primary's, as a snapshots root's often does."""
+
+    SNAPS = ("2026-01-01_0140", "2026-02-01_0140", "2026-03-01_0140")
+
+    def setUp(self):
+        super().setUp()
+        import jpegs
+        self.mine = {"IMG_0001.JPG": jpegs.camera(when="2019:06:01 12:30:01"),
+                     "IMG_0002.JPG": jpegs.camera(when="2019:06:01 12:30:02")}
+        self.old = jpegs.camera(when="2019:06:01 12:30:03")         # in the snapshots only: gone from the store
+        hers = jpegs.camera(make="Maker-2", when="2019:06:01 12:30:04")
+        self.agent("laptop-1", "downloads", kind="drop")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        for name, data in self.mine.items():
+            self.write("server-1", "store", "people/user-1/photos/" + name, data)
+        self.write("server-1", "store", "people/user-2/photos/IMG_0004.JPG", hers)
+        self.write("laptop-1", "downloads", "IMG_0001.JPG", self.mine["IMG_0001.JPG"])
+        for snap in self.SNAPS:
+            for name, data in self.mine.items():
+                self.write("server-2", "snapshots", "%s/people/user-1/photos/%s" % (snap, name), data)
+            self.write("server-2", "snapshots", "%s/people/user-1/photos/IMG_0003.JPG" % snap, self.old)
+            self.write("server-2", "snapshots", "%s/people/user-2/photos/IMG_0004.JPG" % snap, hers)
+        for host, label in (("server-1", "store"), ("laptop-1", "downloads"), ("server-2", "snapshots")):
+            self.scan(host, label)
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+
+    def where_of(self, rows):
+        return [(r["root"], r["relpath"], r["backups"]) for r in rows]
+
+    def test_find_lists_primary_rows_first_with_their_backups_counted(self):
+        cli = self.cli
+        got = json.loads(cli("find", "IMG_*", "--json"))
+        self.assertEqual(self.where_of(got["rows"]),
+                         [("downloads", "IMG_0001.JPG", 3), ("store", "people/user-1/photos/IMG_0001.JPG", 3),
+                          ("store", "people/user-1/photos/IMG_0002.JPG", 3),
+                          ("snapshots", "2026-03-01_0140/people/user-1/photos/IMG_0003.JPG", 2)])
+        self.assertEqual((got["total"], got["folded"]), (4, 8))
+        every = json.loads(cli("find", "IMG_*", "--backups", "--json"))
+        self.assertEqual((every["total"], every["folded"]), (12, 0))
+        self.assertEqual(got["total"] + got["folded"], every["total"])          # every copy, counted once
+        kinds = [r["kind"] for r in every["rows"]]
+        self.assertEqual(kinds, ["drop", "primary", "primary"] + ["backup"] * 9)
+        self.assertEqual(sum(k == "backup" for k in kinds) - 1, got["folded"])  # all but the one that stands in
+        self.assertEqual({r["relpath"]: r["backups"] for r in every["rows"]
+                          if r["relpath"].endswith("IMG_0003.JPG")},
+                         {s + "/people/user-1/photos/IMG_0003.JPG": 2 for s in self.SNAPS})
+        self.assertNotIn("folded_rows", got["rows"][0])
+        self.assertNotIn("in_backups", got["rows"][0])
+
+    def test_where_folds_the_snapshots(self):
+        cli, loc = self.cli, "store:people/user-1/photos/IMG_0001.JPG"
+        got = json.loads(cli("where", loc, "--json"))
+        self.assertEqual(self.where_of(got["rows"]), [("downloads", "IMG_0001.JPG", 3),
+                                                      ("store", "people/user-1/photos/IMG_0001.JPG", 3)])
+        self.assertEqual((got["total"], got["folded"]), (2, 3))
+        every = json.loads(cli("where", loc, "--backups", "--json"))
+        self.assertEqual([r["root"] for r in every["rows"]], ["downloads", "store"] + ["snapshots"] * 3)
+        self.assertEqual((every["total"], every["folded"]), (5, 0))
+        # a file only in backups: its copies, the newest first, each counting the others
+        old = json.loads(cli("where", "snapshots:2026-01-01_0140/people/user-1/photos/IMG_0003.JPG", "--json"))
+        self.assertEqual(self.where_of(old["rows"]),
+                         [("snapshots", "2026-03-01_0140/people/user-1/photos/IMG_0003.JPG", 2)])
+        self.assertEqual((old["total"], old["folded"]), (1, 2))
+
+    def test_meta_folds_the_same(self):
+        got = json.loads(self.cli("meta", "exif.make=Maker-1", "--json"))
+        self.assertEqual([r["kind"] for r in got["rows"]], ["drop", "primary", "primary", "backup"])
+        self.assertEqual([r["backups"] for r in got["rows"]], [3, 3, 3, 2])
+        self.assertEqual((got["total"], got["folded"]), (4, 8))
+        self.assertEqual(json.loads(self.cli("meta", "exif.make=Maker-1", "--backups", "--json"))["total"], 12)
+
+    def test_pages_of_a_folded_list(self):
+        cli = self.cli
+        whole = json.loads(cli("find", "IMG_*", "--json"))["rows"]
+        pages = [r for o in range(0, 4, 3)
+                 for r in json.loads(cli("find", "IMG_*", "--limit", "3", "--offset", str(o), "--json"))["rows"]]
+        self.assertEqual(pages, whole)
+        past = json.loads(cli("find", "IMG_*", "--offset", "10", "--json"))
+        self.assertEqual((past["rows"], past["total"], past["folded"]), ([], 4, 8))
+
+    def test_plain_output_says_what_was_folded(self):
+        out = self.cli("find", "IMG_*").splitlines()
+        self.assertEqual(out[0].split()[-1], "backups")
+        self.assertTrue(out[1].rstrip().endswith("+3"), out[1])
+        self.assertEqual(out[-2:], ["4 of 4", "8 backup copies counted in the backups column, not listed: "
+                                                "--backups lists them"])
+        every = self.cli("find", "IMG_*", "--backups").splitlines()
+        self.assertEqual(every[-1], "12 of 12")
+        self.assertEqual(self.cli("history", "store:people/user-1/photos/IMG_0001.JPG", "--backups", code=1),
+                         "pinakes: --backups is for find, where, meta")
+
+    def test_counts_are_of_what_the_person_sees(self):
+        cli = self.cli
+        self.assertNotIn("IMG_0004", cli("find", "IMG_*"))
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        got = json.loads(cli("find", "IMG_*", "--json"))
+        self.assertEqual(self.where_of(got["rows"]), [("store", "people/user-2/photos/IMG_0004.JPG", 3)])
+        self.assertEqual((got["total"], got["folded"]), (1, 3))
+        self.assertEqual(json.loads(cli("meta", "exif.make=Maker-1", "--json"))
+                         | {"limit": None}, {"rows": [], "total": 0, "folded": 0, "limit": None, "offset": 0})
+
+    def test_the_api_refuses_another_backups_value(self):
+        secret = make_token(self, "user-1", client="laptop-3")
+        r = self.cli.app.test_client().get(web.API + "find?q=IMG_*&backups=some",
+                                           headers={"Authorization": "Bearer " + secret})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("backups is all", r.get_json()["error"])
+
+
 class TestCliPages(ServerCase):
     """Paged answers with counts (ROADMAP 61): every list call of the API answers one page by default, with the
     total; each paged command says "N of TOTAL" and takes --limit and --offset, its --json carrying the total."""
@@ -1904,8 +2019,9 @@ class TestCliPages(ServerCase):
                                  "none of %d: --offset %d is past the end" % (total, total))
                 got = json.loads(cli(cmd, *args, "--limit", "2", "--offset", "1", "--json"))
                 counts = ["with_backup", "without_backup"] if cmd == "backed-up" else []   # of the whole list
+                counts += ["folded"] if cmd in ("find", "where", "meta") else []                # ROADMAP 68
                 self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
-                                 (["limit", "offset", "rows", "total"] + counts, total, 2, 2, 1))
+                                 (sorted(["limit", "offset", "rows", "total"] + counts), total, 2, 2, 1))
                 self.assertNotIn("total_rows", got["rows"][0])
                 # the pages are the whole list, in order, with nothing twice
                 pages = [r for o in range(0, total, 2)

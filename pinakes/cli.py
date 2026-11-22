@@ -61,7 +61,9 @@
                                        but `stale`; on the catalog server, [client] url can be http://127.0.0.1.
   A list (find, where, history, versions, only-here, safe-to-delete, backed-up, folder-copies, dupes, changes,
   manifests, meta, restores, access, edits) is one page: 100 rows, or --limit N (at most 10000), from --offset N; under it,
-  "N of TOTAL" and the next page's --offset.
+  "N of TOTAL" and the next page's --offset. find, where and meta list the copies in primary and drop roots first,
+  each with the backup copies of its content as a count, and a content only in backups once (its newest snapshot);
+  --backups lists every backup copy.
   Add --json for JSON (a list: {"rows", "total", "limit", "offset"}), --as NAME to ask as another person (their
   password and second factor, or a token of theirs, at a hidden prompt; the command then sees only what they may see).
 
@@ -429,6 +431,7 @@ FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take 
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
                                          "restores", "relatives", "tag", "edits", "undo")
+FOLDS = ("find", "where", "meta")       # lists that hold copies: backup copies folded into a count (ROADMAP 68)
 PAGED = ("find", "where", "history", "versions", "only-here", "backed-up", "folder-copies", "dupes", "changes",
          "manifests", "meta", "restores", "access", "edits")    # lists the API answers a page of, with the total (61)
 MARKS = ("intended", "restore")
@@ -559,6 +562,10 @@ def run(api, a, cfg):
             _print([{"link": "%s:%s" % (l["root"], l["relpath"]), "target": l["link_target"]} for l in links], False)
         return
     page = {"limit": a.limit, "offset": a.offset} if a.cmd in PAGED else {}
+    if a.backups and a.cmd not in FOLDS:
+        raise Failed("--backups is for %s" % ", ".join(FOLDS))
+    if a.cmd in FOLDS:
+        page["backups"] = "all" if a.backups else None
     if a.cmd == "find":
         got = api.get("find", q=need("a name or glob"), **page)
     elif a.cmd in FILE:
@@ -649,6 +656,9 @@ def run(api, a, cfg):
     if a.json and a.cmd in PAGED:
         print(json.dumps(got, indent=1))                                # the rows, and the total
         return
+    if a.cmd in FOLDS:
+        _print_copies(got)
+        return
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
         _page_line(got)
@@ -709,6 +719,16 @@ def _page_line(got):
     line = page_line(got)
     if line:
         print(line)
+
+
+def _print_copies(got):
+    """A list that holds copies (ROADMAP 68): the backup copies of each row's content as "+N", and what was folded."""
+    rows = [dict(r, backups="+%d" % r["backups"] if r.get("backups") else "") for r in got["rows"]]
+    _print(rows, False)
+    _page_line(got)
+    if got.get("folded"):
+        print("%d backup cop%s counted in the backups column, not listed: --backups lists them"
+              % (got["folded"], "y" if got["folded"] == 1 else "ies"))
 
 
 def review(api, a, cfg):
@@ -886,6 +906,8 @@ def main(argv=None):
     ap.add_argument("--back", action="store_true", help="restores: also those whose content is back")
     ap.add_argument("--csv", action="store_true", help="export: one part, as CSV")
     ap.add_argument("--token", metavar="CLIENT", help="edits: only those made by this token (its name)")
+    ap.add_argument("--backups", action="store_true",
+                    help="find, where, meta: list every backup copy, not a count per row")
     ap.add_argument("--limit", type=int, metavar="N", help="a list: show N rows (the API's page: 100; at most 10000)")
     ap.add_argument("--offset", type=int, metavar="N", help="a list: from the row after the first N (0)")
     ap.add_argument("--url", help="the catalog's address (default: [client] url)")

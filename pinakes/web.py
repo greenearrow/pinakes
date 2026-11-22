@@ -409,9 +409,19 @@ def create_app(cfg, connect=None):
         its rows (queries.TOTAL); a page past the end asks once more for the total alone."""
         limit, offset = lim()
         got = query(g.db, *a, limit=limit, offset=offset, **kw)
-        total = queries.page_total(got if got or not offset else query(g.db, *a, limit=1, offset=0, **kw))
-        return {"rows": [{k: v for k, v in r.items() if k != "total_rows"} for r in got], "total": total,
-                "limit": limit, "offset": offset}
+        whole = got if got or not offset else query(g.db, *a, limit=1, offset=0, **kw)
+        out = {"rows": [{k: v for k, v in r.items() if k not in ("total_rows", "folded_rows")} for r in got],
+               "total": queries.page_total(whole), "limit": limit, "offset": offset}
+        if kw.get("backups"):
+            out["folded"] = queries.folded(whole)
+        return out
+
+    def backups():
+        """backups=all lists every backup copy; without it, a list that holds copies folds them (ROADMAP 68)."""
+        v = request.args.get("backups", "").strip()
+        if v not in ("", "all"):
+            raise ValueError("backups is all, or left out to fold the backup copies into a count")
+        return v or "fold"
 
     def target():
         """The file a call names, by ?file=ID or ?loc=ROOT:PATH; 404 when the token's person can't see it."""
@@ -485,11 +495,11 @@ def create_app(cfg, connect=None):
 
     @api("find")
     def api_find():
-        return page(queries.find, arg("q", "q=NAME-OR-GLOB"))
+        return page(queries.find, arg("q", "q=NAME-OR-GLOB"), backups=backups())
 
     @api("where")
     def api_where():
-        return page(queries.where, target())
+        return page(queries.where, target(), backups=backups())
 
     @api("history")
     def api_history():
@@ -721,7 +731,7 @@ def create_app(cfg, connect=None):
         known = reg.schemas.get(schema)
         known = known.fields.get(field) if known else None
         return page(queries.meta, schema, field, request.args.get("value", ""),
-                    sensitive=known.sensitive if known else None)
+                    sensitive=known.sensitive if known else None, backups=backups())
 
     # the web's reports, for `pinakes` (ROADMAP 55 to 59): the same queries under row-level security, without the
     # owner ids the web keeps for its step-up audit (a token never steps up)

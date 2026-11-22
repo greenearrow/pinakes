@@ -83,11 +83,59 @@ def order(sorts, sort, direction, default):
     return " ORDER BY " + ", ".join("%s %s NULLS LAST" % (c, d) for c in cols) + ", " + default
 
 
-def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc"):
+# A list that holds copies (ROADMAP 68): `backups` None is the rows as they come (the web's pages, for now); "fold"
+# lists the primary and drop rows first, each with `backups`, the backup copies of its content in the answer, and a
+# content found only in backup roots once, as its newest snapshot (`backups`: the others); "all" lists every copy,
+# the primary and drop rows first, each with the same count. Counted over the whole answer under row-level security,
+# so a count is of the copies the person can see. A file without content (not hashed yet) is a content of its own.
+# Each row of a folded answer has total_rows (the rows listed) and folded_rows (the backup copies left out of them).
+BACKUPS = (None, "fold", "all")
+_FOLD_COLS = ("in_backup", "in_others", "in_backups", "rank_in", "pos", "all_rows")
+
+
+def copies(conn, cols, body, args, ordering, backups, limit, offset):
+    """SELECT cols (FILE_COLS first) body ORDER BY ordering, a page of it, folded as `backups` says (above)."""
+    if backups not in BACKUPS:
+        raise ValueError("backups is fold or all")
+    if backups is None:
+        return rows(conn, "SELECT %s, %s %s ORDER BY %s" % (cols, TOTAL, body, ordering) + PAGE,
+                    args + (limit, offset))
+    keep = "true" if backups == "all" else "NOT x.in_backup OR (x.in_others = 0 AND x.rank_in = 1)"
+    got = rows(conn, """SELECT x.*, count(*) OVER () AS total_rows, x.all_rows - count(*) OVER () AS folded_rows
+                        FROM (SELECT %s, r.kind = 'backup' AS in_backup,
+                                     count(*) FILTER (WHERE r.kind <> 'backup')
+                                         OVER (PARTITION BY coalesce(f.content_id, -f.file_id)) AS in_others,
+                                     count(*) FILTER (WHERE r.kind = 'backup')
+                                         OVER (PARTITION BY coalesce(f.content_id, -f.file_id)) AS in_backups,
+                                     row_number() OVER (PARTITION BY coalesce(f.content_id, -f.file_id),
+                                                                     r.kind = 'backup'
+                                                        ORDER BY f.snapshot DESC NULLS LAST, r.label, f.relpath,
+                                                                 f.file_id) AS rank_in,
+                                     row_number() OVER (ORDER BY %s) AS pos, count(*) OVER () AS all_rows
+                              %s) x
+                        WHERE %s ORDER BY x.in_backup, x.pos""" % (cols, ordering, body, keep) + PAGE,
+               args + (limit, offset))
+    for r in got:
+        r["backups"] = r["in_backups"] - r["in_backup"]
+        for k in _FOLD_COLS:
+            del r[k]
+    return got
+
+
+def folded(result):
+    """How many backup copies a folded answer left out of its rows (0 for an empty page)."""
+    return result[0].get("folded_rows", 0) if result else 0
+
+
+def _order_by(sorts, sort, direction, default):
+    return order(sorts, sort, direction, default)[len(" ORDER BY "):]
+
+
+def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc", backups=None):
     like = _like(pattern, wildcards=True)
-    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %%s""" % (FILE_COLS, TOTAL)
-                + order(FILE_SORT, sort, direction, "f.name, h.name, f.file_id") + PAGE, (like, limit, offset))
+    return copies(conn, FILE_COLS, """FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                                      JOIN pinakes.hosts h USING (host_id) WHERE f.name ILIKE %s""", (like,),
+                  _order_by(FILE_SORT, sort, direction, "f.name, h.name, f.file_id"), backups, limit, offset)
 
 
 def file_at(conn, loc):
@@ -118,15 +166,14 @@ def file_by_id(conn, file_id):
     return r[0] if r else None
 
 
-def where(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
+def where(conn, file_id, limit=None, offset=0, sort=None, direction="asc", backups=None):
     """Every copy; same_inode marks hard links of this very file (the same data on the same disk, not a copy)."""
-    return rows(conn, """SELECT %s, (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode, %s
-                         FROM pinakes.files t JOIN pinakes.roots tr ON tr.root_id = t.root_id
-                         JOIN pinakes.present f ON f.content_id = t.content_id
-                         JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
-                         WHERE t.file_id = %%s""" % (FILE_COLS, TOTAL)
-                + order(FILE_SORT, sort, direction, "r.kind, h.name, f.relpath, f.file_id") + PAGE,
-                (file_id, limit, offset))
+    return copies(conn, FILE_COLS + ", (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode",
+                  """FROM pinakes.files t JOIN pinakes.roots tr ON tr.root_id = t.root_id
+                     JOIN pinakes.present f ON f.content_id = t.content_id
+                     JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
+                     WHERE t.file_id = %s""", (file_id,),
+                  _order_by(FILE_SORT, sort, direction, "r.kind, h.name, f.relpath, f.file_id"), backups, limit, offset)
 
 
 # Copies of a file f (in root r) outside a folder, counted physically: distinct (host, device, inode), never f's own
@@ -680,16 +727,16 @@ def decide_lineage(conn, a, b, decision):
     return conn.execute("SELECT pinakes.decide_lineage(%s, %s, %s)", (a, b, decision)).fetchone()[0]
 
 
-def meta(conn, schema, field, value, limit=None, offset=0, sensitive=None):
+def meta(conn, schema, field, value, limit=None, offset=0, sensitive=None, backups=None):
     """The files whose content has metadata `schema` with `field` equal to `value` (as text). `sensitive`: whether the
     field is one of its schema's sensitive fields (registry.Field.sensitive), whose values are kept in a row of their
     own; None (not known) looks in both. Knowing it is what makes the query fast (ROADMAP 61): the test of the column
     runs before the row-level policy, which otherwise asks sensitive_visible() of every sensitive row of the schema."""
-    return rows(conn, """SELECT %s, m.vals, %s FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
-                         JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
-                         WHERE m.schema = %%s AND (%%s::boolean IS NULL OR m.sensitive = %%s) AND m.vals ->> %%s = %%s
-                         ORDER BY f.relpath, f.file_id""" % (FILE_COLS, TOTAL)
-                + PAGE, (schema, sensitive, sensitive, field, value, limit, offset))
+    return copies(conn, FILE_COLS + ", m.vals",
+                  """FROM pinakes.metadata m JOIN pinakes.present f ON f.content_id = m.content_id
+                     JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
+                     WHERE m.schema = %s AND (%s::boolean IS NULL OR m.sensitive = %s) AND m.vals ->> %s = %s""",
+                  (schema, sensitive, sensitive, field, value), "f.relpath, f.file_id", backups, limit, offset)
 
 
 # A person's export of their own records (ROADMAP 45): the files they own (files.owner_id; shared, co-owned and a

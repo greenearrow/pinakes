@@ -128,7 +128,8 @@ question). Review marks and decisions change only what you own or co-own, tags a
 the token's `review` or `tag` scope.
 
 FILE and PATH are a path on this machine (none: the current folder) or `ROOT:PATH`. Lists come a page at a time (100
-rows, `--limit` and `--offset`) with the total; `--json` for scripts; `--as NAME` to ask as another person, with their
+rows, `--limit` and `--offset`) with the total; `find`, `where` and `meta` list primary copies first, with their backup
+copies as a count (`--backups` lists them); `--json` for scripts; `--as NAME` to ask as another person, with their
 password at a prompt. `pinakes --help` has the rest.
 
 Setting it up on a machine: `~/.config/pinakes/client.toml` names the catalog
