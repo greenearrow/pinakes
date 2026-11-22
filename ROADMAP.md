@@ -71,9 +71,14 @@ No known item blocks adding a machine; new ones from a deployment go in this sec
     *Done when:* tests cover every refusal (file changed since the request, outside the local policy, someone else's
     file without approval, a would-be overwrite) and a crash mid-operation leaving either the old state or the new,
     never neither.
-18. [Feature] **Linking same-disk duplicates** (DESIGN.md "Planned"), after 17. *Done when:* the same refusals plus:
-    different owners, unsettled content, a protected or drop or backup root; the replaced inode reaches the trash; undo
-    by copy is documented and tested.
+18. [Feature; also correctness] **Linking same-disk duplicates** (DESIGN.md "Planned"), after 17 and 69. Placeholders
+    are never linked, and the rule fails safe instead of trusting 69's thresholds: a size floor (`link_min_size`,
+    default 1 MiB); never a placeholder candidate, marked or not, or a content marked or matched by a site rule; never
+    a content held under more than one name in one folder; a reflink where the filesystem has one. *Done when:* the
+    same refusals plus: different owners, unsettled content, a protected or drop or backup root, a file under the size
+    floor, an unmarked candidate, identical files under several names in one folder (generated default files of a
+    game world, one large enough to pass the floor); the replaced inode reaches the trash; a reflink used where the
+    test filesystem has one; undo by copy is documented and tested.
 
 ## Exclusions and routine churn
 
@@ -241,14 +246,14 @@ edits` and `--json` (an MCP write's preview names its files the same way); their
        person asks (off by default), shown folded with a count, never dropped silently.
     Who marks: one mark changes the lineage of others' files holding the bytes, so an administrator in a step-up
     (audited for those files' owners), or a person for a content only they hold; never a group token; under a token,
-    only with its review scope. Existing edges: `pinakes-ingest tidy` applies marks and rules to undecided hash
-    edges; confirmed edges stay. Sidecars by bundle (14) come after and take their photo's identity. *Done when:*
-    `pinakes placeholders` (candidates, siblings) and `pinakes placeholder FILE` (mark, unmark) and their `--json`
-    are tested through the API on generated trees: identical sidecars of different photos and generated default
-    files under many names (candidates; once marked, no certain copy in `pinakes lineage` and `pinakes relatives`,
-    and `only-here` lists them), a sidecar that was copied (still linked), a rule matching a variant unmarked, a
-    second person's holders not counted, a person refused a mark on a content another holds, and a step-up mark
-    audited.
+    only with its review scope. Existing edges: `pinakes-ingest tidy` applies marks and rules to undecided hash edges;
+    confirmed edges stay. Linking (18) doesn't rely on these thresholds: it has its own gate, which fails safe. Sidecars
+    by bundle (14) come after and take their photo's identity. *Done when:* `pinakes placeholders` (candidates,
+    siblings) and `pinakes placeholder FILE` (mark, unmark) and their `--json` are tested through the API on generated
+    trees: identical sidecars of different photos and generated default files under many names (candidates; once marked,
+    no certain copy in `pinakes lineage` and `pinakes relatives`, and `only-here` lists them), a sidecar that was copied
+    (still linked), a rule matching a variant unmarked, a second person's holders not counted, a person refused a mark
+    on a content another holds, and a step-up mark audited.
 70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
     counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
     (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as

@@ -322,14 +322,25 @@ space. A managed operation (`link`), opt-in per root, never automatic.
 1. Same host, same filesystem, same root, same owner and enrollments (never across people).
 2. Only on roots that declare their content settled (`managed = ["link"]`, for photos, media, books, archives) and
    only for files unchanged for a while (default 30 days). Never on drop folders, backup roots or protected roots.
-3. The agent re-hashes both files just before acting and refuses if either changed. The survivor is the older inode
+   A quiet month isn't proof: an app's data folder (a game's saved worlds) sits unchanged until it is used again,
+   then writes in place. Rule 3 doesn't rely on either.
+3. Never placeholders (ROADMAP 69), and this doesn't hang on 69's guesses being right: linking fails safe.
+   - Only files at least `link_min_size` (default 1 MiB): the space is in large files, and the placeholders seen
+     are small (a thousand identical 1 KB sidecars reclaim 1 MB).
+   - Never a content that is a placeholder candidate, whether marked or not, nor one marked or matched by a site
+     rule.
+   - Never a content held under more than one name in one folder, whatever its size: an app wrote each name
+     itself, and may write them again.
+   - A reflink where the filesystem has one (below): a file written in place then splits off from the others,
+     so even a wrong guess does no harm.
+4. The agent re-hashes both files just before acting and refuses if either changed. The survivor is the older inode
    (earliest birth time, then mtime). The other name is replaced atomically: a link to the survivor is made under a
    temporary name in the same folder, checked (same inode, same hash), and renamed over it; nothing is removed
    without its replacement in place.
-4. By default the replaced inode goes to the root's trash rather than being freed (so the space comes back when the
+5. By default the replaced inode goes to the root's trash rather than being freed (so the space comes back when the
    trash is emptied, outside the catalog); a root can choose to free it at once.
-5. History records the link (old inode, new inode, survivor), so it can be undone by copying the file back.
-6. A report lists linkable duplicates per root with the space each would reclaim; people request groups, the usual
+6. History records the link (old inode, new inode, survivor), so it can be undone by copying the file back.
+7. A report lists linkable duplicates per root with the space each would reclaim; people request groups, the usual
    approval rules apply (DESIGN "Managing files").
 
 Backups are unaffected where they keep hard links (`rsync -H`) or deduplicate content (restic, borg). On filesystems
