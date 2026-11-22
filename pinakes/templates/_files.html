@@ -1,17 +1,23 @@
 {% from "_pager.html" import th with context %}
 {# A table of files; p, the list's pager, makes the headers sort it. #}
-{# same_disk adds a column: copies elsewhere on the file's own disk. #}
-{% macro file_table(rows, empty="Nothing.", p=None, same_disk=False) %}
+{# same_disk adds a column: copies elsewhere on the file's own disk. backups (ROADMAP 68) adds one: the backup copies
+   of each row's content in the list, and under the table how many were folded, with a link to list them all. #}
+{% macro file_table(rows, empty="Nothing.", p=None, same_disk=False, backups=False) %}
+{% set cols = 5 + (1 if same_disk else 0) + (1 if backups else 0) %}
 <div class="scroll"><table>
-  {% if p %}<tr>{{ th(p, "where", "Where") }}{{ th(p, "path", "Path") }}{{ th(p, "size", "Size", "num") }}{{ th(p, "modified", "Modified") }}{{ th(p, "snapshot", "Snapshot") }}{% if same_disk %}{{ th(p, "same_disk", "Copies on this disk", "num") }}{% endif %}</tr>
-  {% else %}<tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th>{% if same_disk %}<th class="num">Copies on this disk</th>{% endif %}</tr>{% endif %}
+  {% if p %}<tr>{{ th(p, "where", "Where") }}{{ th(p, "path", "Path") }}{{ th(p, "size", "Size", "num") }}{{ th(p, "modified", "Modified") }}{{ th(p, "snapshot", "Snapshot") }}{% if same_disk %}{{ th(p, "same_disk", "Copies on this disk", "num") }}{% endif %}{% if backups %}<th class="num">In backups</th>{% endif %}</tr>
+  {% else %}<tr><th>Where</th><th>Path</th><th class="num">Size</th><th>Modified</th><th>Snapshot</th>{% if same_disk %}<th class="num">Copies on this disk</th>{% endif %}{% if backups %}<th class="num">In backups</th>{% endif %}</tr>{% endif %}
   {% for r in rows %}
   <tr><td>{{ r.host }} · {{ r.root }} <span class="tag">{{ r.kind }}</span></td>
       <td><a href="{{ url_for('file', file_id=r.file_id) }}">{{ r.relpath }}</a>{% if r.gone_on %} <span class="tag">gone {{ r.gone_on }}</span>{% endif %}{% if r.same_inode and r.file_id != (f.file_id if f is defined else None) %} <span class="tag">hard link: same data</span>{% endif %}{% if r.hidden %} <span class="tag">hidden</span>{% endif %}</td>
       <td class="num">{{ fmt_size(r.size) }}</td><td>{{ r.mtime.date() if r.mtime else '' }}</td>
-      <td>{{ r.snapshot or '' }}</td>{% if same_disk %}<td class="num">{{ r.same_disk }}</td>{% endif %}</tr>
-  {% else %}<tr><td colspan="{{ 6 if same_disk else 5 }}" class="muted">{{ empty }}</td></tr>{% endfor %}
+      <td>{{ r.snapshot or '' }}</td>{% if same_disk %}<td class="num">{{ r.same_disk }}</td>{% endif %}{% if backups %}<td class="num">{{ '+%d' % r.backups if r.backups else '' }}</td>{% endif %}</tr>
+  {% else %}<tr><td colspan="{{ cols }}" class="muted">{{ empty }}</td></tr>{% endfor %}
 </table></div>
+{% if backups and p %}
+{% if p.folded %}<p class="muted">{{ p.folded }} backup cop{{ 'y' if p.folded == 1 else 'ies' }} counted in the In backups column, not listed. <a href="{{ p.backups_url(true) }}">List every copy</a></p>
+{% elif p.all_backups %}<p class="muted">Every backup copy is listed. <a href="{{ p.backups_url(false) }}">Count them per row instead</a></p>{% endif %}
+{% endif %}
 {% endmacro %}
 
 {# Show or leave out hidden files in browse and find, for this session; `left_out`, when known, says how many.

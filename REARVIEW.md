@@ -968,7 +968,9 @@ first, each with `backups` (the backup copies of its content in the answer), a c
 newest snapshot, and `folded` beside `total` (the backup copies left out). `backups=all` lists every copy, primary
 and drop rows first; another value is a 400. `pinakes find`, `where` and `meta` show the count as "+N" in a
 `backups` column and say under the page line how many copies were folded; `--backups` lists them all, and is refused
-by the other commands. The web's pages call the queries as before.
+by the other commands. The web's find and a file's "Every copy" fold the same way: an "In backups" column ("+N"),
+a line under the table saying how many were folded with a link to list every copy (`backups=all`, kept by paging and
+sorting, built by the pager so a bad sort is still dropped), and back.
 
 **Measured** on 2026-11-22 with `tools/bench-pages --only find --only where --only meta` (500,000 files, as 61;
 the same kept catalog timed with the code before and after): find of a name in 378,500 files 0.36 s before, 0.88 s
@@ -977,9 +979,13 @@ folded (298,890 rows listed); find of a glob in 200 files 0.16 s, no match 0.16 
 
 **State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop; `tests/test_api.py` `TestCliFold`, the CLI
 against a real HTTP server on 127.0.0.1, on a generated tree: a primary root, a drop root and three snapshots of a
-backup root whose label sorts first): find, where and meta with primary and drop rows first, each count, a content
-only in snapshots once as its newest, `total` + `folded` equal to `--backups`'s total, the folded count equal to the
-backup copies listed by `--backups` but the one that stands in; pages of a folded list giving the whole list, past
-the end; the plain output's "+N" and its folded line; a second person's counts of their own copies only; the API
-refusing another `backups=` value. All seven checked to fail with the change undone. All 505 tests pass
-(tools/test). Other Pythons and PostgreSQL versions not run; not run on a real catalog; not deployed.
+backup root whose label sorts first): find, where and meta with primary and drop rows first, each count, a content only
+in snapshots once as its newest, `total` + `folded` equal to `--backups`'s total, the folded count equal to the backup
+copies listed by `--backups` but the one that stands in; pages of a folded list giving the whole list, past the end; the
+plain output's "+N" and its folded line; a second person's counts of their own copies only; the API refusing another
+`backups=` value. All seven checked to fail with the change undone. On the web (`tests/test_web.py`
+`TestSorting.test_find_and_copies_fold_backups`, Flask's test client): find and a file's copies without the snapshot
+rows, "+2" on each of five paths of one content, the folded line, the link to every copy listing them after the primary
+rows, the link back, and the sort links keeping `backups=all`; `test_web_wiring` compares the find page with the folded
+query; both checked to fail with the web change undone. All 506 tests pass (tools/test). Other Pythons and PostgreSQL
+versions not run; not run on a real catalog; not deployed.

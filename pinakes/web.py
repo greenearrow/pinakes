@@ -111,12 +111,22 @@ class Pager:
             per = default_per
         self.per = per if per in PER_PAGE else default_per
         self.offset = (self.page - 1) * self.per
-        self.total = self.shown = 0
+        self.total = self.shown = self.folded = 0
 
     def done(self, result):
         self.total = queries.page_total(result)
+        self.folded = queries.folded(result)
         self.shown = len(result)
         return result
+
+    @property
+    def all_backups(self):
+        """Whether this page lists every backup copy (backups=all), not a count per row (ROADMAP 68)."""
+        return request.args.get("backups") == "all"
+
+    def backups_url(self, every):
+        """This page with every backup copy listed, or folded into a count; from the list's first page."""
+        return self.url(page=1, backups="all" if every else "")
 
     @property
     def pages(self):
@@ -135,10 +145,14 @@ class Pager:
         """The query's sort arguments: sort=, direction=."""
         return {"sort": self.sort, "direction": self.dir}
 
-    def url(self, page=None, per=None, sort=None, dir="asc"):
+    def url(self, page=None, per=None, sort=None, dir="asc", backups=None):
         """This page with another page, page size or sort of this list; the others stay. A new size or sort starts
-        at page 1. sort= a column, dir= "asc" or "desc"."""
+        at page 1. sort= a column, dir= "asc" or "desc"; backups= "all", or "" to fold them (ROADMAP 68)."""
         args = request.args.to_dict()
+        if backups is not None:
+            args.pop("backups", None)
+            if backups:
+                args["backups"] = backups
         args[self.param] = page if page is not None else self.page
         if self.sort:
             args[self.sort_param], args[self.dir_param] = self.sort, self.dir
@@ -830,7 +844,8 @@ def create_app(cfg, connect=None):
         results = []
         if searched:
             results = pg.done(queries.find_by(g.db, q, by, mapped["creator"], dated, mapped["date"],
-                                              pg.per, pg.offset, hidden=show_hidden(), **pg.order))
+                                              pg.per, pg.offset, hidden=show_hidden(),
+                                              backups="all" if pg.all_backups else "fold", **pg.order))
         audit_shown([r["file_id"] for r in results], "find")
         return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
                                results=results, pg=pg)
@@ -870,7 +885,8 @@ def create_app(cfg, connect=None):
         pc = Pager("copies", 50, queries.FILE_SORT)
         pv = Pager("versions", 50, queries.VERSIONS_SORT)
         ph = Pager("history", 50, queries.HISTORY_SORT)
-        copies = pc.done(queries.where(g.db, file_id, pc.per, pc.offset, **pc.order)) if f["content_id"] else []
+        copies = pc.done(queries.where(g.db, file_id, pc.per, pc.offset, backups="all" if pc.all_backups else "fold",
+                                       **pc.order)) if f["content_id"] else []
         page = {"f": f, "copies": copies, "pc": pc,
                 "versions": pv.done(queries.versions(g.db, file_id, pv.per, pv.offset, **pv.order)), "pv": pv,
                 "history": ph.done(queries.history(g.db, file_id, ph.per, ph.offset, **ph.order)), "ph": ph,

@@ -586,12 +586,12 @@ were made while building, to keep going, and are open to change.
   those roots' values), and their groups'; an undo of a group's edit by a member is the group's too, so the other
   members see it was undone. No one else, an administrator in a step-up neither: the audit already tells an owner
   who changed their records. Writes before the upgrade have no history.
-- **Backup copies folded (ROADMAP 68).** `find`, `where` and `meta` in the API and `pinakes` list the copies in
-  primary and drop roots first, each with `backups`, the backup copies of its content in the whole answer; a content
-  found only in backup roots is listed once, as its newest snapshot, `backups` counting the others. `total` is the
-  rows listed, so paging and "N of TOTAL" stay one rule, and `folded` beside it is the backup copies left out: the
-  two add up to every copy, as `backups=all` (`--backups`) lists them, primary and drop rows still first. A copy is a
-  file, not an inode: hard-linked snapshots of one file are each counted, since a person asking "in how many
-  snapshots" means that. Counted under row-level security, so only copies the person can see. The web's find and a
-  file's copies are unchanged for now. A broad find costs more: a name in 378,500 files on the generated catalog,
-  0.36 s before, 0.88 s folded (windows over the whole answer), within 61's 2 s.
+- **Backup copies folded (ROADMAP 68).** `find`, `where` and `meta` in the API and `pinakes` list the copies in primary
+  and drop roots first, each with `backups`, the backup copies of its content in the whole answer; a content found only
+  in backup roots is listed once, as its newest snapshot, `backups` counting the others. `total` is the rows listed, so
+  paging and "N of TOTAL" stay one rule, and `folded` beside it is the backup copies left out: the two add up to every
+  copy, as `backups=all` (`--backups`) lists them, primary and drop rows still first. A copy is a file, not an inode:
+  hard-linked snapshots of one file are each counted, since a person asking "in how many snapshots" means that. Counted
+  under row-level security, so only copies the person can see. The web's find and a file's copies fold the same way,
+  with a link to every copy that paging and sorting keep. A broad find costs more: a name in 378,500 files on the
+  generated catalog, 0.36 s before, 0.88 s folded (windows over the whole answer), within 61's 2 s.

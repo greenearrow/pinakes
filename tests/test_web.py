@@ -864,13 +864,39 @@ class TestSorting(ServerCase):
             self.assertIn("people/user-2/d00.txt", page)
         self.assertEqual(c.get("/file/%d?copies_sort=size&history_sort=what" % self.copied).status_code, 404)
 
+    def test_find_and_copies_fold_backups(self):
+        """ROADMAP 68 on the web: find and a file's copies list the primary rows first, each with its content's
+        backup copies as "+N", say how many were folded, and link to every copy and back; paging keeps the choice."""
+        c = self.login("user-1", "correct horse battery")
+        page = c.get("/find?q=c0.txt").get_data(as_text=True)
+        self.assertNotIn("2026-01-01_0100/", page)
+        self.assertIn('<td class="num">+2</td>', page)
+        self.assertIn("2 backup copies counted in the In backups column, not listed.", page)
+        every = re.search(r'<a href="([^"]+)">List every copy</a>', page).group(1).replace("&amp;", "&")
+        self.assertIn("backups=all", every)
+        page = c.get(every).get_data(as_text=True)
+        self.assertIn("2026-01-01_0100/" + self.MANY + "copies/c0.txt", page)
+        self.assertIn("2026-01-02_0100/" + self.MANY + "copies/c0.txt", page)
+        self.assertLess(page.index(self.MANY + "copies/c0.txt"), page.index("2026-01-01_0100/"))   # primary first
+        back = re.search(r'<a href="([^"]+)">Count them per row instead</a>', page).group(1).replace("&amp;", "&")
+        self.assertNotIn("backups=", back)
+        copies = c.get("/file/%d" % self.copied).get_data(as_text=True)
+        self.assertNotIn("2026-01-01_0100/", copies)
+        self.assertEqual(copies.count('<td class="num">+2</td>'), 5)                   # c0 to c4, one content
+        self.assertIn("2 backup copies counted", copies)
+        listed = c.get("/file/%d?backups=all&copies_sort=path&per=50" % self.copied).get_data(as_text=True)
+        self.assertIn("2026-01-02_0100/" + self.MANY + "copies/c0.txt", listed)
+        sorts = [u for u in re.findall(r'<a href="([^"]+)" title="Sort by ', listed) if "copies_sort=" in u]
+        self.assertTrue(sorts and all("backups=all" in u for u in sorts), sorts)       # sorting keeps the choice
+
     def test_web_wiring(self):
         from pinakes import queries
         c = self.login("user-1", "correct horse battery")
         with self.as_person("user-1") as conn:
             for col in queries.FILE_SORT:
                 for d in ("asc", "desc"):
-                    want = [r["file_id"] for r in queries.find(conn, "*.txt", sort=col, direction=d)]
+                    want = [r["file_id"]
+                            for r in queries.find(conn, "*.txt", sort=col, direction=d, backups="fold")]
                     got = re.findall(r'href="/file/(\d+)"',
                                      c.get("/find?q=*.txt&per=500&sort=%s&dir=%s" % (col, d)).get_data(as_text=True))
                     self.assertEqual([int(x) for x in got], want, (col, d))

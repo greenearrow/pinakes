@@ -913,12 +913,12 @@ def _common_cond(mapping, test):
 
 
 def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped_date=(), limit=None, offset=0,
-            sort=None, direction="asc", hidden=True):
+            sort=None, direction="asc", hidden=True, backups=None):
     """Files by name, by common fields, or both: `creator`, a substring, over every (schema, field) in
     `mapped_creator`; `dated`, (first, after) with either None for no bound, over every one in `mapped_date`
     (from date_bounds(): "from a day" is its first, "to a day" the next one's). Metadata on a file's content or on
     the file itself counts. Row-level security decides which metadata is searched, so a sensitive field the person
-    may not see finds nothing. Without `hidden`, no hidden file."""
+    may not see finds nothing. Without `hidden`, no hidden file. `backups` as copies() takes it."""
     where, args = [], []
     if name:
         where.append("f.name ILIKE %s")
@@ -939,9 +939,10 @@ def find_by(conn, name=None, creator=None, mapped_creator=(), dated=None, mapped
         return []
     if not hidden:
         where.append("NOT f.hidden")
-    return rows(conn, """SELECT %s, %s FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
-                         JOIN pinakes.hosts h USING (host_id) WHERE %s""" % (FILE_COLS, TOTAL, " AND ".join(where))
-                + order(FILE_SORT, sort, direction, "f.name, h.name, f.file_id") + PAGE, args + [limit, offset])
+    return copies(conn, FILE_COLS, """FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                                      JOIN pinakes.hosts h USING (host_id) WHERE """ + " AND ".join(where),
+                  tuple(args), _order_by(FILE_SORT, sort, direction, "f.name, h.name, f.file_id"), backups, limit,
+                  offset)
 
 
 def stale(conn):

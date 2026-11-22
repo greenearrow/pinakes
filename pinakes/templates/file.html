@@ -59,7 +59,7 @@
 {% endif %}
 
 <h2>Every copy</h2>
-{{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc) }}{{ pager(pc, "paths") }}
+{{ pager(pc, "paths") }}{{ file_table(copies, "No other copy you can see.", pc, backups=true) }}{{ pager(pc, "paths") }}
 
 <h2>Versions, and which backups hold them</h2>
 {{ pager(pv, "rows") }}
