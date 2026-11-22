@@ -4,7 +4,9 @@
   pinakes find NAME-OR-GLOB [--hide-placeholders]   --hide-placeholders: without the files of placeholders (an
                                        app's default bytes: `pinakes placeholders --marked`), counted
   pinakes where FILE                   every copy and backup of the file
-  pinakes only-here [PATH]             files under the folder (or the file) with no copy on another disk
+  pinakes only-here [PATH]             files under the folder (or the file) with no copy on another disk; with
+                                       none, why: every file has one, or none you can see (--json: files,
+                                       last_complete_on)
   pinakes safe-to-delete [PATH]        files under it with no kept copy on another disk (none: safe), and the
                                        symlinks elsewhere that lead into it
   pinakes backed-up [PATH]
@@ -594,7 +596,8 @@ def run(api, a, cfg):
     elif a.cmd in FILE:
         got = api.get(a.cmd, loc=loc("file"), down=1 if a.cmd == "lineage" and a.down else None, **page)
     elif a.cmd in FOLDER:
-        got = api.get(a.cmd, loc=loc("any"), **page)
+        where = loc("any")
+        got = api.get(a.cmd, loc=where, **page)
         if a.cmd == "backed-up" and not a.json and got.get("with_backup") is not None:   # a server before: none
             print("%d of %d have a backup; %d have none" % (got["with_backup"], count(got), got["without_backup"]))
     elif a.cmd == "changes":
@@ -700,9 +703,26 @@ def run(api, a, cfg):
             print("%d file(s) of placeholders not listed: without --hide-placeholders they are"
                   % got["placeholders_hidden"])
         return
+    if a.cmd == "only-here" and not count(got) and "files" in got:      # a server before ROADMAP 74: "(none)"
+        print(only_here_none(got, where))
+        return
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
         _page_line(got)
+
+
+def only_here_none(got, where):
+    """An empty only-here, said why (ROADMAP 74): every file has a copy, or there is none to see; with the root's last
+    complete scan, which the answer is as of."""
+    n = got["files"]
+    if not n:
+        why = "no file you can see under %s" % where
+    elif n == 1:
+        why = "the one file under %s has a copy on another disk" % where
+    else:
+        why = "all %d files under %s have a copy on another disk" % (n, where)
+    scan = got.get("last_complete_on")
+    return "none: %s (%s)" % (why, "last complete scan %s" % scan if scan else "no complete scan yet")
 
 
 def _not_searched(got):

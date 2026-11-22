@@ -416,6 +416,21 @@ class TestWeb(ServerCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("1.5 KB", r.get_data(as_text=True))
 
+    def test_only_here_with_nothing_to_list_says_why(self):
+        """ROADMAP 74 on the web: every file has a copy, or there is none to see, with the root's last complete scan."""
+        c1, _ = self.login("user-1", "correct horse battery")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/taxes.txt", b"his")
+        self.scan("server-2", "snapshots")
+        scan = self.q("SELECT last_complete_on FROM pinakes.roots WHERE label = 'store'")[0][0]
+        page = c1.get("/reports/only-here?loc=store:people/user-1/taxes.txt").get_data(as_text=True)
+        self.assertIn("None: the one file under store:people/user-1/taxes.txt has a copy on another disk", page)
+        self.assertIn("(last complete scan %s)" % scan, page)
+        page = c1.get("/reports/only-here?loc=store:people/user-2/").get_data(as_text=True)
+        self.assertIn("None: no file you can see under store:people/user-2/", page)
+        self.assertNotIn("diary", page)
+        self.assertIn("plan.txt", c1.get("/reports/only-here?loc=store:people/user-1/").get_data(as_text=True))
+
     def test_reports_and_headers(self):
         c1, _ = self.login("user-1", "correct horse battery")
         r = c1.get("/reports/safe-to-delete?loc=store:people/user-1/")

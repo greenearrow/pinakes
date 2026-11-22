@@ -17,6 +17,8 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   find?q=NAME-OR-GLOB              placeholders=hide: without the files of placeholders, counted (placeholders_hidden)
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up|folder-copies?loc=ROOT:PATH
+                                  only-here: also files (those you see there, symlinks left out) and the root's
+                                  last_complete_on, for saying why none is listed
   changes?days=N&host=NAME&loc=ROOT:PATH&review=unreviewed|reviewed&what=KIND...
   meta?field=SCHEMA.FIELD&value=VALUE    the files with that value: text without case, trimmed; a date field's YYYY,
                                   YYYY-MM or YYYY-MM-DD every date in it; field= and value= again, in pairs, for
@@ -557,7 +559,9 @@ def create_app(cfg, connect=None):
 
     @api("only-here")
     def api_only_here():
-        return page(queries.only_here, arg("loc", "loc=ROOT:PATH"))
+        loc = arg("loc", "loc=ROOT:PATH")
+        out = page(queries.only_here, loc)
+        return dict(out, **queries.folder_files(g.db, loc))     # what an empty answer stands on (ROADMAP 74)
 
     @api("safe-to-delete")
     def api_safe_to_delete():
@@ -1205,7 +1209,7 @@ def create_app(cfg, connect=None):
     @signed_in
     def report(name):
         loc = request.args.get("loc", "").strip()
-        rows, error, ch, links = [], None, None, []
+        rows, error, ch, links, under = [], None, None, [], None
         pg = Pager(sorts={"backed-up": queries.BACKED_UP_SORT, "dupes": queries.DUPES_SORT,
                           "changes": queries.CHANGES_SORT, "restore": queries.RESTORE_SORT,
                           "only-here": queries.COPY_SORT, "manifests": queries.MANIFEST_SORT,
@@ -1215,6 +1219,7 @@ def create_app(cfg, connect=None):
         try:
             if name == "only-here" and loc:
                 rows = queries.only_here(g.db, loc, *lim, **pg.order)
+                under = None if rows or pg.offset else queries.folder_files(g.db, loc)   # why none (ROADMAP 74)
             elif name == "safe-to-delete" and loc:
                 rows = queries.not_safe_to_delete(g.db, loc, *lim, **pg.order)
                 links = queries.links_into(g.db, loc, LINKS_SHOWN)
@@ -1255,7 +1260,7 @@ def create_app(cfg, connect=None):
         backed = int(rows[0]["with_backup"]) if name == "backed-up" and rows else None    # of all, not the page
         return render_template("report.html", name=name, loc=loc, rows=rows, error=error, pg=pg, ch=ch,
                                kinds=queries.KINDS, links=links, links_total=queries.page_total(links),
-                               backed=backed)
+                               backed=backed, under=under)
 
     @app.route("/reports/changes/mark", methods=["POST"])
     @signed_in

@@ -223,7 +223,9 @@ class TestApi(ApiCase):
         for path in ("where?loc=store:people/user-2/diary.txt", "history?file=%d" % diary, "versions?file=%d" % diary):
             self.assertEqual(self.get(path, his), (404, {"error": "no file you can see there"}))
         self.assertEqual(self.paths("where?loc=store:people/user-2/diary.txt", hers), ["store:people/user-2/diary.txt"])
-        self.assertEqual(self.get("only-here?loc=store:people/user-2/", his), (200, NONE))
+        scanned = self.q("SELECT last_complete_on FROM pinakes.roots WHERE label = 'store'")[0][0].isoformat()
+        self.assertEqual(self.get("only-here?loc=store:people/user-2/", his),      # her files: none, and not counted
+                         (200, dict(NONE, files=0, last_complete_on=scanned)))
         status, body = self.get("safe-to-delete?loc=store:people/user-1/", his)
         self.assertEqual((status, sorted(body)),
                          (200, ["limit", "links_into", "links_into_total", "not_safe", "offset", "total"]))
@@ -615,6 +617,41 @@ class TestCli(ServerCase):
         got = json.loads(cli("backed-up", mine, "--json"))
         self.assertEqual((got["total"], got["with_backup"], got["without_backup"]), (1, 0, 1))
 
+    def test_only_here_with_nothing_to_list_says_why(self):
+        """An empty only-here (ROADMAP 74) says whether every file has a copy or there is none to see, with the root's
+        last complete scan; --json carries the files counted and the date; under row-level security."""
+        cli, mine = self.cli, "store:people/user-1/"
+        scanned = {r["label"]: r["last_complete_on"] for r in json.loads(cli("roots", "--json"))}["store"]
+        self.assertTrue(scanned)
+        self.assertEqual(json.loads(cli("only-here", mine, "--json"))["files"], 2)     # carried with rows too
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        for rel, data in (("people/user-1/taxes.txt", b"his"), ("people/user-1/shared-with-2/plan.txt", b"plan")):
+            self.write("server-2", "snapshots", "2026-01-01_0140/" + rel, data)
+        self.scan("server-2", "snapshots")
+        self.assertEqual(cli("only-here", mine), "none: all 2 files under store:people/user-1/ have a copy on "
+                                                 "another disk (last complete scan %s)\n" % scanned)
+        got = json.loads(cli("only-here", mine, "--json"))
+        self.assertEqual((got["rows"], got["total"], got["files"], got["last_complete_on"]), ([], 0, 2, scanned))
+        self.assertEqual(cli("only-here", mine + "taxes.txt"), "none: the one file under store:people/user-1/taxes.txt"
+                                                               " has a copy on another disk (last complete scan %s)\n"
+                         % scanned)
+        os.makedirs(self.path("server-1", "store", "people/user-1/empty"))
+        self.scan("server-1", "store")
+        self.assertEqual(cli("only-here", mine + "empty/"), "none: no file you can see under store:people/user-1/empty/"
+                                                            " (last complete scan %s)\n" % scanned)
+        got = json.loads(cli("only-here", mine + "empty/", "--json"))
+        self.assertEqual((got["total"], got["files"], got["last_complete_on"]), (0, 0, scanned))
+        # her token: only the shared file counts, and a folder of his alone is one she sees nothing in
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual(json.loads(cli("only-here", mine, "--json"))["files"], 1)
+        self.assertIn("the one file under store:people/user-1/ has a copy", cli("only-here", mine))
+        self.write("server-1", "store", "people/user-1/alone/note.txt", b"note")
+        self.scan("server-1", "store")
+        got = json.loads(cli("only-here", mine + "alone/", "--json"))
+        self.assertEqual((got["rows"], got["files"]), ([], 0))          # his file: not hers to see or count
+        # a root the catalog has no complete scan of
+        self.assertEqual(json.loads(cli("only-here", "fresh:", "--json"))["last_complete_on"], None)
+
     def test_every_query_through_the_api(self):
         """Each query of DESIGN.md "Queries", and roots, as the token's person."""
         cli = self.cli
@@ -808,7 +845,8 @@ class TestCliHere(ServerCase):
     def test_another_persons_files_are_left_out(self):
         cli = self.cli
         theirs = self.path("server-1", "store", "people/user-2")
-        self.assertEqual(cli("only-here", cwd=theirs), "(none)\n")
+        self.assertRegex(cli("only-here", cwd=theirs),        # not "every file has a copy": none she can see
+                         r"^none: no file you can see under store:people/user-2 \(last complete scan [0-9-]{10}\)\n$")
         self.assertEqual(cli("safe-to-delete", cwd=theirs),
                          "safe: every file under store:people/user-2 has a kept copy on another disk\n")
         self.assertEqual(cli("where", "diary.txt", cwd=theirs, code=1), "pinakes: no file you can see there")
@@ -2400,6 +2438,7 @@ class TestCliPages(ServerCase):
                 counts = ["with_backup", "without_backup"] if cmd == "backed-up" else []   # of the whole list
                 counts += ["folded"] if cmd in ("find", "where", "meta") else []                # ROADMAP 68
                 counts += ["not_searched"] if cmd == "meta" else []                              # ROADMAP 71
+                counts += ["files", "last_complete_on"] if cmd == "only-here" else []           # ROADMAP 74
                 self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
                                  (sorted(["limit", "offset", "rows", "total"] + counts), total, 2, 2, 1))
                 self.assertNotIn("total_rows", got["rows"][0])

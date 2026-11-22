@@ -237,6 +237,20 @@ def only_here(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
     return _no_copy_on_another_disk(conn, loc, False, limit, offset, sort, direction)
 
 
+def folder_files(conn, loc):
+    """What an empty only-here stands on (ROADMAP 74): `files`, how many files the person sees under loc (or the file
+    itself), symlinks left out as only-here leaves them, under row-level security; `last_complete_on`, the root's
+    last complete scan (None: none yet, or a root the token may not see)."""
+    root, path = split_location(loc)
+    pre = _prefix(path)
+    return rows(conn, """SELECT (SELECT count(*) FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                                 WHERE r.label = %s AND (f.relpath LIKE %s OR f.relpath = %s)
+                                   AND NOT f.is_symlink) AS files,
+                                (SELECT r.last_complete_on FROM pinakes.roots r WHERE r.label = %s
+                                   AND (pinakes.token_roots() IS NULL OR r.root_id = ANY (pinakes.token_roots())))
+                                    AS last_complete_on""", (root, pre, path, root))[0]
+
+
 def not_safe_to_delete(conn, loc, limit=None, offset=0, sort=None, direction="asc"):
     """The files under loc with no copy in a primary or backup root on another disk. Empty: safe. same_disk: their
     kept copies outside loc on the same disk, which don't make them safe."""

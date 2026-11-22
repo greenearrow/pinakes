@@ -1119,3 +1119,27 @@ deployed.
 rows): `meta exif.make=Maker-1` 0.152 s (0.066 s at 70: the count reads every present file the person sees, about
 0.08 s), ` maker-1` 0.144 s, with `exif.taken=2019-06` besides 0.163 s, `meta-values` of `exif.make` 0.163 s and of
 `exif.taken` 0.187 s; every first page within 2 s.
+
+## 74. `only-here` with nothing to list says why
+
+With this, ROADMAP 74 is built and no longer listed.
+
+**Built:** an empty `pinakes only-here` no longer prints "(none)", which read the same for a folder fully copied and an
+empty one. It says "none: all N files under FOLDER have a copy on another disk" ("the one file ..." for one), or "none:
+no file you can see under FOLDER", each with "(last complete scan DATE)" of the folder's root, or "(no complete scan
+yet)". N counts the present files the person sees there, symlinks left out as only-here leaves them, under row-level
+security (`queries.folder_files`): a folder holding only another person's files reads as one with none to see, and
+gives no count of them. The API's `only-here` (and `--json`) carries `files` and `last_complete_on` on every answer;
+the date is null for a root without a complete scan or one the token may not see. The web's Only here says the same
+where it said "everything here has a copy" of an empty folder too. A server before this sends neither, and the
+command prints "(none)" as before. No schema change.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py`
+`TestCli.test_only_here_with_nothing_to_list_says_why`, the CLI against a real HTTP server on 127.0.0.1, on a generated
+tree: a folder fully copied to a backup root on another host (N 2, the scan date as `pinakes roots` gives it), one file,
+an empty folder (N 0), the same as a second person seeing only the shared file (N 1) and a folder of his alone (N 0, no
+rows), and a root with no scan; `TestCliHere` another person's folder; `tests/test_web.py`
+`TestWeb.test_only_here_with_nothing_to_list_says_why` the web page's two sentences and the date. All 536 tests pass
+(tools/test). tools/bench-pages (500,000 files): only-here within 1.19 s for a whole root, 0.25 s for a folder (its
+at-risk, untouched here, took 2.34 s, over the 2 s limit). Other Pythons and PostgreSQL versions not run; not run on a
+real catalog; not deployed.

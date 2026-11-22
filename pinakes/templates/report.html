@@ -21,7 +21,7 @@
     {% for l in links %}<tr><td>{{ l.host }} · <a href="{{ url_for('file', file_id=l.file_id) }}">{{ l.root }}:{{ l.relpath }}</a></td><td class="mono">{{ l.link_target }}</td><td>{{ loc.split(':')[0] }}:{{ l.link_relpath }}</td></tr>{% endfor %}
     </table></div>{% endif %}
   {% elif name == 'only-here' %}
-    <p class="muted">Files under {{ loc }} with no copy you can see on another disk{% if pg.total %}: {{ pg.total }}{% endif %}. Copies on this disk die with it; a hard link is not a copy.</p>{{ pager(pg, "files") }}{{ file_table(rows, "None: everything here has a copy on another disk.", pg, True) }}{{ pager(pg, "files") }}
+    <p class="muted">Files under {{ loc }} with no copy you can see on another disk{% if pg.total %}: {{ pg.total }}{% endif %}. Copies on this disk die with it; a hard link is not a copy.</p>{{ pager(pg, "files") }}{% if under %}<p>None: {% if not under.files %}no file you can see under {{ loc }}{% elif under.files == 1 %}the one file under {{ loc }} has a copy on another disk{% else %}all {{ under.files }} files under {{ loc }} have a copy on another disk{% endif %} <span class="muted">({% if under.last_complete_on %}last complete scan {{ under.last_complete_on }}{% else %}no complete scan yet{% endif %})</span>.</p>{% else %}{{ file_table(rows, "None on this page.", pg, True) }}{% endif %}{{ pager(pg, "files") }}
   {% else %}
     {% if backed is not none %}<p>{{ backed }} of {{ pg.total }} file(s) have a backup; {{ pg.total - backed }} have none.</p>{% endif %}
     <p class="muted">Backup copies are physical: snapshots made with hard links share one copy.</p>
