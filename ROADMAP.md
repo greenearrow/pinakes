@@ -184,68 +184,100 @@ catalog's promise, not the disk's: whoever can read the files on the machine sti
     (only the folders named in it). Built as a member of the ACLs it reaches, with its own role, so row-level security
     stays one array test (`visible_acls()`) and every report follows; a private folder gets ACLs of its own the view
     doesn't reach, and its backup copies follow it as they follow their source's owner. A reader's view: no marks, tags
-    or lineage decisions, and sensitive fields only by `share_sensitive()`. Who may be viewed so is site config
+    or lineage decisions. Sensitive fields (GPS, people; METADATA.md) by level: at *child* included, a safety value; at
+    *teenager* not, a step-up reaches them; at *supervisor* never (83). Who may be viewed so is site config
     (`[people.NAME] standing = {kind, by}`); the database refuses anyone else, so an adult or a collaborator can never
     be given one through the web or the API, and a config entry appears, audited, on the person's page at the next
     `setup`. Its level and folders are changed by an administrator in a step-up with a reason and a preview equal to the
     result ("you'll see 2,140 of user-3's files in 1 folder; 6,902 stay private"); narrowing (teenager back to child) is
     shown to the person with the reason (and sent, with 11); ending it needs no step-up, can't be undone, and keeps the
-    access entries. The person marks their own folders private and sees their view: who sees what, since when. The
-    viewer sees that private folders exist, as one line with no name, count or size. Each look is on the person's
-    "Access to your records" as its own kind, by folder with counts (as 80), never as a step-up; the private part is
-    reached only by an ordinary step-up (75, 80). A token leaves standing views out unless its maker adds them, with the
-    note on what an assistant receives (24); a group token never has one; no token sets, changes or ends one. After 8
-    (the per-folder pages it changes) and 80. *Done when:* `pinakes views` (the arrangements a person is in, either
+    access entries. The person marks their own folders private, without the viewer agreeing (an administrator can always
+    step up: restraint, not a lock), and sees their view: who sees what, since when. What the viewer sees of the private
+    part depends on the level: at *child* one line that a private folder exists, with no name, count or size; at
+    *teenager* nothing at all, not that line, and no opaque container (85) in it named, since making something private
+    is itself private. Each look is on the person's "Access to your records" as its own kind, by folder with counts (as
+    80), never as a step-up; the private part is reached only by an ordinary step-up (75, 80). A token leaves standing
+    views out unless its maker adds them, with the note on what an assistant receives (24); a group token never has one;
+    no token sets, changes or ends one. After 8 (the per-folder pages it changes) and 80. Owner decisions 2026-11-22
+    (private marks, sensitive fields by level). *Done when:* `pinakes views` (the arrangements a person is in, either
     side), `pinakes private FOLDER` (mark, unmark) and `pinakes access` and their `--json` are tested through the API on
-    the demo household (`tools/demo.py`, which builds both levels): user-1 outside a step-up finds user-4's files but
-    nothing in the private folder, and no name or count hints at it in `find`, `changes`, `at-risk`, `only-here`,
-    `backed-up`, `safe-to-delete`, `meta` or `--json`, its snapshot copies included; user-1 finds only user-3's agreed
-    folder, and a file moved out of it is gone from that view after the next scan; user-3's `access` lists user-1's
-    looks as guardian views; a view on user-2 refused by the database, under every token and in a step-up; a token
-    without the view added sees none of user-4's files; ending user-3's view leaves user-1 nothing outside a step-up and
-    the earlier entries kept; the operator page's per-person totals unchanged; and the web pages say the same.
-83. [Security; also feature] **A supervisor's standing view, for a lab:** 82's mechanism of kind *supervisor*, its
-    words on the pages ("independent" for private; "supervised by"): everything a student owns but the folders they
-    mark independent, or only named project folders. Two things the household doesn't have: a file of the lab's (one
-    the supervisor sees, by hash or confirmed lineage) put into an independent folder, or a folder of them marked
+    the demo household (`tools/demo.py`, which builds both levels): user-1 outside a step-up finds user-4's files and
+    their GPS but nothing in the private folder, and only the one line, no name or count, hints at it in `find`,
+    `changes`, `at-risk`, `only-here`, `backed-up`, `safe-to-delete`, `meta` or `--json`, its snapshot copies included;
+    user-1 finds only user-3's agreed folder, without its sensitive fields and with no line about a private folder or an
+    opaque container, and a file moved out of it is gone from that view after the next scan; user-3's `access` lists
+    user-1's looks as guardian views; a view on user-2 refused by the database, under every token and in a step-up; a
+    token without the view added sees none of user-4's files; ending user-3's view leaves user-1 nothing outside a
+    step-up and the earlier entries kept; the operator page's per-person totals unchanged; and the web pages say the
+    same.
+83. [Security; also feature] **A supervisor's standing view, for a lab:** 82's mechanism of kind *supervisor*, its words
+    on the pages ("independent" for private; "supervised by"): everything a student owns but the folders they mark
+    independent, or only named project folders. Two things the household doesn't have: a file of the lab's (one the
+    supervisor sees, by hash or confirmed lineage) put into an independent folder, or a folder of them marked
     independent, is shown to the student ("this came from project-y") before the mark takes effect or at the next scan
-    that brings it in; the supervisor isn't told (SECURITY.md, open question). And a student who leaves: the view
-    ends as in 82, and their independent folders are theirs to take with them by 8's giving. The institution's right
-    to the independent part is an ordinary step-up. *Done when:* `pinakes private` and `pinakes views` and their
-    `--json` are tested through the API on a generated lab: user-3's independent folder hidden from user-1 in every
-    report 82 lists and in `export`; a lab file copied into it listed for user-3 with its source, and absent from
-    user-1's answers; a view of kind supervisor refused on user-2 (a collaborator, not named in config); the web page
+    that brings it in, and the supervisor is told the file's name and its source (it is lab data), so a move from the
+    lab's view into a private one is never silent and the supervisor knows which backup copies hold the exposed version;
+    the independent folder's name and its other files stay out of it. Sensitive fields are never in a supervisor's view
+    (a lab's GPS is participants' data). Owner decision 2026-11-22. And a student who leaves: the view ends as in 82,
+    and their independent folders are theirs to take with them by 8's giving. The institution's right to the independent
+    part is an ordinary step-up, shown at once, or an auditor's held view (86). *Done when:* `pinakes private` and
+    `pinakes views` and their `--json` are tested through the API on a generated lab: user-3's independent folder hidden
+    from user-1 in every report 82 lists and in `export`; a lab file copied into it listed for user-3 with its source,
+    and for user-1 by its name and source only, the folder's name and its other files absent; no sensitive field of
+    user-3's in user-1's answers; a view of kind supervisor refused on user-2 (a collaborator, not named in config); the
+    web page says the same.
+84. [Security; also correctness] **Unclaimed until claimed:** an owner rule may give a folder (a root's top included) to
+    nobody (`owner = "unclaimed"`), so a file under it that no deeper rule claims has no owner, instead of falling to
+    the site's one `default_owner`. On a lab's storage that is how a collaborator's new folder beside their rule stops
+    becoming the default owner's, silently. An unclaimed file is in no person's view and no person's copy reasoning (so
+    only-here or safe-to-delete err toward "not safe"), its backup copies follow it, administrators see it in a step-up
+    (as now: a step-up sees every ACL), and operators see counts per root. Nobody is told "there's something beside your
+    folder" (that would name another person's folder); claiming is an administrator's, in a step-up with a reason,
+    audited, by 8's per-folder giving, and the new owner is told (11). No `pinakes` command: claiming needs a step-up,
+    which no token opens (SECURITY.md), until an admin token (40); the operator's counts are `pinakes-ingest unclaimed`.
+    *Done when:* tests on a root with an unclaimed rule: a new folder beside a person's rule is owned by nobody, in no
+    person's `find` or `--json` through the API, counted in `pinakes-ingest unclaimed` and on the operator page with no
+    path, listed in a step-up and claimed there with the preview equal to the result; a uid rule (2) still claims what
+    it maps; a root without the rule unchanged.
+85. [Correctness; also security] **Opaque containers:** what the catalog can't see inside, shown as one thing. An opened
+    encrypted volume is a mount and already not walked (DESIGN.md "Roots"), and a container file is already one file
+    with a size, times and a hash; what's missing is saying so, and folding a backup tool's repository (restic, borg),
+    which today is walked as thousands of pack files: its prune turns them into gone files to review, and its parts show
+    in `find`, `only-here` and `changes`. Wanted: a folder or file marked `opaque` in the root's config, or recognised
+    by the agent (a restic or borg repository's layout; a LUKS header in the first block it already reads to hash;
+    VeraCrypt can only be marked, its volumes look random by design), recorded as one thing: size, file count, newest
+    change and a digest over its files' names, sizes and hashes, so two copies of one repository are copies of each
+    other as a whole. Its parts are never duplicates, folder copies, relatives, safe to delete or review items; the
+    whole is, as one. Its page and `--json` say "opaque: the catalog checks its bytes, not what's inside" (a scrub still
+    finds rot; `restic check` is the tool's). A repository read with its owner's key (21) is not opaque to them. Where
+    it folds is the machine's own agent config, per root like `managed`, so the machine's owner decides (a parent on a
+    child's laptop, a student on their own, the PI on the lab's server): on the agent (one record, a protocol change;
+    the parts and their prune churn never leave the machine) or on the server (every part sent, folded in queries). The
+    server can't change it. Owner decision 2026-11-22. *Done when:* `pinakes find`, `dupes`, `safe-to-delete`,
+    `only-here`, `folder-copies` and `changes` and their `--json` are tested through the API on a generated
+    restic-shaped and borg-shaped folder and a LUKS-headed file, folded on the agent and on the server: each appears as
+    one opaque thing, the agent-folded one with no part in the catalog, none of its parts in `dupes` or
+    `safe-to-delete`, a pruned pack no review item, two copies of the repository one copy of the other; and the web page
     says the same.
-84. [Security; also correctness] **Unclaimed until claimed:** an owner rule may give a folder (a root's top
-    included) to nobody (`owner = "unclaimed"`), so a file under it that no deeper rule claims has no owner, instead
-    of falling to the site's one `default_owner`. On a lab's storage that is how a collaborator's new folder beside
-    their rule stops becoming the default owner's, silently. An unclaimed file is in no person's view and no
-    person's copy reasoning (so only-here or safe-to-delete err toward "not safe"), its backup copies follow it,
-    administrators see it in a step-up (as now: a step-up sees every ACL), and operators see counts per root.
-    Nobody is told "there's something beside your folder" (that would name another person's folder); claiming is an
-    administrator's, in a step-up with a reason, audited, by 8's per-folder giving, and the new owner is told (11). No
-    `pinakes` command: claiming needs a step-up, which no token opens (SECURITY.md), until an admin token (40); the
-    operator's counts are `pinakes-ingest unclaimed`. *Done when:* tests on a root with an unclaimed rule: a new
-    folder beside a person's rule is owned by nobody, in no person's `find` or `--json` through the API, counted in
-    `pinakes-ingest unclaimed` and on the operator page with no path, listed in a step-up and claimed there with the
-    preview equal to the result; a uid rule (2) still claims what it maps; a root without the rule unchanged.
-85. [Correctness; also security] **Opaque containers:** what the catalog can't see inside, shown as one thing. An
-    opened encrypted volume is a mount and already not walked (DESIGN.md "Roots"), and a container file is already one
-    file with a size, times and a hash; what's missing is saying so, and folding a backup tool's repository (restic,
-    borg), which today is walked as thousands of pack files: its prune turns them into gone files to review, and its
-    parts show in `find`, `only-here` and `changes`. Wanted: a folder or file marked `opaque` in the root's config, or
-    recognised by the agent (a restic or borg repository's layout; a LUKS header in the first block it already reads
-    to hash; VeraCrypt can only be marked, its volumes look random by design), recorded as one thing: size, file
-    count, newest change and a digest over its files' names, sizes and hashes, so two copies of one repository are
-    copies of each other as a whole. Its parts are never duplicates, folder copies, relatives, safe to delete or
-    review items; the whole is, as one. Its page and `--json` say "opaque: the catalog checks its bytes, not what's
-    inside" (a scrub still finds rot; `restic check` is the tool's). A repository read with its owner's key (21) is
-    not opaque to them. Decided first: folding on the agent (one record; a protocol change, and prune churn never
-    leaves the machine) or on the server (every file sent, folded in queries). *Done when:* `pinakes find`, `dupes`,
-    `safe-to-delete`, `only-here`, `folder-copies` and `changes` and their `--json` are tested through the API on a
-    generated restic-shaped and borg-shaped folder and a LUKS-headed file: each appears as one opaque thing, none of
-    its parts in `dupes` or `safe-to-delete`, a pruned pack no review item, two copies of the repository one copy of
-    the other; and the web page says the same.
+86. [Security] **An auditor, whose views can be held** (SECURITY.md "Auditors"): for an inquiry (a lab's
+    research-integrity case) an administrator's step-up is never held, it shows at once; instead a separate role, named
+    in the site config (`[people.NAME] roles = ["auditor"]`), the database refusing anyone else, so a site with no
+    auditor (a household's default) can hold nothing. Web only, with a second factor; no token, no `--as`, no assistant.
+    Each audit has three different people, enforced by the database: a requester, an approver, and the subjects, neither
+    of the first two among them (in a lab the subject may be the PI, who administers the site, so an administrator is
+    never the auditor's only check). Its scope is set before it opens (named people, folders and a time window), reaches
+    only that, and widening it needs a new audit; it is read-only (no marks, tags, shares, ownership changes or
+    sensitive-field sharing) and an export is recorded as part of it. A hold is capped (90 days by default, site
+    config); a renewal needs the approver again and is logged; at the cap the entries show on each subject's "Access to
+    your records" with nobody releasing them, complete: requester, approver, reason, scope, each folder seen with its
+    counts, and how long it was held. Every page shows everyone on the site how many audits are held and the latest date
+    one ends, with no names. The database superuser and whoever runs the disks stay outside all of this (SECURITY.md).
+    Decided first: who may approve, and whether a scope can include sensitive fields. Owner decision 2026-11-22. After
+    80 (entries by folder). *Done when:* `pinakes access` and its `--json` are tested through the API: an audit with
+    requester and approver the same, or either a subject, refused by the database; a held entry absent from the
+    subject's `access` and present, complete, after the cap with no action; a renewal without the approver refused; the
+    held count right for a person who isn't the subject and shown on the web; an auditor's call outside the scope
+    finding nothing; a token refused every auditor function; and a site with no auditor configured refusing an audit.
 
 ## Sources and imports
 

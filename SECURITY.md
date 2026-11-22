@@ -21,6 +21,7 @@ database, with an audit trail. They are not cryptographic.
 | **person** | See and manage their own files and what is shared with them. Everyone who signs in is a person. |
 | **operator** | Run the system: hosts, roots, agents, health, schedules. Sees counts, sizes, ages and errors per root, never file names or metadata of other people. |
 | **administrator** | Everything, but only during a **step-up session**. Outside one, an administrator is just a person. |
+| **auditor** (planned, ROADMAP 86) | Read, in one approved audit of named people and folders, entries that may be held for a capped time. Only if the site's config names one; none by default. "Auditors" below. |
 
 The site's administrator normally works as a person. To see someone else's records they step up:
 
@@ -68,7 +69,9 @@ application code. A policy allows a row when:
 - the current session is an active administrator step-up (checked against a `step_ups` table with an expiry; the
   check also writes the audit row), or
 - (planned, ROADMAP 82) the current person holds a standing view of its owner that reaches it: a member of the row's
-  ACL with the view's own role, so it is the same array test, and a private folder's ACLs leave the view out.
+  ACL with the view's own role, so it is the same array test, and a private folder's ACLs leave the view out, or
+- (planned, ROADMAP 86) the current session is an auditor's open, approved audit whose scope (people, folders, time
+  window) holds the row.
 
 The history of the catalog's own writes (`edits`, `edit_items`, ROADMAP 62) is narrower: a person sees only their own
 edits and their groups', never another person's, not in a step-up either; and of an edit only the values on files
@@ -95,21 +98,47 @@ folders).
 - An administrator sets its level and folders in a step-up with a reason, after a preview equal to the result.
   Narrowing it is shown to the person with the reason. Ending it needs no step-up and can't be undone; entries
   already written stay.
-- It is a reader's view: no review marks, tags, lineage decisions or shares; sensitive fields only through
-  `share_sensitive()`, as for any reader.
-- A private folder is the person's own to mark, and its backup copies follow it. The viewer sees that private folders
-  exist (one line, no name, count or size) and nothing of them: no row, count or copy in any report or export, and
-  not in copy reasoning ("safe to delete" for the viewer can't count a copy there). Reaching it is an ordinary
-  step-up, audited and shown as one.
+- It is a reader's view: no review marks, tags, lineage decisions or shares. Sensitive fields (GPS, people) by
+  level: *child*, included (a safety value); *teenager*, not (a step-up reaches them); *supervisor*, never (a lab's
+  locations are participants' data).
+- A private folder is the person's own to mark, without the viewer agreeing: the viewer is an administrator who can
+  always step up, so what holds them back is restraint, made visible, not a lock. Its backup copies follow it. The
+  viewer gets nothing of it: no row, count or copy in any report or export, and not in copy reasoning ("safe to
+  delete" for the viewer can't count a copy there). At *child* they see one line that a private folder exists, with
+  no name, count or size; at *teenager* not even that, and no opaque container in it is named, since making something
+  private is itself private. Reaching it is an ordinary step-up, audited and shown as one.
+- Lab files (ones the supervisor sees) put into an independent folder are shown to the student first, and the
+  supervisor is told their names and sources, never the folder's name or its other files: data leaving the lab's view
+  is never silent, and the supervisor knows which backup copies hold it.
 - Every look is on the person's "Access to your records" as its own kind, by folder with counts, never as a step-up.
 - Under a token: left out unless its maker adds it, with the warning that the records go to whoever runs the
   assistant; never in a group token; no token sets, changes or ends one.
 - The operator page's per-person totals are unchanged by it.
 
-Open question for the owner: an institution may look at a student's independent work during a research-integrity
-inquiry. That is an ordinary step-up and, like every step-up, shows on the student's page at once. Whether an
-inquiry may delay that entry (and who decides, for how long) is a policy question; until decided, it shows at once,
-and the catalog never hides a step-up.
+An administrator's step-up is never held, an inquiry's included: it shows on the person's page at once (owner's
+decision, 2026-11-22). An inquiry that must not alert its subject uses an auditor.
+
+## Auditors (planned: ROADMAP 86)
+
+An auditor sees records in one audit whose entries may be held from their subjects for a capped time. It exists only
+where the site's config names an auditor; with none, no hold can exist.
+
+- The role is in the site config; the database refuses it to anyone else. Web only, with a second factor: no token,
+  no `--as`, no assistant.
+- Three different people: a requester, an approver, and the subjects; the requester and approver are never the same
+  person nor among the subjects, enforced by the database. A subject may be the site's administrator, so an
+  administrator is never an audit's only check.
+- The scope (people, folders, a time window) is set before it opens; the audit reaches only that, and widening it
+  needs a new audit. Read-only: no marks, tags, shares, ownership changes or sensitive-field sharing; an export is
+  recorded as part of it.
+- A hold is capped (default 90 days); a renewal needs the approver again and is logged. At the cap the entries show on
+  each subject's "Access to your records" by themselves, complete: requester, approver, reason, scope, each folder
+  seen with counts, and how long they were held.
+- Every page shows everyone on the site how many audits are held and the latest date one ends, without names: a hold
+  hides who is looked at, not that someone is. Collusion of requester and approver is the risk left; the count and the
+  cap limit it. On a site of few people the count itself narrows who it could be.
+- The limit, as for step-ups: the database superuser, root on the catalog server and whoever runs the disks are
+  outside all of this.
 
 ## Copies across owners
 
@@ -278,7 +307,8 @@ DESIGN.md "Wish: an MCP server". Its rules:
 | The catalog is breached through the web UI or a stolen session | It holds no files and can reach none: the intruder gets what that person can see (names, hashes, metadata, previews), not file content, and no path to the disks. |
 | The catalog server is compromised | Out of scope for the guarantees above. Agents still refuse deletions and anything outside their local `managed` policy. |
 | Dedupe reveals someone holds a file | Copies outside one's view are neither shown nor counted. |
-| A parent or supervisor browses a child's or student's records casually | Only within a standing view the site's config allows for that person, never an adult's or a collaborator's; private folders out of it; every look on the person's page; beyond it a step-up. (Planned, ROADMAP 82, 83.) |
+| A parent or supervisor browses a child's or student's records casually | Only within a standing view the site's config allows for that person, never an adult's or a collaborator's; private folders out of it, at *teenager* without a trace; sensitive fields by level; every look on the person's page; beyond it a step-up. (Planned, ROADMAP 82, 83.) |
+| An inquiry has to look without alerting its subject | An auditor named in config, three different people, a scope set first, read-only, a capped hold that ends by itself, a held count on every page. A step-up is never held. (Planned, ROADMAP 86.) |
 | A new folder no rule claims becomes the default owner's, silently | A rule can hold a folder unclaimed: nobody's until an administrator gives it in a step-up. (Planned, ROADMAP 84.) |
 | A folder is quietly given away or taken over | Owners give, administrators take only in step-up; audited; the affected people are told. |
 | An assistant with an MCP token oversteps | The person's own view and the scopes they gave, no step-up, writes asked first, kept with the value before and undoable, revocable, logged. |
