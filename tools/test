@@ -172,6 +172,8 @@ def wheel(args):
                         ignore=shutil.ignore_patterns("__pycache__"))
         for f in ("QUERIES.md", "config.example.toml", "client.example.toml", "RELEASES.toml"):
             shutil.copy(os.path.join(HERE, f), src)
+        os.makedirs(os.path.join(src, "tools"))
+        shutil.copy(os.path.join(HERE, "tools", "demo.py"), os.path.join(src, "tools"))  # test_web.TestDemo builds it
         where = subprocess.run([py, "-c", "import pinakes; print(pinakes.__file__)"], cwd=src, check=True,
                                stdout=subprocess.PIPE, text=True).stdout.strip()
         if not where.startswith(env):
