@@ -8,7 +8,7 @@ import unittest
 
 from pinakes import queries
 from tests import jpegs
-from tests.test_server import FAR_ZONES, PGHOST, ServerCase, admin_conn, in_time_zone, psycopg
+from tests.test_server import FAR_ZONES, PGHOST, PGUSER, ServerCase, admin_conn, in_time_zone, psycopg
 
 try:
     from pinakes import auth, server_config, web
@@ -1302,6 +1302,86 @@ class TestHealth(ServerCase):
         c = app.test_client()
         for path in ("/", "/login", "/find?q=taxes", "/browse/store/"):
             self.assertEqual(c.get(path).status_code, 404, path)
+
+
+@unittest.skipUnless(web is not None and PGHOST and psycopg, "Flask and PINAKES_TEST_PGHOST needed")
+class TestDemo(unittest.TestCase):
+    """tools/demo.py's household: each person signs in as themself (no --as), and a few answers the family admin's
+    scenarios rest on hold."""
+    db = "pinakes_demo_%d" % os.getpid()
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "demo", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "demo.py"))
+        cls.demo = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.demo)
+        cls.summary = cls.demo.build(PGHOST, PGUSER, cls.db)
+        cls.app = web.create_app(server_config.loads(TestWeb.SERVER_WEB),
+                                 connect=lambda: psycopg.connect(host=PGHOST, user="pinakes_app", dbname=cls.db))
+        cls.app.testing = True
+
+    @classmethod
+    def tearDownClass(cls):
+        with admin_conn() as c:
+            c.execute("DROP DATABASE IF EXISTS %s WITH (FORCE)" % cls.db)
+
+    def file_id(self, label, rel):
+        with admin_conn(self.db) as c:
+            return c.execute("SELECT f.file_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id) "
+                             "WHERE r.label = %s AND f.relpath = %s", (label, rel)).fetchone()[0]
+
+    def login(self, name):
+        c = self.app.test_client()
+        tok = re.search(r'name="csrf" value="([^"]+)"', c.get("/login").get_data(as_text=True)).group(1)
+        r = c.post("/login", data={"csrf": tok, "name": name, "password": "demo password %s" % name[-1]})
+        self.assertEqual(r.status_code, 302, name)
+        return c
+
+    def test_the_household(self):
+        self.assertIn("4 people (user-1, user-2, user-3, user-4), 1 group (household)", self.summary)
+        with admin_conn(self.db) as c:
+            kinds = dict(c.execute("SELECT kind, count(*) FROM pinakes.history WHERE kind <> 'new' "
+                                   "GROUP BY kind").fetchall())
+        self.assertEqual((kinds["moved"], kinds["gone"]), (4, 7))       # the beach moves, and gone with copies
+
+    def test_the_child_finds_the_household_s_and_not_the_birthday(self):
+        c4 = self.login("user-4")
+        found = c4.get("/find?q=birthday").get_data(as_text=True)
+        self.assertNotIn("gift-list", found)
+        self.assertIn("No file you can see", found)
+        self.assertIn("shared/papers/scan-001.pdf", c4.get("/find?q=scan-001").get_data(as_text=True))
+        self.assertIn("user-4/homework.txt", c4.get("/find?q=homework").get_data(as_text=True))
+
+    def test_a_step_up_into_the_teenager_s_files_is_on_their_record(self):
+        project = self.file_id("downloads-2", "school/project.odt")
+        c1 = self.login("user-1")
+        self.assertEqual(c1.get("/file/%d" % project).status_code, 404)
+        tok = re.search(r'name="csrf" value="([^"]+)"', c1.get("/step-up").get_data(as_text=True)).group(1)
+        r = c1.post("/step-up", data={"csrf": tok, "reason": "looking for the lost project",
+                                      "code": auth.totp(self.demo.DEMO_TOTP)})
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(c1.get("/file/%d" % project).status_code, 200)
+        c1.post("/step-up", data={"csrf": tok, "action": "end"})
+        # user-3's page has the view, by user-1, of that file (the step-up's reason isn't on it: SECURITY.md says it is)
+        page = self.login("user-3").get("/access").get_data(as_text=True)
+        self.assertEqual(page.count("<td>User One</td>"), 1)
+        self.assertIn("<td>view</td><td>page: file %d" % project, page)
+        self.assertNotIn("User One", self.login("user-4").get("/access").get_data(as_text=True))
+
+    def test_the_laptop_that_is_mostly_off_is_stale(self):
+        with psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db) as c:
+            self.assertEqual([r["name"] for r in queries.stale(c)], ["laptop-2"])
+        page = self.login("user-3").get("/reports/only-here?loc=downloads-2:").get_data(as_text=True)
+        self.assertIn("school/project.odt", page)
+
+    def test_gps_for_the_owner_not_for_a_reader(self):
+        photo = self.file_id("store", "people/user-1/trip-photos/IMG_0000.JPG")
+        self.assertIn("47.50000, -8.26000", self.login("user-1").get("/file/%d" % photo).get_data(as_text=True))
+        page = self.login("user-2").get("/file/%d" % photo).get_data(as_text=True)
+        self.assertNotIn("47.50000", page)
+        self.assertIn("Sensitive fields (where it was taken) are shown only", page)
 
 
 if __name__ == "__main__":
