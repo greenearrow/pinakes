@@ -23,6 +23,8 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   files meeting every one
   meta-values?field=SCHEMA.FIELD  the field's values with the files holding each (files, backup_copies), the most
                                   first; text one value whatever its case, a date per day
+                                  Both: not_searched, for a schema read from some image types only (EXIF:
+                                  JPEG), the other image files outside backups, [{schemas, read_from, files, note}]
   POST review {"mark": "intended"|"restore", "ids": [...]}  (scope review) mark those changes, as on the web:
                                   only gone files and moves, only the person's own or co-owned, only in the
                                   token's roots; {"asked", "marked"}
@@ -822,6 +824,30 @@ def create_app(cfg, connect=None):
         known = reg.schemas.get(schema)
         return schema, field, known.fields.get(field) if known else None
 
+    def not_searched(names, hidden=True, by_it=False):
+        """What a metadata answer over the schemas `names` can't see (ROADMAP 71): for those read from some image types
+        only (extract.unread_images), grouped by the types they read, the other image files the person sees outside
+        backup roots, counted under row-level security; only where there are some. `by_it`: the answer searches other
+        metadata too (the find page's common fields), so the note says these files aren't searched by those schemas."""
+        groups = {}
+        for name in dict.fromkeys(names):
+            s = reg.schemas.get(name)
+            got = extract.unread_images(s.mime) if s else None
+            if got and got[1]:
+                groups.setdefault(got, []).append(s)
+        out = []
+        for (read_from, exts), schemas in groups.items():
+            n = queries.files_with_ext(g.db, exts, hidden)
+            if not n:
+                continue
+            titles = " and ".join(s.title for s in schemas)
+            out.append({"schemas": [s.name for s in schemas], "read_from": read_from, "files": n,
+                        "note": "%s %s read from %s only; %d other image file%s under your roots %s searched%s"
+                                % (titles, "is" if len(schemas) == 1 else "are", read_from, n, "" if n == 1 else "s",
+                                   "isn't" if n == 1 else "aren't",
+                                   "" if not by_it else " by it" if len(schemas) == 1 else " by them")})
+        return out
+
     @api("meta")
     def api_meta():
         fields, values = request.args.getlist("field"), request.args.getlist("value")
@@ -834,13 +860,17 @@ def create_app(cfg, connect=None):
             schema, field, known = field_of(text)
             conds.append(queries.meta_cond(schema, field, value, known.type if known else None,
                                            known.sensitive if known else None))
-        return page(queries.meta, conds, backups=backups())
+        out = page(queries.meta, conds, backups=backups())
+        out["not_searched"] = not_searched([c["schema"] for c in conds])
+        return out
 
     @api("meta-values")
     def api_meta_values():
         schema, field, known = field_of(arg("field", "field=SCHEMA.FIELD"))
-        return page(queries.meta_values, schema, field, known.type if known else None,
-                    sensitive=known.sensitive if known else None)
+        out = page(queries.meta_values, schema, field, known.type if known else None,
+                   sensitive=known.sensitive if known else None)
+        out["not_searched"] = not_searched([schema])
+        return out
 
     # the web's reports, for `pinakes` (ROADMAP 55 to 59): the same queries under row-level security, without the
     # owner ids the web keeps for its step-up audit (a token never steps up)
@@ -945,8 +975,10 @@ def create_app(cfg, connect=None):
         placeholders_left_out = 0 if placeholders_shown() or not searched else queries.page_total(queries.find_by(
             g.db, q, by, mapped["creator"], dated, mapped["date"], 1, hidden=show_hidden(), placeholders="only"))
         audit_shown([r["file_id"] for r in results], "find")
+        unread = not_searched([n for c, used in (("creator", by), ("date", dated)) if used and searched
+                               for n, _ in mapped[c] if n != registry.COMMON], show_hidden(), by_it=True)
         return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
-                               results=results, pg=pg, placeholders_left_out=placeholders_left_out)
+                               results=results, pg=pg, placeholders_left_out=placeholders_left_out, unread=unread)
 
     @app.route("/browse/<root>/", defaults={"path": ""})
     @app.route("/browse/<root>/<path:path>")

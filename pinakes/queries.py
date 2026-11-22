@@ -887,6 +887,14 @@ def meta(conn, conds, limit=None, offset=0, backups=None):
                      WHERE """ + " AND ".join(where), args, "f.relpath, f.file_id", backups, limit, offset)
 
 
+def files_with_ext(conn, exts, hidden=True):
+    """How many present files outside backup roots the person sees with one of `exts` (".raw", lower case, as
+    files.ext has it), under row-level security (ROADMAP 71). Without `hidden`, no hidden file."""
+    return rows(conn, """SELECT count(*) AS n FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                         WHERE r.kind <> 'backup' AND f.ext = ANY(%s)""" + ("" if hidden else " AND NOT f.hidden"),
+                (list(exts),))[0]["n"]
+
+
 def meta_values(conn, schema, field, type=None, sensitive=None, limit=None, offset=0):
     """The values of `schema`.`field` (ROADMAP 70) with how many files hold each: `files` outside backup roots,
     `backup_copies` in them; the most first. Counted from the present files the person sees, under row-level

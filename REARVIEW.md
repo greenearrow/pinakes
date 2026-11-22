@@ -1085,3 +1085,37 @@ unpaired field, an empty value and bad names refused. `tests/test_server.py` `Te
 indexes serving their searches, an older catalog's `eq` indexes becoming `ci` at setup (an identity field's kept), the
 meta match using `md_exif_make_ci`, and the upgrade file against the schema with its probe. All 527 tests pass
 (tools/test). Other Pythons and PostgreSQL versions not run; not run on a real catalog; not deployed.
+
+## 71. Say what a metadata answer can't see
+
+With this, ROADMAP 71 is built and no longer listed.
+
+**Built:** under a `pinakes meta` answer, of a value (`SCHEMA.FIELD=VALUE`, one or more) or of a field's values
+(`SCHEMA.FIELD`), a line for each schema read from some image types only: "EXIF is read from JPEG only; N other image
+files under your roots aren't searched" (EXIF and XMP together where both are named, as both read JPEG). N counts the
+present files the person sees outside backup roots whose suffix is an image one the schema doesn't read, under
+row-level security (`queries.files_with_ext`): a fixed list in `extract.IMAGE_EXTS`, the common still-image formats and
+the cameras' raw ones, which the standard library's table of types doesn't know, so every server counts the same
+files. A schema for every type (`dc`, `*/*`) says nothing, and nothing is said where N is 0. `--json` and both API
+calls (`meta`, `meta-values`) carry it as `not_searched`, `[{schemas, read_from, files, note}]`, empty when nothing is
+unread. The web's find by a date or a maker (the common fields EXIF and XMP map onto) says the same under its list,
+"... aren't searched by them" (the common date entered by hand is still searched on any file), counting hidden files
+only when they are shown.
+
+**Not as the roadmap said:** an image file is known by its suffix, not its bytes (`contents.mime` is never set), so a
+raw file named otherwise is not counted, and a JPEG named `.cr2` would be.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py` `TestCliMetaUnread`, the
+CLI against a real HTTP server on 127.0.0.1, on generated JPEGs, RAWs (`.CR2`, `.nef`, `.DNG`, `.ARW`), a PNG, a text
+file and a backup copy of a RAW: the note and `not_searched` under each form (a value, two values, a field's values, a
+value nothing has), 4 unread files and not the backup's copy; `dc` and nothing unread saying nothing, EXIF and XMP as
+one line; user-2 counting her RAW and the DNG shared with her, not user-1's, and after both are gone nothing; both API
+calls. `tests/test_web.py` `TestMetadataPage`: the find page's note by a date (EXIF and XMP), by a maker (XMP alone),
+by a name alone none, user-2's count, and one file in the singular. The `TestCliFold` and `TestCliPages` answers carry the new field.
+All 533 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not run on a real catalog; not
+deployed.
+
+**Measured** on 2026-11-22 with `tools/bench-pages --only meta --only meta-values` (500,000 files, 40,000 metadata
+rows): `meta exif.make=Maker-1` 0.152 s (0.066 s at 70: the count reads every present file the person sees, about
+0.08 s), ` maker-1` 0.144 s, with `exif.taken=2019-06` besides 0.163 s, `meta-values` of `exif.make` 0.163 s and of
+`exif.taken` 0.187 s; every first page within 2 s.

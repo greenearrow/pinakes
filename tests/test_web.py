@@ -1,6 +1,7 @@
 """The web UI through Flask's test client, on a catalog built by real scans, under row-level security."""
 
 import datetime
+import html
 import os
 import re
 import time
@@ -1139,6 +1140,30 @@ class TestMetadataPage(ServerCase):
                                                             "people/user-1/shared-with-2/tagged.jpg"])
         page = c1.get("/find", query_string={"from": "June"}).get_data(as_text=True)
         self.assertIn("A date is a year", page)
+
+    def test_find_by_metadata_says_what_it_cant_see(self):
+        """ROADMAP 71: EXIF and XMP are read from JPEG only; by a date (both map onto it) or a maker (XMP's alone), the
+        find page says how many other image files the person sees aren't searched by them, under row-level security;
+        by a name alone, nothing."""
+        self.write("server-1", "store", "people/user-1/photos/IMG_0001.CR2", b"raw one")
+        self.write("server-1", "store", "people/user-1/shared-with-2/s.DNG", b"raw two")
+        self.write("server-1", "store", "people/user-2/d.ARW", b"hers")
+        self.scan("server-1", "store")
+        c1 = self.login("user-1", "correct horse battery")
+        c2 = self.login("user-2", "staple pony 12345")
+        def notes(c, **args):
+            page = html.unescape(c.get("/find", query_string=args).get_data(as_text=True))
+            return re.findall(r'<p class="muted not-searched">([^<]*)</p>', page)
+        both = "EXIF and XMP are read from JPEG only; %s under your roots %s searched by them."
+        self.assertEqual(notes(c1, **{"from": "2019"}), [both % ("2 other image files", "aren't")])
+        xmp = "XMP is read from JPEG only; 2 other image files under your roots aren't searched by it."
+        self.assertEqual(notes(c1, by="user one"), [xmp])
+        self.assertEqual(notes(c1, by="user one", q="own"), [xmp])
+        self.assertEqual(notes(c2, **{"from": "2019"}), [both % ("2 other image files", "aren't")])
+        os.remove(self.path("server-1", "store", "people/user-2/d.ARW"))
+        self.scan("server-1", "store")
+        self.assertEqual(notes(c2, **{"from": "2019"}), [both % ("1 other image file", "isn't")])
+        self.assertEqual(notes(c1, q="own"), [])
 
     def test_a_sensitive_field_finds_nothing_for_a_reader(self):
         # a site mapping a sensitive field onto a common one: the search still goes through row-level security

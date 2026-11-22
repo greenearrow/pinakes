@@ -369,17 +369,12 @@ names the command, its `--json`, and a test of it through the API. 53 to 59 are 
 ## Before the MCP server
 
 The assistant is meant to be the main way in (DESIGN.md "Wish: an MCP server"); this came first, and helps the command
-line and the web UI as much. 61, 62, 68, 69 and 70 are built (REARVIEW.md). Left: the items below, moved here from the
+line and the web UI as much. 61, 62, 68, 69, 70 and 71 are built (REARVIEW.md). Left: the items below, moved here from the
 persona reviews ("Copies, metadata and plain answers", "A household's answers") because each changes what the API tells
 a model, which repeats an answer where a person would doubt it. Also before 24, the part of two items left where they
 are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes edits` and `--json`
 (an MCP write's preview names its files the same way); their web halves can follow.
 
-71. [Correctness] **Say what a metadata answer can't see:** EXIF is read from JPEG only (`schemas/exif.toml`), so
-    `meta exif.make=...` leaves the RAWs out and says nothing. Under a `meta` answer: "EXIF is read from
-    JPEG only; N other image files under your roots aren't searched", N counted under row-level security. *Done
-    when:* `pinakes meta` and its `--json` (the count as a field) are tested through the API on generated JPEGs and
-    RAWs, and the web page says the same.
 74. [Correctness] **`only-here` with nothing to list says why:** "none: all N files have a copy on another disk", with
     the folder's last scan date, not "(none)", which reads the same as an empty folder. *Done when:* `pinakes
     only-here` is tested through the API on a folder fully copied and an empty one, and `--json` carries N and the

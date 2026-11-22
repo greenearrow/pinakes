@@ -2174,7 +2174,8 @@ class TestCliFold(ServerCase):
         self.assertEqual(self.where_of(got["rows"]), [("store", "people/user-2/photos/IMG_0004.JPG", 3)])
         self.assertEqual((got["total"], got["folded"]), (1, 3))
         self.assertEqual(json.loads(cli("meta", "exif.make=Maker-1", "--json"))
-                         | {"limit": None}, {"rows": [], "total": 0, "folded": 0, "limit": None, "offset": 0})
+                         | {"limit": None}, {"rows": [], "total": 0, "folded": 0, "limit": None, "offset": 0,
+                                              "not_searched": []})
 
     def test_the_api_refuses_another_backups_value(self):
         secret = make_token(self, "user-1", client="laptop-3")
@@ -2210,7 +2211,7 @@ class TestCliMeta(ServerCase):
 
     def values(self, field):
         got = json.loads(self.cli("meta", field, "--json"))
-        self.assertEqual(sorted(got), ["limit", "offset", "rows", "total"])
+        self.assertEqual(sorted(got), ["limit", "not_searched", "offset", "rows", "total"])
         return got["total"], [(r["value"], r["files"], r["backup_copies"]) for r in got["rows"]]
 
     def names(self, *conds):
@@ -2291,6 +2292,67 @@ class TestCliMeta(ServerCase):
         self.assertEqual(get("meta-values?field=exif.make")[1]["total"], 3)
 
 
+class TestCliMetaUnread(ServerCase):
+    """Say what a metadata answer can't see (ROADMAP 71): EXIF is read from JPEG only, so under a meta answer the
+    other image files under the person's roots, counted under row-level security, outside backups."""
+
+    def setUp(self):
+        super().setUp()
+        import jpegs
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        a = jpegs.camera(make="Maker-1")
+        for rel, data in (("people/user-1/photos/a.JPG", a), ("people/user-1/photos/b.jpg", jpegs.camera(make="Maker-2")),
+                          ("people/user-1/photos/IMG_0001.CR2", b"raw one"), ("people/user-1/photos/c.nef", b"raw two"),
+                          ("people/user-1/shared-with-2/s.DNG", b"raw three"), ("people/user-1/scan.png", b"png"),
+                          ("people/user-1/notes.txt", b"no image"), ("people/user-2/photos/d.ARW", b"hers")):
+            self.write("server-1", "store", rel, data)
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/photos/IMG_0001.CR2", b"raw one")
+        self.scan("server-1", "store")
+        self.scan("server-2", "snapshots")
+        self.cli = CliRun(self, "user-1")
+        self.addCleanup(self.cli.close)
+
+    NOTE = "EXIF is read from JPEG only; %d other image file%s under your roots %s searched"
+
+    def test_under_a_meta_answer(self):
+        note = self.NOTE % (4, "s", "aren't")                   # two RAWs, a DNG and a PNG; not the backup's copy
+        for args in (["exif.make=maker-1"], ["exif.make"], ["exif.make=nobody"], ["exif.make=maker-1", "exif.taken=2019"]):
+            with self.subTest(args=args):
+                got = json.loads(self.cli("meta", *args, "--json"))
+                self.assertEqual(got["not_searched"], [{"schemas": ["exif"], "read_from": "JPEG", "files": 4,
+                                                        "note": note}])
+                self.assertEqual(self.cli("meta", *args).splitlines()[-1], note)
+        self.assertEqual(json.loads(self.cli("meta", "exif.make=maker-1", "--json"))["total"], 1)
+
+    def test_schemas_reading_from_every_type_say_nothing(self):
+        got = json.loads(self.cli("meta", "dc.title=x", "--json"))
+        self.assertEqual(got["not_searched"], [])
+        self.assertNotIn("searched", self.cli("meta", "dc.title"))
+        got = json.loads(self.cli("meta", "exif.make=maker-1", "xmp.rating=1", "--json"))  # both JPEG only: one line
+        self.assertEqual([(u["schemas"], u["files"]) for u in got["not_searched"]], [(["exif", "xmp"], 4)])
+        self.assertTrue(got["not_searched"][0]["note"].startswith("EXIF and XMP are read from JPEG only; 4 other"))
+
+    def test_counted_under_row_level_security(self):
+        """user-2 sees her RAW and the shared DNG, not user-1's own; with nothing unread, nothing is said."""
+        self.cli.save(self.cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        got = json.loads(self.cli("meta", "exif.make", "--json"))
+        self.assertEqual([u["files"] for u in got["not_searched"]], [2])
+        os.remove(self.path("server-1", "store", "people/user-2/photos/d.ARW"))
+        os.remove(self.path("server-1", "store", "people/user-1/shared-with-2/s.DNG"))
+        self.scan("server-1", "store")
+        self.cli.save(self.cli.home_token(), make_token(self, "user-2", client="laptop-3"))
+        self.assertEqual(json.loads(self.cli("meta", "exif.make", "--json"))["not_searched"], [])
+        self.assertNotIn("searched", self.cli("meta", "exif.make"))
+        self.cli.save(self.cli.home_token(), make_token(self, "user-1", client="laptop-4"))
+        self.assertEqual(self.cli("meta", "exif.make").splitlines()[-1], self.NOTE % (3, "s", "aren't"))
+
+    def test_the_api(self):
+        token = make_token(self, "user-1", client="laptop-5")
+        for q in ("meta?field=exif.make&value=maker-1", "meta-values?field=exif.taken"):
+            r = self.cli.app.test_client().get("/api/v1/" + q, headers={"Authorization": "Bearer " + token})
+            self.assertEqual((r.status_code, [u["files"] for u in r.get_json()["not_searched"]]), (200, [4]))
+
+
 class TestCliPages(ServerCase):
     """Paged answers with counts (ROADMAP 61): every list call of the API answers one page by default, with the
     total; each paged command says "N of TOTAL" and takes --limit and --offset, its --json carrying the total."""
@@ -2337,6 +2399,7 @@ class TestCliPages(ServerCase):
                 got = json.loads(cli(cmd, *args, "--limit", "2", "--offset", "1", "--json"))
                 counts = ["with_backup", "without_backup"] if cmd == "backed-up" else []   # of the whole list
                 counts += ["folded"] if cmd in ("find", "where", "meta") else []                # ROADMAP 68
+                counts += ["not_searched"] if cmd == "meta" else []                              # ROADMAP 71
                 self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
                                  (sorted(["limit", "offset", "rows", "total"] + counts), total, 2, 2, 1))
                 self.assertNotIn("total_rows", got["rows"][0])

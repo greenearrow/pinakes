@@ -16,5 +16,6 @@
 {{ placeholder_toggle(pg, placeholders_left_out) }}
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 {% if searched %}<p class="muted">{% if q %}Names containing “{{ q }}”{% endif %}{% if q and (by or since or until) %}; {% endif %}{% if by %}made by “{{ by }}”{% endif %}{% if by and (since or until) %}; {% endif %}{% if since or until %}dated {% if since %}from {{ since }}{% endif %}{% if since and until %} {% endif %}{% if until %}to {{ until }}{% endif %}{% endif %}.</p>
-{{ pager(pg, "files") }}{{ file_table(results, "No file you can see matches.", pg, backups=true) }}{{ pager(pg, "files") }}{% endif %}
+{{ pager(pg, "files") }}{{ file_table(results, "No file you can see matches.", pg, backups=true) }}{{ pager(pg, "files") }}
+{% for u in unread %}<p class="muted not-searched">{{ u.note }}.</p>{% endfor %}{% endif %}
 {% endblock %}

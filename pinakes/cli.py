@@ -59,6 +59,8 @@
                                        without case and trimmed; a date field takes YYYY, YYYY-MM or YYYY-MM-DD
   pinakes meta SCHEMA.FIELD            the field's values among the files you can see, with how many files hold
                                        each (outside backups, and backup copies), the most first; a date per day
+                                       Both say how many other image files a JPEG-only schema (EXIF, XMP)
+                                       can't search
   pinakes stale
   pinakes roots                        every root you can see: host, kind, files, last complete scan
   pinakes backups [FOLDER]             where the folder's files are backed up, the least-backed-up first
@@ -679,6 +681,7 @@ def run(api, a, cfg):
                                   if got["total"] else "no value among the files you can see"))
                 _print(got["rows"], False, ["files", "backup_copies", "value"])
                 _page_line(got)
+                _not_searched(got)
                 return
             print(json.dumps(got, indent=1))
             return
@@ -692,6 +695,7 @@ def run(api, a, cfg):
         return
     if a.cmd in FOLDS:
         _print_copies(got)
+        _not_searched(got)
         if got.get("placeholders_hidden"):
             print("%d file(s) of placeholders not listed: without --hide-placeholders they are"
                   % got["placeholders_hidden"])
@@ -699,6 +703,12 @@ def run(api, a, cfg):
     _print(got["rows"], a.json)
     if a.cmd in PAGED:
         _page_line(got)
+
+
+def _not_searched(got):
+    """What a meta answer can't see (ROADMAP 71), under it."""
+    for u in got.get("not_searched") or ():
+        print(u["note"])
 
 
 def edit_rows(rows):

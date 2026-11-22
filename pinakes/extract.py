@@ -162,6 +162,24 @@ def _mime_fits(patterns, mime):
     return any(p == "*/*" or p == mime or (p.endswith("/*") and mime.startswith(p[:-1])) for p in patterns)
 
 
+# Image files by their suffix (ROADMAP 71), for saying what a schema read from some image types only can't see: the
+# common still-image formats and the cameras' raw ones, which the standard library's table doesn't know. A fixed
+# list, not this Python's table, so every server counts the same files.
+IMAGE_EXTS = (".jpg", ".jpeg", ".jpe", ".jfif", ".png", ".gif", ".tif", ".tiff", ".bmp", ".webp", ".heic", ".heif",
+              ".avif", ".jxl", ".jp2",
+              ".dng", ".cr2", ".cr3", ".crw", ".nef", ".nrw", ".arw", ".srf", ".sr2", ".orf", ".rw2", ".raf", ".pef",
+              ".srw", ".x3f", ".rwl", ".3fr", ".iiq", ".mos", ".erf", ".kdc", ".dcr", ".mrw")
+
+
+def unread_images(patterns):
+    """For a schema read from some image types only (`patterns`, its `mime`, every one image/... and none image/*):
+    (the types it reads, as "JPEG" or "JPEG and PNG"; the IMAGE_EXTS it doesn't read). None for any other schema."""
+    if not patterns or not all(p.startswith("image/") and p != "image/*" for p in patterns):
+        return None
+    left = tuple(e for e in IMAGE_EXTS if not _mime_fits(patterns, mime_of("x" + e) or "image/x-raw"))
+    return " and ".join(p.split("/", 1)[1].upper() for p in patterns), left
+
+
 def _open_readonly(path):
     from .scan import _open_readonly as opener   # one definition of how the agent opens a file
     return os.fdopen(opener(path), "rb")
