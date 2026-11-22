@@ -1143,3 +1143,30 @@ rows), and a root with no scan; `TestCliHere` another person's folder; `tests/te
 (tools/test). tools/bench-pages (500,000 files): only-here within 1.19 s for a whole root, 0.25 s for a folder (its
 at-risk, untouched here, took 2.34 s, over the 2 s limit). Other Pythons and PostgreSQL versions not run; not run on a
 real catalog; not deployed.
+
+## 77. Find by a folder's name too
+
+With this, ROADMAP 77 is built and no longer listed.
+
+**Built:** of the roadmap's two ways, the count: under a `pinakes find NAME-OR-GLOB` answer, "no file is named so; N
+files are under folders named so" where no file matched, or "also, N files are under folders named so" under the list.
+N counts the present files the person sees outside backup roots whose name doesn't match but a folder above them does
+(`queries.under_folders_named`), under row-level security, so another person's folder of that name isn't counted. A
+folder is named so as find takes a name: a text anywhere in a folder's name, without case; a glob's `*` and `?` within
+one folder's name (`b?ach*` is `beach` and `Beach 2019`, never a path across folders); a pattern with a `/` names none.
+`--hide-placeholders` leaves the files of placeholders out of N too. The API's `find` (and `--json`) carries it as
+`under_folders`, 0 when there are none. The web's find by a name says the same under its list (hidden files counted
+only when shown); a find by maker or date as well says nothing of folders.
+
+**Not as the roadmap said:** folders are counted, not listed; a backup root's copies of the folder are not counted.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py`
+`TestCli.test_find_a_name_only_a_folder_has`, the CLI against a real HTTP server on 127.0.0.1, on a generated tree: a
+folder `beach` of one person, the same name of a second (not counted for the first, counted for her with his shared
+`Beach 2019`), a backup copy not counted, case, globs naming a whole folder, a folder deeper down, a pattern with a `/`,
+the pattern's own `(` and `.`, files of that name listed and not counted; `tests/test_web.py`
+`TestWeb.test_find_a_name_only_a_folder_has` the web's two sentences. 538 of 539 tests passed in the full run
+(tools/test); the one failure, a test pinning find's old answer shape, was fixed and its class (`TestApi`) rerun, passing.
+tools/bench-pages (500,000 files): find 1.56 s for a common name, 0.48 s for a glob, 0.59 s for a name nothing has
+(1.21, 0.19 and 0.20 s before: the count reads every path). Other Pythons and PostgreSQL versions not run; not run on a
+real catalog; not deployed.

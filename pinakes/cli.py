@@ -2,7 +2,8 @@
 
   pinakes                              inside a scanned folder: its files, backups, copies and changes in numbers
   pinakes find NAME-OR-GLOB [--hide-placeholders]   --hide-placeholders: without the files of placeholders (an
-                                       app's default bytes: `pinakes placeholders --marked`), counted
+                                       app's default bytes: `pinakes placeholders --marked`), counted; and how
+                                       many other files are under folders so named (--json: under_folders)
   pinakes where FILE                   every copy and backup of the file
   pinakes only-here [PATH]             files under the folder (or the file) with no copy on another disk; with
                                        none, why: every file has one, or none you can see (--json: files,
@@ -697,7 +698,9 @@ def run(api, a, cfg):
         print(json.dumps(got, indent=1))                                # the rows, and the total
         return
     if a.cmd in FOLDS:
-        _print_copies(got)
+        if count(got) or not got.get("under_folders"):     # else not "(none)": the line below says what there is
+            _print_copies(got)
+        _under_folders(got)
         _not_searched(got)
         if got.get("placeholders_hidden"):
             print("%d file(s) of placeholders not listed: without --hide-placeholders they are"
@@ -723,6 +726,14 @@ def only_here_none(got, where):
         why = "all %d files under %s have a copy on another disk" % (n, where)
     scan = got.get("last_complete_on")
     return "none: %s (%s)" % (why, "last complete scan %s" % scan if scan else "no complete scan yet")
+
+
+def _under_folders(got):
+    """find of a name a folder has (ROADMAP 77): the files under folders so named that the list didn't name."""
+    n = got.get("under_folders")
+    if n:
+        print("%s%d file%s %s under folders named so" % ("also, " if count(got) else "no file is named so; ", n,
+                                                         "" if n == 1 else "s", "is" if n == 1 else "are"))
 
 
 def _not_searched(got):

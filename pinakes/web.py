@@ -15,6 +15,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
   releases                        (ops tokens only) this server's release, protocol and schema, and each agent's
                                   last check-in: hosts, numbers and times, never a root, person or file
   find?q=NAME-OR-GLOB              placeholders=hide: without the files of placeholders, counted (placeholders_hidden)
+                                  under_folders: the files outside backups under a folder so named, not listed
   where|history|versions?loc=ROOT:PATH (or ?file=ID)      lineage?loc=...&down=1
   only-here|safe-to-delete|backed-up|folder-copies?loc=ROOT:PATH
                                   only-here: also files (those you see there, symlinks left out) and the root's
@@ -536,9 +537,11 @@ def create_app(cfg, connect=None):
         if shown not in ("", "hide"):
             raise ValueError("placeholders is hide, or left out to list them")
         if not shown:
-            return page(queries.find, q, backups=backups())
-        out = page(queries.find, q, backups=backups(), placeholders=False)
-        out["placeholders_hidden"] = queries.page_total(queries.find(g.db, q, limit=1, placeholders="only"))
+            out = page(queries.find, q, backups=backups())
+        else:
+            out = page(queries.find, q, backups=backups(), placeholders=False)
+            out["placeholders_hidden"] = queries.page_total(queries.find(g.db, q, limit=1, placeholders="only"))
+        out["under_folders"] = queries.under_folders_named(g.db, q, placeholders=not shown)   # ROADMAP 77
         return out
 
     @api("where")
@@ -976,13 +979,16 @@ def create_app(cfg, connect=None):
                                               pg.per, pg.offset, hidden=show_hidden(),
                                               backups="all" if pg.all_backups else "fold",
                                               placeholders=placeholders_shown(), **pg.order))
+        folders = (queries.under_folders_named(g.db, q, placeholders_shown(), show_hidden())
+                   if searched and q and not (by or dated) else 0)          # ROADMAP 77: a name only
         placeholders_left_out = 0 if placeholders_shown() or not searched else queries.page_total(queries.find_by(
             g.db, q, by, mapped["creator"], dated, mapped["date"], 1, hidden=show_hidden(), placeholders="only"))
         audit_shown([r["file_id"] for r in results], "find")
         unread = not_searched([n for c, used in (("creator", by), ("date", dated)) if used and searched
                                for n, _ in mapped[c] if n != registry.COMMON], show_hidden(), by_it=True)
         return render_template("find.html", q=q, by=by, since=since, until=until, error=error, searched=searched,
-                               results=results, pg=pg, placeholders_left_out=placeholders_left_out, unread=unread)
+                               results=results, pg=pg, placeholders_left_out=placeholders_left_out, unread=unread,
+                               under_folders=folders)
 
     @app.route("/browse/<root>/", defaults={"path": ""})
     @app.route("/browse/<root>/<path:path>")

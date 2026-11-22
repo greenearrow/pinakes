@@ -156,6 +156,30 @@ def find(conn, pattern, limit=None, offset=0, sort=None, direction="asc", backup
                   _order_by(FILE_SORT, sort, direction, "f.name, h.name, f.file_id"), backups, limit, offset)
 
 
+def _folder_regex(pattern):
+    """A case-blind POSIX pattern for a folder in a relpath named as find() takes a name (ROADMAP 77): the glob's * and
+    ? within one folder name, or, without either, the text anywhere in one; then the / that makes it a folder."""
+    esc = "".join("\\" + c if c in ".^$+()[]{}|\\" else c for c in pattern)
+    if "*" in pattern or "?" in pattern:
+        comp = esc.replace("*", "[^/]*").replace("?", "[^/]")
+    else:
+        comp = "[^/]*" + esc + "[^/]*"
+    return "(^|/)" + comp + "/"
+
+
+def under_folders_named(conn, pattern, placeholders=True, hidden=True):
+    """How many files find() of `pattern` didn't list are under a folder so named (ROADMAP 77): present files the
+    person sees, outside backup roots, whose name doesn't match but a folder above them does; under row-level
+    security, so another person's folder of that name isn't counted. `placeholders` as find() takes it; without
+    `hidden`, no hidden file. A pattern with a / names no folder (a name holds none): 0."""
+    if "/" in pattern:
+        return 0
+    return rows(conn, """SELECT count(*) AS n FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                         WHERE r.kind <> 'backup' AND f.relpath ~* %s AND NOT f.name ILIKE %s"""
+                + _placeholders_cond(placeholders) + ("" if hidden else " AND NOT f.hidden"),
+                (_folder_regex(pattern), _like(pattern, wildcards=True)))[0]["n"]
+
+
 def file_at(conn, loc):
     root, path = split_location(loc)
     r = rows(conn, """SELECT %s, f.content_id FROM pinakes.files f JOIN pinakes.roots r USING (root_id)

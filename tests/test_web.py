@@ -416,6 +416,24 @@ class TestWeb(ServerCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("1.5 KB", r.get_data(as_text=True))
 
+    def test_find_a_name_only_a_folder_has(self):
+        """ROADMAP 77 on the web: a name only a folder has says how many files are under folders so named, under
+        row-level security: her folder of that name isn't counted for him."""
+        for rel in ("people/user-1/beach/IMG_0001.jpg", "people/user-1/beach/IMG_0002.jpg",
+                    "people/user-2/beach/hers.jpg"):
+            self.write("server-1", "store", rel, rel.encode())
+        self.scan("server-1", "store")
+        c1, _ = self.login("user-1", "correct horse battery")
+        page = c1.get("/find?q=beach").get_data(as_text=True)
+        self.assertIn("No file is named so; 2 files are under folders named so.", page)
+        self.assertNotIn("hers.jpg", page)
+        self.write("server-1", "store", "people/user-1/beach.txt", b"note")
+        self.scan("server-1", "store")
+        page = c1.get("/find?q=beach").get_data(as_text=True)
+        self.assertIn("beach.txt", page)
+        self.assertIn("Also, 2 files are under folders named so.", page)
+        self.assertNotIn("under folders named so", c1.get("/find?q=beach&by=someone").get_data(as_text=True))
+
     def test_only_here_with_nothing_to_list_says_why(self):
         """ROADMAP 74 on the web: every file has a copy, or there is none to see, with the root's last complete scan."""
         c1, _ = self.login("user-1", "correct horse battery")

@@ -286,7 +286,7 @@ class TestApi(ApiCase):
         self.assertEqual([r["label"] for r in self.get("roots", his)[1]["rows"]], ["store"])
         self.assertNotIn("downloads:letter.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.paths("where?loc=store:people/user-1/taxes.txt", his), ["store:people/user-1/taxes.txt"])
-        self.assertEqual(self.get("find?q=letter.txt", his), (200, NONE_FOLDED))
+        self.assertEqual(self.get("find?q=letter.txt", his), (200, dict(NONE_FOLDED, under_folders=0)))
         # the web session sees both copies
         with self.app_conn() as c:
             c.execute("SELECT set_config('pinakes.person', %s, true)", (str(self.pid("user-1")),))
@@ -616,6 +616,47 @@ class TestCli(ServerCase):
         cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))   # she sees only what's shared
         got = json.loads(cli("backed-up", mine, "--json"))
         self.assertEqual((got["total"], got["with_backup"], got["without_backup"]), (1, 0, 1))
+
+    def test_find_a_name_only_a_folder_has(self):
+        """find of a name only a folder has (ROADMAP 77) says so, "no file is named so; N files are under folders named
+        so", N counted outside backups and under row-level security: another person's folder of that name isn't."""
+        for rel in ("people/user-1/beach/IMG_0001.jpg", "people/user-1/beach/IMG_0002.jpg",
+                    "people/user-1/beach/day 2/notes.txt", "people/user-2/beach/hers.jpg",
+                    "people/user-1/shared-with-2/Beach 2019/IMG_0003.jpg"):
+            self.write("server-1", "store", rel, rel.encode())
+        self.scan("server-1", "store")
+        self.agent("server-2", "snapshots", kind="backup", extra='mirrors = { root = "store", layout = "*/{relpath}" }')
+        self.write("server-2", "snapshots", "2026-01-01_0140/people/user-1/beach/IMG_0001.jpg",
+                   b"people/user-1/beach/IMG_0001.jpg")
+        self.scan("server-2", "snapshots")
+        cli = self.cli
+        self.assertEqual(cli("find", "beach"), "no file is named so; 4 files are under folders named so\n")
+        got = json.loads(cli("find", "beach", "--json"))
+        self.assertEqual((got["rows"], got["total"], got["under_folders"]), ([], 0, 4))     # not her folder, no backup
+        self.assertEqual(json.loads(cli("find", "BEACH", "--json"))["under_folders"], 4)    # case, as names
+        # a glob names a whole folder: b?ach* is beach and Beach 2019, *each a folder ending so
+        self.assertEqual(json.loads(cli("find", "b?ach*", "--json"))["under_folders"], 4)
+        self.assertEqual(json.loads(cli("find", "*each", "--json"))["under_folders"], 3)
+        self.assertEqual(json.loads(cli("find", "day*", "--json"))["under_folders"], 1)     # a folder deeper down
+        self.assertEqual(json.loads(cli("find", "beach/", "--json"))["under_folders"], 0)   # no folder has a slash
+        # a file of that name is listed, and the others under the folder said under it; a listed one isn't counted
+        self.write("server-1", "store", "people/user-1/beach/beach-day.jpg", b"day")
+        self.write("server-1", "store", "people/user-1/notes/beach.txt", b"note")
+        self.scan("server-1", "store")
+        out = cli("find", "beach")
+        self.assertIn("people/user-1/notes/beach.txt", out)
+        self.assertIn("people/user-1/beach/beach-day.jpg", out)
+        self.assertEqual(out.splitlines()[-1], "also, 4 files are under folders named so")
+        self.assertEqual(json.loads(cli("find", "beach", "--json"))["under_folders"], 4)
+        self.assertEqual(cli("find", "nothing-is-called-this"), "(none)\n")                  # as before
+        self.assertEqual(json.loads(cli("find", "nothing-is-called-this", "--json"))["under_folders"], 0)
+        self.write("server-1", "store", "people/user-1/trip (2019)/a.jpg", b"trip")    # the pattern's own (, ., +
+        self.scan("server-1", "store")
+        self.assertEqual(json.loads(cli("find", "(2019)", "--json"))["under_folders"], 1)
+        self.assertEqual(json.loads(cli("find", ".2019.", "--json"))["under_folders"], 0)
+        # hers: her own folder and his shared one, not his others
+        cli.save(cli.home_token(), make_token(self, "user-2", client="laptop-2"))
+        self.assertEqual(cli("find", "beach"), "no file is named so; 2 files are under folders named so\n")
 
     def test_only_here_with_nothing_to_list_says_why(self):
         """An empty only-here (ROADMAP 74) says whether every file has a copy or there is none to see, with the root's
@@ -2439,6 +2480,7 @@ class TestCliPages(ServerCase):
                 counts += ["folded"] if cmd in ("find", "where", "meta") else []                # ROADMAP 68
                 counts += ["not_searched"] if cmd == "meta" else []                              # ROADMAP 71
                 counts += ["files", "last_complete_on"] if cmd == "only-here" else []           # ROADMAP 74
+                counts += ["under_folders"] if cmd == "find" else []                             # ROADMAP 77
                 self.assertEqual((sorted(got), got["total"], len(got["rows"]), got["limit"], got["offset"]),
                                  (sorted(["limit", "offset", "rows", "total"] + counts), total, 2, 2, 1))
                 self.assertNotIn("total_rows", got["rows"][0])
