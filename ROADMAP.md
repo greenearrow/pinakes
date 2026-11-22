@@ -222,14 +222,33 @@ tells a model, which repeats an answer where a person would doubt it. Also befor
 where they are: 76's rule for `--json` (UTC with its offset) and 78's edits named by their folder in `pinakes
 edits` and `--json` (an MCP write's preview names its files the same way); their web halves can follow.
 
-69. [Correctness] **No "certain" copy link between unrelated files that share small, common bytes:** byte-identical
-    sidecars of five different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same
-    sha256, certain". True of the bytes, false of the work. Wanted: no `copied_from` edge, or one marked "same bytes,
-    different work", for content shared by several files of different names or bundles; with 14, a sidecar takes its
-    photo's identity. Decided first: the rule (size, how many holders, sidecar by schema) and whether existing edges
-    are redone by an upgrade. *Done when:* `pinakes lineage` and `pinakes relatives` and their `--json` are tested
-    through the API on generated identical sidecars of different photos (no certain copy) and a sidecar that was
-    copied (still linked).
+69. [Correctness; also security] **Placeholders: common bytes aren't copies.** Byte-identical sidecars of five
+    different photos (the app writes the same minimal sidecar) are each `copied_from` another, "same sha256, certain";
+    a game's saved worlds hold hundreds of files of the same default bytes, written when an object is made with
+    nothing stored in it. True of the bytes, false of the work: and the same content then counts as "a copy on
+    another disk" (`only-here`, 74), as folded copies (68) and as duplicates. Wanted, in this order:
+    1. *Candidates:* contents held under many names or folders (at least a configured number of each, outside backup
+       roots), listed with size, extension and those counts, counted under row-level security.
+    2. *A mark on the content:* "placeholder", so it covers every file holding those bytes, on every machine, now and
+       later. A marked content gets no `copied_from` or `replaced_by` edge by the hash (other rules may still link
+       its files), isn't a copy for `only-here`, folding or duplicates, and its existing undecided hash edges go.
+    3. *Likely siblings offered:* other candidates of the same extension and a similar size (the same default
+       written by another version of the app differs in a version stamp), marked together on one confirmation.
+    4. *Rules in site config:* extension, size at most, names or folders at least; a content matching a rule is a
+       placeholder without a mark, so a new version's variants are caught. Rules and marks are configuration and
+       catalog state, never shipped hashes.
+    5. *Hidden or not:* placeholders are always out of copy reasoning; out of `find` and folder listings only when the
+       person asks (off by default), shown folded with a count, never dropped silently.
+    Who marks: one mark changes the lineage of others' files holding the bytes, so an administrator in a step-up
+    (audited for those files' owners), or a person for a content only they hold; never a group token; under a token,
+    only with its review scope. Existing edges: `pinakes-ingest tidy` applies marks and rules to undecided hash
+    edges; confirmed edges stay. Sidecars by bundle (14) come after and take their photo's identity. *Done when:*
+    `pinakes placeholders` (candidates, siblings) and `pinakes placeholder FILE` (mark, unmark) and their `--json`
+    are tested through the API on generated trees: identical sidecars of different photos and generated default
+    files under many names (candidates; once marked, no certain copy in `pinakes lineage` and `pinakes relatives`,
+    and `only-here` lists them), a sidecar that was copied (still linked), a rule matching a variant unmarked, a
+    second person's holders not counted, a person refused a mark on a content another holds, and a step-up mark
+    audited.
 70. [Feature] **`meta` without knowing the exact value:** `pinakes meta SCHEMA.FIELD` (no value) lists the values with
     counts; text values matched without case and trimmed; more than one `FIELD=VALUE`; a date field takes a range
     (`exif.taken=2026-10`). Values counted only from files the person sees, sensitive fields left out under a token as
