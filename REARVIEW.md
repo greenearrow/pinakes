@@ -989,3 +989,50 @@ rows, "+2" on each of five paths of one content, the folded line, the link to ev
 rows, the link back, and the sort links keeping `backups=all`; `test_web_wiring` compares the find page with the folded
 query; both checked to fail with the web change undone. All 506 tests pass (tools/test). Other Pythons and PostgreSQL
 versions not run; not run on a real catalog; not deployed.
+
+## 69. Placeholders: common bytes aren't copies (first part)
+
+Design: DECISIONS.md "Placeholders"; SECURITY.md. What is left (hiding them from `find` and listings, the web,
+at-risk and folder copies) is ROADMAP 69.
+
+**Built:** `placeholders` (a content, a person's mark or a site rule's) and `mark_placeholder(file, mark)` in the
+database (`upgrades/placeholders.sql`, release 14, protocol 7): only the owner or a co-owner of every present file
+holding the content, or an administrator in a step-up (audited for those files' owners and co-owners, `placeholder`,
+with the number of files); under a token only with its `review` scope and every holder in its roots; never a group
+token; a rule's placeholder isn't a person's to mark or unmark. Seen by whoever sees a file holding it; the web role has
+no write on it. `[placeholders]` in server.toml: `min_names` (3), `max_size` (64 KiB) and `siblings_within` (20%) for
+candidates, and `[[placeholders.rule]]` (name, ext, max_size, min_names, min_folders), applied by the ingester to the
+contents each scan touches and by `pinakes-ingest tidy` to all (and dropping what a removed rule made). A placeholder
+gets no lineage edge by its hash, and the ones before are left out of `lineage` and `relatives` and give no source when
+lineage is worked out again (kept in the table: an unmark brings them back); the name and identity rules may still link
+its files. Its other holders are no copy for only-here, safe-to-delete, `where`, folding and dupes; its own backups
+(`backup_of`) are. `GET /api/v1/placeholders` (candidates; `marked=1`; `loc=` or `file=`: a file's likely siblings, with
+`file`), `POST /api/v1/placeholder` (`{"files": [...], "placeholder": true|false}`, at most 1,000); `pinakes
+placeholders [FILE] [--marked]` and `pinakes placeholder FILE [--siblings] [--unmark] [--yes]` and their `--json`.
+`tools/bench-pages` times both list calls.
+
+**Not as the roadmap said:** "its existing undecided hash edges go" became "are left out of every answer": deleted,
+an unmark couldn't bring them back without lineage worked out again for every holder. Marks aren't in `pinakes
+edits` (ROADMAP 62); an unmark is their undo. "At least a configured number of each" (names and folders) is names for
+candidates and both for rules: in the real catalog's sizing, folders alone pointed at snapshots and real copies.
+
+**Measured** on 2026-11-22 with `tools/bench-pages` (500,000 files, as 61; the generated catalog has no placeholders,
+so this is the cost of the checks, not of many marks): find of a name in 298,890 files 0.94 s (0.88 s at 68), where
+0.01 s, lineage and relatives 0.01 s, only-here of a root 0.69 s, dupes 0.79 s, meta 0.06 s, `placeholders` 0.72 s (a
+pass over every small file), `placeholders marked=1` 0.01 s; every first page within 2 s.
+
+**State:** Tested on Python 3.12.3 with PostgreSQL 16.15 (x86-64 desktop). `tests/test_api.py` `TestCliPlaceholders`,
+the CLI against a real HTTP server on 127.0.0.1, on generated trees: identical sidecars of five different photos (two
+more on a laptop) and two variants, generated defaults of a game in two versions matched by a site rule: the
+candidates and their counts, a second person's holder not counted and she seeing none; a file's siblings; once marked,
+no certain copy in `pinakes lineage` (both ways) and `pinakes relatives`, only-here listing them, gone from dupes,
+`where` only the file; a sidecar that was copied still `copied_from`, certain; the rule's variant unmarked with no
+certain copy (the name rule still says "possible"); an unmark bringing the copy link back; `--siblings` asking, then
+marking 2 of 3 (the third held by user-2 too); a rule's not unmarked; a token without the review scope, outside its
+roots, a group token and bad API bodies. `tests/test_server.py` `TestPlaceholders`: a rule at the scan and tidy
+following the config (a person's mark kept, a second run changing nothing); no edge written for a new holder, the old
+ones kept and hidden; who marks (another person holding the bytes, a reader, an administrator without and with a
+step-up, audited for the other owner; unmarked and marked again unaudited once only hers is gone); no person; the web
+role's write refused; the config's checks; the upgrade against the schema. The two ingester tests checked to fail
+without the ingester's check. All 514 tests pass (tools/test). Other Pythons and PostgreSQL versions not run; not run
+on a real catalog; not deployed.

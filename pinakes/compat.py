@@ -6,8 +6,8 @@ each side names the oldest protocol of the other that it works with. An agent or
 nothing and counts as protocol 0.
 """
 
-RELEASE = 13                # the newest entry in RELEASES.toml (cut or being prepared)
-PROTOCOL = 6                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
+RELEASE = 14                # the newest entry in RELEASES.toml (cut or being prepared)
+PROTOCOL = 7                # 1: check-in, and the protocol in each batch's header; 2: sequence follows the
                             # server at check-in, a complete full scan retires what it didn't send; 3: scrub
                             # batches (DESIGN.md "Scrub"), and every batch names the agent's roots (ROADMAP 46);
                             # 4: checksum manifests' hint and manifest records (DESIGN.md "Checksum manifests"),
@@ -16,6 +16,7 @@ PROTOCOL = 6                # 1: check-in, and the protocol in each batch's head
                             # 6: lineage decisions (ROADMAP 9, decide_lineage()), person-entered metadata and
                             # shared sensitive fields (ROADMAP 16), the history of the catalog's own writes
                             # (ROADMAP 62, edits and undo_edits()); batches as at 4
+                            # 7: placeholders (ROADMAP 69, mark_placeholder()); batches as at 4
 MIN_AGENT_PROTOCOL = 0      # the server accepts batches from agents of this protocol or later (0: before check-in)
 MIN_SERVER_PROTOCOL = 0     # the agent sends to servers of this protocol or later (0: one that can't answer hello)
 
@@ -76,6 +77,7 @@ UPGRADE_PROBES = {
     "lineage-decisions.sql": "to_regprocedure('pinakes.decide_lineage(bigint, bigint, text)') IS NOT NULL",
     "person-metadata.sql": "to_regprocedure('pinakes.share_sensitive(bigint, int, boolean)') IS NOT NULL",
     "edits.sql": "to_regprocedure('pinakes.undo_edits(bigint[])') IS NOT NULL",
+    "placeholders.sql": "to_regclass('pinakes.placeholders') IS NOT NULL",
 }
 
 LOCKED_EXIT = 4             # pinakes-agent's exit status while it holds its batches for want of a compatible server

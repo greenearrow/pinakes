@@ -111,6 +111,7 @@ pinakes tag trip-photos --add trip   # tag every file under the folder: shown fi
 | How well a folder is backed up | `pinakes backed-up [PATH]`, `pinakes backups [FOLDER]` |
 | What losing a disk or machine would cost | `pinakes at-risk` |
 | Duplicates, and folders that copy others | `pinakes dupes`, `pinakes folder-copies [FOLDER]` |
+| An app's default bytes that look like copies | `pinakes placeholders [FILE] [--marked]` |
 | What changed | `pinakes changes [PATH] [--days N] [--what KIND] [--tree]` |
 | A file's history, versions, origins | `pinakes history FILE`, `versions FILE`, `lineage FILE [--down]` |
 | What to restore, from which backup | `pinakes restores [PATH]` |
@@ -121,11 +122,12 @@ pinakes tag trip-photos --add trip   # tag every file under the folder: shown fi
 | Who saw your records; what your tokens did | `pinakes access`, `pinakes edits` |
 | Your own records, to keep | `pinakes export [PART] [--csv]` |
 
-And to act: `pinakes review intended|restore [PATH]` marks gone files and moves reviewed, `pinakes tag` adds or
-removes tags and a note, `pinakes relatives FILE --confirm|--reject OTHER` decides a link, and `pinakes undo EDIT`
-takes any of them back. `review` and `tag` on a folder show what they would change and ask first (`--yes` skips the
-question). Review marks and decisions change only what you own or co-own, tags also what you annotate; each needs
-the token's `review` or `tag` scope.
+And to act: `pinakes review intended|restore [PATH]` marks gone files and moves reviewed, `pinakes tag` adds or removes
+tags and a note, `pinakes relatives FILE --confirm|--reject OTHER` decides a link, and `pinakes undo EDIT` takes any of
+them back. `pinakes placeholder FILE [--siblings]` marks an app's default bytes as no copies of one another (`--unmark`
+takes it back). `review` and `tag` on a folder show what they would change and ask first (`--yes` skips the question).
+Review marks and decisions change only what you own or co-own, tags also what you annotate; each needs the token's
+`review` or `tag` scope.
 
 FILE and PATH are a path on this machine (none: the current folder) or `ROOT:PATH`. Lists come a page at a time (100
 rows, `--limit` and `--offset`) with the total; `find`, `where` and `meta` list primary copies first, with their backup

@@ -89,6 +89,23 @@ name_window_days = 7
 name_folder_max = 5                    # the folder name counts only if at most this many folders have it
 name_size_namesakes = 5                # a similar size counts only if at most this many files have the name
 
+[placeholders]
+# An app's default bytes held under many names (the same minimal sidecar beside every photo, the objects a game
+# writes with nothing stored in them) aren't copies of one another (ROADMAP 69). `pinakes placeholders` offers as
+# candidates the contents of at most max_size bytes held under min_names names or more outside backup roots; a
+# person marks them with `pinakes placeholder FILE`.
+min_names = 3
+max_size = 65536                       # bytes
+siblings_within = 0.2                  # a likely sibling: the same extension, a size within this share
+# A content a rule matches is a placeholder without a mark: at each scan for the contents it touched, and for every
+# content with `pinakes-ingest tidy` (run it after changing the rules). The first rule that matches names it.
+# [[placeholders.rule]]
+# name = "game data"
+# ext = "dat"                          # every holder has it; none: any
+# max_size = 4096                      # bytes
+# min_names = 3
+# min_folders = 1
+
 [metadata]
 # schemas = "/etc/pinakes/schemas"     # the site's own schemas (NAME.toml, in the form of the project's), enrolled
                                        # by `pinakes-ingest setup` after the project's

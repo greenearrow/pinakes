@@ -21,6 +21,15 @@
                                        too; with an option, decides the link between FILE and OTHER (a path here or
                                        ROOT:PATH): a rejected pair is never suggested again. Only where the later
                                        file is your own or co-owned; the token needs the review scope
+  pinakes placeholders [FILE] [--marked]   contents that look like an app's default bytes (small, the same under
+                                       many names: an identical sidecar beside every photo, an empty object a game
+                                       writes), not placeholders yet, the most names first; FILE: its likely
+                                       siblings (its extension, a similar size); --marked: the placeholders there are
+  pinakes placeholder FILE [--siblings] [--unmark] [--yes]   mark the file's content a placeholder: its other
+                                       holders are then no copies of it (no copy link by the hash, not counted by
+                                       only-here, safe-to-delete, where or dupes); --siblings: its likely siblings
+                                       too, shown, then marked once you say yes. Only where every file holding it is
+                                       your own or co-owned; the token needs the review scope
   pinakes changes [PATH] [--days N] [--host NAME] [--what KIND] [--review reviewed|unreviewed]
                                        no path, outside every root: everything you can see. --what (again for
                                        more) keeps only those kinds of change; --tree [--depth N] counts them per
@@ -430,10 +439,12 @@ FILE = ("where", "history", "versions", "lineage")                  # take one f
 FOLDER = ("only-here", "safe-to-delete", "backed-up", "folder-copies")   # take a folder, or a file for itself
 COMMANDS = ("find",) + FILE + FOLDER + ("dupes", "changes", "meta", "stale", "roots", "backups", "review",
                                          "releases", "manifests", "whoami", "access", "export", "at-risk", "growth",
-                                         "restores", "relatives", "tag", "edits", "undo")
+                                         "restores", "relatives", "tag", "edits", "undo", "placeholders",
+                                         "placeholder")
 FOLDS = ("find", "where", "meta")       # lists that hold copies: backup copies folded into a count (ROADMAP 68)
 PAGED = ("find", "where", "history", "versions", "only-here", "backed-up", "folder-copies", "dupes", "changes",
-         "manifests", "meta", "restores", "access", "edits")    # lists the API answers a page of, with the total (61)
+         "manifests", "meta", "restores", "access", "edits",
+         "placeholders")                # lists the API answers a page of, with the total (61)
 MARKS = ("intended", "restore")
 REVIEWABLE = ("gone", "moved", "moved_changed", "mismatch", "unreadable")   # what a review marks (queries.REVIEWABLE)
 
@@ -533,6 +544,9 @@ def run(api, a, cfg):
         return
     if a.cmd == "tag":
         tag(api, a, cfg)
+        return
+    if a.cmd in ("placeholders", "placeholder"):
+        (placeholders if a.cmd == "placeholders" else placeholder)(api, a, cfg)
         return
     if a.cmd == "releases":
         releases(api, a.json)
@@ -860,6 +874,75 @@ def relatives(api, a, cfg):
              "decision": r["decision"] or ""} for r in listed["rows"]], False)
 
 
+def _candidates(got, rows):
+    """A list of placeholder candidates for a person to read: an example file names each content."""
+    return [{"example": "%s:%s" % (r["root"], r["relpath"]), "size": size(r["size"]), "ext": r["exts"],
+             "holders": r["holders"], "names": r["names"], "folders": r["folders"],
+             "placeholder": r["placeholder"] or ""} for r in rows]
+
+
+def placeholders(api, a, cfg):
+    """pinakes placeholders [FILE] [--marked] (ROADMAP 69): the candidates, a file's likely siblings, or every
+    placeholder, a page at a time."""
+    where = location(api, "placeholders", a.arg, _this_host(a.host, cfg), "file") if a.arg else None
+    got = api.get("placeholders", loc=where, marked=1 if a.marked else None, limit=a.limit, offset=a.offset)
+    if a.json:
+        print(json.dumps(got, indent=1))
+        return
+    if a.marked:
+        print("placeholders%s:" % (" like %s" % where if where else ""))
+    elif where:
+        f = got["file"]
+        print("likely siblings of %s (%s%s): candidates with its extension and a size within %d%%:" % (
+            where, size(f["size"]), ", a placeholder: " + f["placeholder"] if f["placeholder"] else "",
+            round(100 * got["siblings_within"])))
+    else:
+        print("placeholder candidates: contents of at most %s held under %d or more names outside backups, "
+              "not placeholders yet:" % (size(got["max_size"]), got["min_names"]))
+    _print(_candidates(got, got["rows"]), False)
+    _page_line(got)
+
+
+def placeholder(api, a, cfg):
+    """pinakes placeholder FILE [--siblings] [--unmark] (ROADMAP 69): the file's content marked a placeholder (or
+    unmarked), and with --siblings its likely siblings too, shown, then marked once confirmed (or with --yes). The
+    catalog marks only what the person may, and says how many."""
+    if not a.arg:
+        raise Failed("pinakes placeholder needs a file")
+    where = location(api, "placeholder", a.arg, _this_host(a.host, cfg), "file")
+    files, rows = [where], []
+    if a.siblings:
+        if a.unmark:
+            raise Failed("pinakes placeholder --unmark takes one file, not --siblings")
+        rows = every(api, "placeholders", loc=where)
+        if rows and not a.json:
+            print("%d likely sibling(s) of %s:" % (len(rows), where))
+            _print(_candidates({}, rows), False)
+        if rows and not a.yes:
+            if not sys.stdin.isatty():
+                raise Failed("not marked: add --yes to mark %s and its siblings without being asked" % where)
+            if input("Mark %s and these %d as placeholders? [y/N] " % (where, len(rows))).strip().lower() not in (
+                    "y", "yes"):
+                print("not marked")
+                return
+        files += [r["file_id"] for r in rows]
+    got = {"asked": 0, "marked": 0}
+    for i in range(0, len(files), TAG_BATCH):
+        part = api.post("placeholder", {"files": files[i:i + TAG_BATCH], "placeholder": not a.unmark})
+        got = {k: got[k] + part[k] for k in got}
+    if a.json:
+        print(json.dumps(dict(got, siblings=rows), indent=1))
+        return
+    what = "unmarked" if a.unmark else "marked"
+    if got["marked"]:
+        print("%s %d of %d content(s)%s" % (what, got["marked"], got["asked"], "" if a.unmark else " as placeholders"))
+    if got["marked"] < got["asked"]:
+        why = ("not a placeholder, or a site rule's (the rule is in the server's config)" if a.unmark
+               else "already a placeholder")
+        print("%s: %s, or a file holding the same bytes isn't yours or co-owned, or is outside this token's roots"
+              % ("the rest" if got["marked"] else "nothing " + what, why))
+
+
 def open_api(a, cfg):
     """(the API, whether it is a --as session to end). Without --as, the token found here. With --as NAME, only
     what NAME's secret opens, asked for at a hidden prompt and never written down: a token of theirs, checked to be
@@ -897,6 +980,9 @@ def main(argv=None):
     ap.add_argument("--confirm", metavar="OTHER", help="relatives: confirm the link between FILE and OTHER")
     ap.add_argument("--reject", metavar="OTHER", help="relatives: reject it (never suggested again)")
     ap.add_argument("--clear", metavar="OTHER", help="relatives: clear the decision on it")
+    ap.add_argument("--marked", action="store_true", help="placeholders: the placeholders there are")
+    ap.add_argument("--siblings", action="store_true", help="placeholder: the file's likely siblings too")
+    ap.add_argument("--unmark", action="store_true", help="placeholder: unmark it")
     ap.add_argument("--what", action="append", metavar="KIND",
                     help="changes: only this kind (new, changed, moved, moved_changed, gone, mismatch, unreadable)")
     ap.add_argument("--review", choices=("reviewed", "unreviewed"), help="changes: only the reviewed or unreviewed")

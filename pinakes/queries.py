@@ -89,8 +89,13 @@ def order(sorts, sort, direction, default):
 # the primary and drop rows first, each with the same count. Counted over the whole answer under row-level security,
 # so a count is of the copies the person can see. A file without content (not hashed yet) is a content of its own.
 # Each row of a folded answer has total_rows (the rows listed) and folded_rows (the backup copies left out of them).
+# A placeholder (ROADMAP 69) is folded by file, not by content: its other holders aren't copies of it, while its own
+# backups (backup_of) are.
 BACKUPS = (None, "fold", "all")
 _FOLD_COLS = ("in_backup", "in_others", "in_backups", "rank_in", "pos", "all_rows")
+_PLACEHOLDER = "EXISTS (SELECT 1 FROM pinakes.placeholders pp WHERE pp.content_id = %s.content_id)"
+_FOLD_KEY = ("CASE WHEN " + _PLACEHOLDER % "f" + " THEN -coalesce(f.backup_of, f.file_id) "
+             "ELSE coalesce(f.content_id, -f.file_id) END")
 
 
 def copies(conn, cols, body, args, ordering, backups, limit, offset):
@@ -104,16 +109,17 @@ def copies(conn, cols, body, args, ordering, backups, limit, offset):
     got = rows(conn, """SELECT x.*, count(*) OVER () AS total_rows, x.all_rows - count(*) OVER () AS folded_rows
                         FROM (SELECT %s, r.kind = 'backup' AS in_backup,
                                      count(*) FILTER (WHERE r.kind <> 'backup')
-                                         OVER (PARTITION BY coalesce(f.content_id, -f.file_id)) AS in_others,
+                                         OVER (PARTITION BY %s) AS in_others,
                                      count(*) FILTER (WHERE r.kind = 'backup')
-                                         OVER (PARTITION BY coalesce(f.content_id, -f.file_id)) AS in_backups,
-                                     row_number() OVER (PARTITION BY coalesce(f.content_id, -f.file_id),
+                                         OVER (PARTITION BY %s) AS in_backups,
+                                     row_number() OVER (PARTITION BY %s,
                                                                      r.kind = 'backup'
                                                         ORDER BY f.snapshot DESC NULLS LAST, r.label, f.relpath,
                                                                  f.file_id) AS rank_in,
                                      row_number() OVER (ORDER BY %s) AS pos, count(*) OVER () AS all_rows
                               %s) x
-                        WHERE %s ORDER BY x.in_backup, x.pos""" % (cols, ordering, body, keep) + PAGE,
+                        WHERE %s ORDER BY x.in_backup, x.pos""" % (cols, _FOLD_KEY, _FOLD_KEY, _FOLD_KEY,
+                                                                    ordering, body, keep) + PAGE,
                args + (limit, offset))
     for r in got:
         r["backups"] = r["in_backups"] - r["in_backup"]
@@ -167,19 +173,26 @@ def file_by_id(conn, file_id):
 
 
 def where(conn, file_id, limit=None, offset=0, sort=None, direction="asc", backups=None):
-    """Every copy; same_inode marks hard links of this very file (the same data on the same disk, not a copy)."""
+    """Every copy; same_inode marks hard links of this very file (the same data on the same disk, not a copy). Of a
+    placeholder (ROADMAP 69), only the file, its hard links and its own backups: the other files holding the same
+    default bytes aren't copies of it."""
     return copies(conn, FILE_COLS + ", (r.host_id = tr.host_id AND f.dev = t.dev AND f.ino = t.ino) AS same_inode",
                   """FROM pinakes.files t JOIN pinakes.roots tr ON tr.root_id = t.root_id
                      JOIN pinakes.present f ON f.content_id = t.content_id
                      JOIN pinakes.roots r ON r.root_id = f.root_id JOIN pinakes.hosts h ON h.host_id = r.host_id
-                     WHERE t.file_id = %s""", (file_id,),
+                     WHERE t.file_id = %s AND (NOT """ + _PLACEHOLDER % "t" + """ OR f.file_id = t.file_id
+                                               OR f.backup_of = t.file_id
+                                               OR coalesce(r.host_id = tr.host_id AND f.dev = t.dev
+                                                           AND f.ino = t.ino, false))""", (file_id,),
                   _order_by(FILE_SORT, sort, direction, "r.kind, h.name, f.relpath, f.file_id"), backups, limit, offset)
 
 
 # Copies of a file f (in root r) outside a folder, counted physically: distinct (host, device, inode), never f's own
 # inode (a hard link of f is the same data, not a copy). A copy is on another disk when its host differs, or its
 # device does on the same host; a device the catalog doesn't know counts as the same disk. A copy the scrub couldn't
-# read (unreadable_on) is no copy until it reads again (DESIGN.md "Scrub"). %%s: the folder's pattern.
+# read (unreadable_on) is no copy until it reads again (DESIGN.md "Scrub"). Of a placeholder (ROADMAP 69), only f's
+# own backups (backup_of) count: the other files holding the same default bytes aren't copies. %%s: the folder's
+# pattern.
 _COPIES = """CROSS JOIN LATERAL (
         SELECT count(DISTINCT (ro.host_id, o.dev, o.ino))
                    FILTER (WHERE NOT coalesce(ro.host_id <> r.host_id OR o.dev <> f.dev, false)) AS same_disk,
@@ -188,7 +201,8 @@ _COPIES = """CROSS JOIN LATERAL (
         FROM pinakes.present o JOIN pinakes.roots ro ON ro.root_id = o.root_id
         WHERE o.content_id = f.content_id AND o.unreadable_on IS NULL
           AND NOT (o.root_id = f.root_id AND o.relpath LIKE %%s)
-          AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false) %s) s"""
+          AND NOT coalesce(ro.host_id = r.host_id AND o.dev = f.dev AND o.ino = f.ino, false)
+          AND (o.backup_of = f.file_id OR NOT """ + _PLACEHOLDER % "f" + """) %s) s"""
 COPY_SORT = dict(FILE_SORT, same_disk=("s.same_disk",))
 
 
@@ -283,7 +297,7 @@ def manifests(conn, loc=None, limit=None, offset=0, sort=None, direction="asc"):
 def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
     """The same content stored more than once. copies counts physical copies (host, device, inode): hard links share
     their storage, so they are paths, not copies, and reclaim nothing. Empty files are not duplicates: they all have
-    the same hash, take no space and reclaim nothing."""
+    the same hash, take no space and reclaim nothing. Nor are placeholders (ROADMAP 69): an app's default bytes."""
     return rows(conn, """SELECT encode(c.sha256, 'hex') AS sha256, c.size,
                                 count(DISTINCT (r.host_id, f.dev, f.ino)) AS copies, count(*) AS paths_count,
                                 c.size * (count(DISTINCT (r.host_id, f.dev, f.ino)) - 1) AS reclaimable,
@@ -291,7 +305,9 @@ def dupes(conn, limit=None, offset=0, sort=None, direction="asc"):
                                 """ + TOTAL + """
                          FROM pinakes.present f JOIN pinakes.contents c USING (content_id)
                          JOIN pinakes.roots r USING (root_id)
-                         WHERE r.kind <> 'backup' AND c.size > 0 GROUP BY c.content_id
+                         WHERE r.kind <> 'backup' AND c.size > 0
+                           AND NOT EXISTS (SELECT 1 FROM pinakes.placeholders pp WHERE pp.content_id = c.content_id)
+                         GROUP BY c.content_id
                          HAVING count(DISTINCT (r.host_id, f.dev, f.ino)) > 1"""
                 + order(DUPES_SORT, sort, direction, "reclaimable DESC, c.content_id") + PAGE, (limit, offset))
 
@@ -679,6 +695,13 @@ def versions(conn, file_id, limit=None, offset=0, sort=None, direction="asc"):
                 + PAGE, (file_id, limit, offset))
 
 
+# A lineage edge by the hash into or out of a placeholder (ROADMAP 69) is left out of every answer while the content is
+# one: the same default bytes aren't a copy. The table keeps it, so that an unmark brings it back.
+_SHOWN_EDGE = """NOT (l.evidence = 'same sha256' AND EXISTS (
+                     SELECT 1 FROM pinakes.files pf JOIN pinakes.placeholders pp ON pp.content_id = pf.content_id
+                     WHERE pf.file_id IN (l.from_file_id, l.to_file_id)))"""
+
+
 def lineage(conn, file_id, direction="up", depth=50):
     """Ancestors (up) or descendants (down). Lineage is between files, and a file keeps its id through versions,
     so a copy out and back makes a cycle: the walk carries the files it has visited and never revisits one."""
@@ -692,11 +715,12 @@ def lineage(conn, file_id, direction="up", depth=50):
                              SELECT %s, w.depth + 1, l.kind, l.evidence, l.confidence, l.decision, w.seen || %s
                              FROM pinakes.lineage l JOIN w ON %s
                              WHERE l.decision IS DISTINCT FROM 'rejected' AND NOT %s = ANY (w.seen)
-                               AND w.depth < %%s)
+                               AND w.depth < %%s AND %s)
                          SELECT w.depth, w.how, w.evidence, w.confidence, w.decision, %s
                          FROM w JOIN pinakes.files f USING (file_id) JOIN pinakes.roots r USING (root_id)
                          JOIN pinakes.hosts h USING (host_id) WHERE w.depth > 0
-                         ORDER BY w.depth, h.name""" % (nxt, nxt, join, nxt, FILE_COLS), (file_id, file_id, depth))
+                         ORDER BY w.depth, h.name""" % (nxt, nxt, join, nxt, _SHOWN_EDGE, FILE_COLS),
+                (file_id, file_id, depth))
 
 
 DECISIONS = ("confirmed", "rejected")
@@ -705,7 +729,8 @@ DECISIONS = ("confirmed", "rejected")
 def relatives(conn, file_id):
     """A file's direct relatives, both ways, rejected ones too (a walk leaves those out): one row per edge, with its
     ends (from_file_id, to_file_id), so a person can confirm, reject or clear it (ROADMAP 9). Certain edges (the same
-    content) are listed but can't be decided: the hash decides them."""
+    content) are listed but can't be decided: the hash decides them. An edge by a placeholder's hash isn't listed
+    (ROADMAP 69)."""
     return rows(conn, """SELECT CASE WHEN l.to_file_id = %%s THEN 'up' ELSE 'down' END AS direction,
                                 l.from_file_id, l.to_file_id, l.kind AS how, l.evidence, l.confidence, l.decision,
                                 l.decided_at, p.display AS decided_by, %s
@@ -714,8 +739,9 @@ def relatives(conn, file_id):
                                                                   ELSE l.to_file_id END
                          JOIN pinakes.roots r USING (root_id) JOIN pinakes.hosts h USING (host_id)
                          LEFT JOIN pinakes.people p ON p.person_id = l.decided_by
-                         WHERE %%s IN (l.from_file_id, l.to_file_id)
-                         ORDER BY direction DESC, l.decision NULLS FIRST, h.name, f.relpath, l.kind""" % FILE_COLS,
+                         WHERE %%s IN (l.from_file_id, l.to_file_id) AND %s
+                         ORDER BY direction DESC, l.decision NULLS FIRST, h.name, f.relpath, l.kind"""
+                % (FILE_COLS, _SHOWN_EDGE),
                 (file_id, file_id, file_id))
 
 
@@ -725,6 +751,76 @@ def decide_lineage(conn, a, b, decision):
     if decision not in DECISIONS + (None,):
         raise ValueError("a decision is confirmed or rejected")
     return conn.execute("SELECT pinakes.decide_lineage(%s, %s, %s)", (a, b, decision)).fetchone()[0]
+
+
+PLACEHOLDER_SORT = {"names": ("x.names",), "holders": ("x.holders",), "folders": ("x.folders",), "size": ("c.size",)}
+
+
+def placeholders(conn, min_names, max_size, marked=False, like=None, within=0.2, limit=None, offset=0, sort=None,
+                 direction="desc"):
+    """Placeholder candidates (ROADMAP 69): contents of at most max_size bytes held under at least min_names names (a
+    name and its extension, compared as lineage compares names) by present files outside backup roots, not yet
+    placeholders, the most names first. `marked`: instead, every content that is one, by a person's mark or a site
+    rule, whatever its size. `like` (a file id): instead, that file's likely siblings, the candidates whose every
+    holder has its extension and whose size is within `within` of its size (the same default written by another
+    version of an app). Counted under row-level security: holders, names and folders of the files the person sees.
+    Each row has an example file (outside backups) to name the content by."""
+    names = "count(DISTINCT (coalesce(f.name_key, f.name), f.ext))"
+    where, having, after, args = [], "", ["p.content_id IS NULL"], []
+    if marked:
+        where.append(_PLACEHOLDER % "f")
+        after = ["p.content_id IS NOT NULL"]
+    else:
+        where.append("f.size <= %s")
+        args.append(max_size)
+        having = "HAVING %s >= %%s" % names
+    if like is not None:
+        got = rows(conn, "SELECT f.content_id, f.size, coalesce(f.ext, '') AS ext FROM pinakes.files f "
+                         "WHERE f.file_id = %s AND f.content_id IS NOT NULL", (like,))
+        if not got:
+            return []
+        me = got[0]
+        after += ["x.content_id <> %s", "x.exts = ARRAY[%s]::text[]", "c.size BETWEEN %s AND %s"]
+        lo, hi = int(me["size"] * (1 - within)), int(me["size"] * (1 + within) + 0.999999)
+        tail = [me["content_id"], me["ext"], lo, hi]
+    else:
+        tail = []
+    sql = """SELECT x.content_id, encode(c.sha256, 'hex') AS sha256, c.size, x.exts, x.holders, x.names, x.folders,
+                    x.example_id AS file_id, er.label AS root, ef.relpath,
+                    CASE WHEN p.content_id IS NULL THEN NULL WHEN p.rule IS NULL THEN 'marked'
+                         ELSE 'rule ' || p.rule END AS placeholder, """ + TOTAL + """
+             FROM (SELECT f.content_id, array_agg(DISTINCT coalesce(f.ext, '') ORDER BY coalesce(f.ext, '')) AS exts,
+                          count(*) AS holders, """ + names + """ AS names,
+                          count(DISTINCT (f.root_id, CASE WHEN strpos(f.relpath, '/') > 0
+                                                          THEN regexp_replace(f.relpath, '/[^/]+$', '') ELSE ''
+                                                     END)) AS folders,
+                          min(f.file_id) AS example_id
+                   FROM pinakes.present f JOIN pinakes.roots r USING (root_id)
+                   WHERE r.kind <> 'backup' AND f.size > 0 AND f.content_id IS NOT NULL AND NOT f.is_symlink
+                     AND """ + " AND ".join(where) + """
+                   GROUP BY f.content_id """ + having + """) x
+             JOIN pinakes.contents c USING (content_id) LEFT JOIN pinakes.placeholders p USING (content_id)
+             JOIN pinakes.files ef ON ef.file_id = x.example_id JOIN pinakes.roots er ON er.root_id = ef.root_id
+             WHERE """ + " AND ".join(after)
+    return rows(conn, sql + order(PLACEHOLDER_SORT, sort, direction, "x.names DESC, x.holders DESC, c.content_id")
+                + PAGE, tuple(args) + (() if marked else (min_names,)) + tuple(tail) + (limit, offset))
+
+
+def mark_placeholder(conn, file_id, mark):
+    """Mark (True) or unmark (False) the file's content a placeholder (ROADMAP 69). The database decides who may (the
+    owner or a co-owner of every file holding it, or an administrator in a step-up) and skips the rest; returns 1 if
+    the mark changed, else 0."""
+    if not isinstance(mark, bool):
+        raise ValueError("a placeholder is marked (true) or unmarked (false)")
+    return conn.execute("SELECT pinakes.mark_placeholder(%s, %s)", (file_id, mark)).fetchone()[0]
+
+
+def placeholder_of(conn, file_id):
+    """How the file's content is a placeholder: 'marked', 'rule NAME', or None."""
+    r = conn.execute("""SELECT CASE WHEN p.rule IS NULL THEN 'marked' ELSE 'rule ' || p.rule END
+                        FROM pinakes.files f JOIN pinakes.placeholders p USING (content_id) WHERE f.file_id = %s""",
+                     (file_id,)).fetchone()
+    return r[0] if r else None
 
 
 def meta(conn, schema, field, value, limit=None, offset=0, sensitive=None, backups=None):

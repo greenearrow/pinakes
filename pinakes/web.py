@@ -34,6 +34,15 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   edge between A and B (each a file number or ROOT:PATH) but certain ones, decided
                                   or cleared: only where the descendant is the person's own or co-owned, only in
                                   the token's roots; {"files", "decision", "decided"}
+  placeholders                    contents of at most [placeholders] max_size bytes held under at least min_names
+                                  names outside backups, not placeholders yet, the most names first, each with an
+                                  example file (ROADMAP 69); marked=1: every placeholder instead; loc=ROOT:PATH (or
+                                  file=ID): that file's likely siblings (its extension, a size within
+                                  siblings_within), with "file" (its content's size, extension and placeholder)
+  POST placeholder {"files": [...], "placeholder": true|false}   (scope review; a person's token) the files'
+                                  contents (each a file number or ROOT:PATH) marked placeholders or unmarked: only
+                                  where every file holding one is the person's own or co-owned, every one in the
+                                  token's roots; {"asked", "marked"}
   host-roots?host=NAME            the roots a host reports, with their paths there (for a folder's ROOT:PATH)
   backups?loc=ROOT:PATH&show=N    the folder's files, fewest backups first, and how many have none
   export?part=PART&format=json|csv  (a person's token) the files the person owns and what the catalog holds about
@@ -43,7 +52,7 @@ for the person. GET only for now; a token needs the `read` scope for these calls
                                   they have one, for a read-only token of minutes ({"token", "until"}); limited
                                   like the web sign-in, and recorded for the person
   POST session/end                that token, revoked (its command is done)
-  POST is for these five; every other call is GET
+  POST is for these and undo; every other call is GET
   A list answers one page (ROADMAP 61): 100 rows, or limit= (at most 10000) from offset=, as {"rows": [...], "total",
   "limit", "offset"}, the total being the whole list's (safe-to-delete: {"not_safe", "total", "limit", "offset",
   "links_into", "links_into_total"}, the first 200 links; export: a page of each part, its last shorter than the
@@ -698,6 +707,57 @@ def create_app(cfg, connect=None):
         got = queries.undo_edits(g.db, ids)
         return api_answer({"asked": len(set(ids)), "undone": [r for r in got if "undone_by" in r],
                            "refused": [r for r in got if "refused" in r]})
+
+    def placeholder_limits():
+        return {"min_names": cfg.placeholder_min_names, "max_size": cfg.placeholder_max_size,
+                "siblings_within": cfg.placeholder_siblings_within}
+
+    @api("placeholders")
+    def api_placeholders():
+        """Placeholder candidates, every placeholder (marked=1), or one file's likely siblings (ROADMAP 69)."""
+        marked = request.args.get("marked") not in (None, "", "0")
+        like = target() if request.args.get("loc") or request.args.get("file") else None
+        out = dict(page(queries.placeholders, cfg.placeholder_min_names, cfg.placeholder_max_size, marked=marked,
+                        like=like, within=cfg.placeholder_siblings_within), **placeholder_limits())
+        if like is not None:
+            f = queries.file_by_id(g.db, like)
+            out["file"] = {"file_id": like, "root": f["root"], "relpath": f["relpath"], "size": f["size"],
+                           "placeholder": queries.placeholder_of(g.db, like)}
+        return out
+
+    @app.route(API + "placeholder", methods=["POST"])
+    def api_placeholder():
+        """Mark files' contents placeholders, or unmark them (ROADMAP 69), each a file number or ROOT:PATH: the
+        database marks only what this person, this token's roots and its review scope allow, and answers how many
+        contents it marked or unmarked."""
+        if "review" not in g.scopes:
+            return api_answer({"error": "this token doesn't have the review scope"}, 403)
+        if g.group:
+            return api_answer({"error": "a group token doesn't mark placeholders"}, 403)
+        body = request.get_json(silent=True)
+        body = body if isinstance(body, dict) else {}
+        mark, files = body.get("placeholder"), body.get("files")
+        if not isinstance(mark, bool):
+            return api_answer({"error": "placeholder is true (mark) or false (unmark)"}, 400)
+        bad = {"error": "files is a list of at most %d files, each a number or ROOT:PATH" % TAG_BATCH}
+        if not isinstance(files, list) or not files or len(files) > TAG_BATCH:
+            return api_answer(bad, 400)
+        ids = []
+        for x in files:
+            if isinstance(x, int) and not isinstance(x, bool) and 0 < x < 2 ** 62:
+                f = queries.file_by_id(g.db, x)
+            elif isinstance(x, str) and ":" in x:
+                try:
+                    f = queries.file_at(g.db, x)
+                except ValueError as e:
+                    return api_answer({"error": str(e)}, 400)
+            else:
+                return api_answer(bad, 400)
+            if not f:
+                return api_answer({"error": "no file you can see at %s" % x}, 404)
+            ids.append(f["file_id"])
+        ids = list(dict.fromkeys(ids))
+        return api_answer({"asked": len(ids), "marked": sum(queries.mark_placeholder(g.db, i, mark) for i in ids)})
 
     @app.route(API + "export")
     def api_export():

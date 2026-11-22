@@ -166,6 +166,8 @@ class _LineageState:
         self.how_loaded = set()
         self.how = {}                # (file_id, content_id) -> latest history kind that brought it
         self.rare_folders = None     # folder names few folders have (RARE_FOLDERS), read when first needed
+        self.placeholders = set()    # contents that are placeholders (ROADMAP 69): no edge by their hash
+        self.placeholders_loaded = set()
         self.pass_ids = set()        # the files this pass works out
         self.adopt = {}              # file of an earlier pass -> (rank, parent, evidence): its source by identity,
         self.new_round()             # found from the parent's side, given at the end of the pass if it has none
@@ -185,6 +187,20 @@ RARE_FOLDERS = """
     SELECT lower(substring(f.relpath from '([^/]+)/[^/]+$')) FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
     WHERE r.kind <> 'backup' AND f.gone_on IS NULL AND f.relpath LIKE '%%/%%'
     GROUP BY 1 HAVING count(DISTINCT (f.root_id, regexp_replace(f.relpath, '/[^/]+$', ''))) <= %s"""
+
+
+# Contents of at most %s bytes held under at least %s names (a name and its extension, the name as lineage compares
+# it) by present files outside backup roots, with their size, names, folders and extensions: what a site's
+# [[placeholders.rule]] is matched against (ROADMAP 69). Only these contents, or (NULL) every content.
+PLACEHOLDER_HOLDERS = """
+    SELECT f.content_id, max(f.size), count(DISTINCT (coalesce(f.name_key, f.name), f.ext)),
+           count(DISTINCT (f.root_id, CASE WHEN strpos(f.relpath, '/') > 0
+                                           THEN regexp_replace(f.relpath, '/[^/]+$', '') ELSE '' END)),
+           min(coalesce(f.ext, '')), max(coalesce(f.ext, ''))
+    FROM pinakes.files f JOIN pinakes.roots r USING (root_id)
+    WHERE r.kind <> 'backup' AND f.gone_on IS NULL AND f.size > 0 AND f.size <= %s AND f.content_id IS NOT NULL
+      AND NOT f.is_symlink AND (%s::bigint[] IS NULL OR f.content_id = ANY(%s))
+    GROUP BY f.content_id HAVING count(DISTINCT (coalesce(f.name_key, f.name), f.ext)) >= %s"""
 
 
 # tidy's set-wide deletes, run in order (ROADMAP 28, 9). On a large catalog most files are in backup roots, too many
@@ -1222,6 +1238,10 @@ class Ingester:
         the same as working the files out one by one: a round of 1 is the per-file order exactly, reading every edge
         back from the table. Chunk sharing, rare, is still asked per file.
         """
+        if file_ids:
+            self.placeholder_rules([r[0] for r in self.q(
+                "SELECT DISTINCT content_id FROM pinakes.files WHERE file_id = ANY(%s) AND content_id IS NOT NULL",
+                (list(file_ids),)).fetchall()])
         st = _LineageState()
         st.pass_ids = set(file_ids)
         for i in range(0, len(file_ids), self.lineage_round):
@@ -1251,6 +1271,11 @@ class Ingester:
                 st.holders[h[1]].append(h)
             for c in missing:
                 st.holders[c].sort(key=lambda h: (h[2] or far, h[3], h[0]))
+        unknown = [c for c in contents if c not in st.placeholders_loaded]
+        if unknown:
+            st.placeholders_loaded.update(unknown)
+            st.placeholders.update(r[0] for r in self.q(
+                "SELECT content_id FROM pinakes.placeholders WHERE content_id = ANY(%s)", (unknown,)).fetchall())
         # incoming edges and history of these files and of every holder of their contents (each loaded once a pass)
         near = list(by_id) + [h[0] for c in contents for h in st.holders[c]]
         self._load_lineage(near, st)
@@ -1318,12 +1343,18 @@ class Ingester:
         if not ids:
             return
         st.loaded.update(ids)
-        # incoming edges, and outgoing ones rejected: a rejected pair is never suggested again, either way
-        for frm, to, kind, evidence, decision in self.q(
-                "SELECT from_file_id, to_file_id, kind, evidence, decision FROM pinakes.lineage "
-                "WHERE to_file_id = ANY(%s) OR (from_file_id = ANY(%s) AND decision = 'rejected')",
+        # incoming edges, and outgoing ones rejected: a rejected pair is never suggested again, either way. An edge
+        # by the hash of a placeholder (ROADMAP 69) is left out of every answer, so it gives the file no source.
+        for frm, to, kind, evidence, decision, hidden in self.q(
+                "SELECT l.from_file_id, l.to_file_id, l.kind, l.evidence, l.decision, "
+                "l.evidence = 'same sha256' AND EXISTS (SELECT 1 FROM pinakes.files pf JOIN pinakes.placeholders pp "
+                "ON pp.content_id = pf.content_id WHERE pf.file_id IN (l.from_file_id, l.to_file_id)) "
+                "FROM pinakes.lineage l "
+                "WHERE l.to_file_id = ANY(%s) OR (l.from_file_id = ANY(%s) AND l.decision = 'rejected')",
                 (ids, ids)).fetchall():
             st.keys.add((frm, to, kind))
+            if hidden:
+                continue
             if decision == "rejected":
                 st.rejected.add(frozenset((frm, to)))
             else:
@@ -1382,9 +1413,10 @@ class Ingester:
 
     def _lineage_one(self, f, on, st, changed, chunked, by_name, by_identity=None):
         file_id, content, mtime, dev, ino, host_id, name_key, ext = f[:8]
-        # 1. identical content elsewhere (not a backup copy, not another link to the same inode)
+        # 1. identical content elsewhere (not a backup copy, not another link to the same inode); a placeholder's
+        #    holders are not copies of one another (ROADMAP 69): the weaker rules below may still link them
         others = [h for h in st.holders.get(content, ()) if h[0] != file_id and _other_inode(h, host_id, dev, ino)]
-        if others:
+        if others and content not in st.placeholders:
             earliest = others[0]
             if mtime is not None and earliest[2] is not None and mtime < earliest[2]:
                 # this file had it first: it is the source of the copies that have no source yet
@@ -1438,6 +1470,40 @@ class Ingester:
             st.rare_folders = {r[0] for r in self.q(RARE_FOLDERS, (self.cfg.name_folder_max,))}
         return [_folder_name(p) in st.rare_folders for p in relpaths]
 
+    # placeholders ------------------------------------------------------------------------------------------------
+    def placeholder_rules(self, contents=None):
+        """The site's [[placeholders.rule]] (ROADMAP 69) applied to these contents, or to every one (None): a content
+        a rule matches becomes a placeholder named by that rule (the first that matches, in the config's order), and
+        one a rule made that no rule matches any more stops being one. A person's mark is never changed. A rule
+        matches a content of at most its max_size bytes held, by present files outside backup roots, under at least
+        min_names names and in at least min_folders folders, every one of them with its ext if it names one.
+        Returns (contents made placeholders, contents no longer)."""
+        rules = self.cfg.placeholder_rules
+        if contents is not None and not contents:
+            return 0, 0
+        found = {}
+        if rules:
+            for cid, size, n_names, n_folders, ext_lo, ext_hi in self.q(
+                    PLACEHOLDER_HOLDERS, (max(r["max_size"] for r in rules), contents, contents,
+                                          min(r["min_names"] for r in rules))).fetchall():
+                for r in rules:
+                    if (size <= r["max_size"] and n_names >= r["min_names"] and n_folders >= r["min_folders"]
+                            and (r["ext"] is None or ext_lo == ext_hi == r["ext"])):
+                        found[cid] = r["name"]
+                        break
+        old = dict(self.q("SELECT content_id, rule FROM pinakes.placeholders WHERE rule IS NOT NULL "
+                          "AND (%s::bigint[] IS NULL OR content_id = ANY(%s))", (contents, contents)).fetchall())
+        gone = [c for c, rule in old.items() if found.get(c) != rule]
+        if gone:
+            self.q("DELETE FROM pinakes.placeholders WHERE content_id = ANY(%s) AND rule IS NOT NULL", (gone,))
+        new = [(c, rule) for c, rule in found.items() if old.get(c) != rule]
+        added = 0
+        if new:
+            added = self.q("INSERT INTO pinakes.placeholders (content_id, rule) SELECT * FROM unnest(%s::bigint[], "
+                           "%s::text[]) ON CONFLICT (content_id) DO NOTHING",
+                           ([c for c, _ in new], [r for _, r in new])).rowcount
+        return added, len([c for c in gone if c not in found])
+
     # tidying what older releases left ---------------------------------------------------------------------------
     def tidy(self, on):
         """Bring a catalog built by an older release in line with the current rules; returns counts. Backup roots:
@@ -1445,8 +1511,11 @@ class Ingester:
         descends from nothing). Name keys are recomputed by the current patterns. Name lineage: every undecided edge
         by name is worked out again by NAME_CANDIDATE (the same source kept, another taken, or none). Decided edges
         stay, and a rejected pair isn't linked again (ROADMAP 9). Identity fields (ROADMAP 15): files with no source
-        but an undecided name edge are linked by them as a scan would now, and that name edge goes. Run it again
-        after an upgrade; a second run changes nothing."""
+        but an undecided name edge are linked by them as a scan would now, and that name edge goes. Placeholders
+        (ROADMAP 69): the site's rules applied to every content, so a rule added, changed or removed in the config
+        holds for the whole catalog (a scan applies them only to the contents it touched); a placeholder's edges by
+        its hash stay in the table, left out of every answer. Run it again after an upgrade; a second run changes
+        nothing."""
         n = {}
         for what, sql in TIDY_DELETES:
             n[what] = n.get(what, 0) + self.q(sql).rowcount
@@ -1462,6 +1531,7 @@ class Ingester:
             cur.executemany("UPDATE pinakes.files SET name_key = %s, ext = %s WHERE file_id = %s", rekey)
         n["name keys updated"] = len(rekey)
         n["identity edges added"], n["name edges replaced by identity"] = self._tidy_identity(on)
+        n["placeholders by a site rule"], n["placeholders no rule matches any more"] = self.placeholder_rules()
         edges = self.q("SELECT from_file_id, to_file_id FROM pinakes.lineage WHERE evidence LIKE 'similar name%%' "
                        "AND decision IS NULL ORDER BY to_file_id").fetchall()
         old = {}

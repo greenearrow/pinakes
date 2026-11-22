@@ -2353,6 +2353,197 @@ class TestLineageDecisions(ServerCase):
         self.assertIn("pinakes_app:EXECUTE", fresh[1])
 
 
+class TestPlaceholders(ServerCase):
+    """Placeholders (ROADMAP 69): an app's default bytes held under many names aren't copies. A content a site rule
+    matches, or one a person marked, gets no lineage edge by its hash (the ones made before stay in the table, left
+    out of every answer, and come back with an unmark), and its other holders are no copy for only-here, where or
+    dupes. Only a person owning or co-owning every holder marks, or an administrator in a step-up, audited."""
+
+    server_toml = SERVER + """
+[[placeholders.rule]]
+name = "game data"
+ext = "dat"
+max_size = 4096
+min_names = 3
+"""
+    SIDECAR = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF/></x:xmpmeta>\n" * 4      # what an app writes
+
+    def setUp(self):
+        super().setUp()
+        t0 = time.time() - 86400
+        for i in range(1, 5):
+            self.write("server-1", "store", "people/user-1/photos/IMG_000%d.JPG" % i, os.urandom(3000 + i),
+                       mtime=t0)
+            self.write("server-1", "store", "people/user-1/photos/IMG_000%d.xmp" % i, self.SIDECAR, mtime=t0 + i)
+        self.write("server-1", "store", "people/user-2/photos/IMG_0100.xmp", self.SIDECAR, mtime=t0 + 9)
+        for i in range(4):                                                  # a game's empty objects
+            self.write("server-1", "store", "people/user-1/game/world/data/map_%d.dat" % i, b"\0" * 210,
+                       mtime=t0 + i)
+        self.scan("server-1", "store")
+        self.side = [self.file("store", "people/user-1/photos/IMG_000%d.xmp" % i) for i in range(1, 5)]
+        self.hers = self.file("store", "people/user-2/photos/IMG_0100.xmp")
+        self.content = self.q("SELECT content_id FROM pinakes.files WHERE file_id = %s", (self.side[0],))[0][0]
+
+    def hash_edges(self):
+        return self.q("SELECT count(*) FROM pinakes.lineage l JOIN pinakes.files f ON f.file_id = l.to_file_id "
+                      "WHERE l.evidence = 'same sha256' AND f.content_id = %s", (self.content,))[0][0]
+
+    def mark(self, person, file_id, what=True, step_up=False):
+        with self.as_person(person) as c:
+            if step_up:
+                c.execute("SELECT pinakes.begin_step_up('tidying placeholders', 15)")
+            n = queries.mark_placeholder(c, file_id, what)
+            c.commit()
+        return n
+
+    def test_a_site_rule_makes_a_placeholder_at_the_scan_and_tidy_follows_the_config(self):
+        maps = self.q("SELECT DISTINCT f.content_id FROM pinakes.files f WHERE f.ext = '.dat'")
+        self.assertEqual(self.q("SELECT content_id, rule, marked_by FROM pinakes.placeholders"),
+                         [(maps[0][0], "game data", None)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage l JOIN pinakes.files f "
+                                "ON f.file_id = l.to_file_id WHERE f.ext = '.dat'"), [(0,)])   # none made
+        # the rule gone from the config: tidy drops what it made, and keeps a person's mark
+        self.assertEqual(self.mark("user-1", self.side[0], step_up=True), 1)
+        self.ing = Ingester(self.conn, server_config.loads(SERVER))
+        with self.conn.transaction():
+            n = self.ing.tidy(queries.today())
+        self.assertEqual((n["placeholders by a site rule"], n["placeholders no rule matches any more"]), (0, 1))
+        self.assertEqual(self.q("SELECT content_id, rule FROM pinakes.placeholders"), [(self.content, None)])
+        with self.conn.transaction():
+            n = self.ing.tidy(queries.today())                              # a second run changes nothing
+        self.assertEqual((n["placeholders by a site rule"], n["placeholders no rule matches any more"]), (0, 0))
+        # a rule that names no extension, of a size the sidecars fit: tidy makes them the rule's, the mark stays
+        self.ing = Ingester(self.conn, server_config.loads(SERVER + """
+[[placeholders.rule]]
+name = "small and common"
+max_size = 1024
+min_names = 4
+min_folders = 1
+"""))
+        with self.conn.transaction():
+            n = self.ing.tidy(queries.today())
+        self.assertEqual(n["placeholders by a site rule"], 1)                  # the maps; the sidecars are marked
+        self.assertEqual(sorted(r for (r,) in self.q("SELECT coalesce(rule, 'marked') FROM pinakes.placeholders")),
+                         ["marked", "small and common"])
+
+    def test_no_edge_by_the_hash_and_an_unmark_brings_the_old_ones_back(self):
+        before = self.hash_edges()
+        self.assertGreater(before, 0)
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["evidence"] for r in queries.lineage(c, self.side[1], "up")], ["same sha256"])
+            self.assertEqual([d["size"] for d in queries.dupes(c)], [len(self.SIDECAR)])   # the maps: a rule's
+        self.assertEqual(self.mark("user-1", self.side[0], step_up=True), 1)
+        self.assertEqual(self.hash_edges(), before)                            # kept in the table
+        with self.as_person("user-1") as c:
+            for f in self.side:
+                self.assertEqual(queries.lineage(c, f, "up") + queries.lineage(c, f, "down"), [])
+                self.assertEqual(queries.relatives(c, f), [])
+            self.assertEqual(queries.dupes(c), [])
+            self.assertEqual([r["file_id"] for r in queries.where(c, self.side[1], backups="fold")], [self.side[1]])
+            self.assertEqual(queries.placeholder_of(c, self.side[1]), "marked")
+        # a new holder scanned: no edge written for it, either way
+        self.write("laptop-1", "downloads", "IMG_0200.xmp", self.SIDECAR)
+        self.scan("laptop-1", "downloads")
+        new = self.file("downloads", "IMG_0200.xmp")
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.lineage WHERE %s IN (from_file_id, to_file_id)",
+                                (new,)), [(0,)])
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["relpath"] for r in queries.only_here(c, "downloads:")], ["IMG_0200.xmp"])
+        self.assertEqual(self.mark("user-1", self.side[0], False, step_up=True), 1)
+        with self.as_person("user-1") as c:
+            self.assertEqual([r["evidence"] for r in queries.lineage(c, self.side[1], "up")], ["same sha256"])
+            self.assertEqual(queries.only_here(c, "downloads:"), [])
+            self.assertEqual(len(queries.where(c, self.side[1], backups="fold")), 6)     # stepped up: hers too
+
+    def test_who_marks(self):
+        self.assertEqual(self.mark("user-1", self.side[0]), 0)                 # user-2 holds the bytes too
+        self.assertEqual(self.mark("user-2", self.hers), 0)                    # and user-1 does
+        self.assertEqual(self.mark("user-2", self.side[0]), 0)                 # not even hers to see
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.placeholders WHERE rule IS NULL"), [(0,)])
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'placeholder'"), [(0,)])
+        self.assertEqual(self.mark("user-1", self.side[0], step_up=True), 1)
+        self.assertEqual(self.mark("user-1", self.side[1], step_up=True), 0)  # already one
+        one, two = (self.q("SELECT person_id FROM pinakes.people WHERE name = %s", (n,))[0][0]
+                    for n in ("user-1", "user-2"))
+        self.assertEqual(self.q("SELECT actor, affects, detail FROM pinakes.audit WHERE action = 'placeholder'"),
+                         [(one, [two], {"placeholder": True, "files": 5})])
+        self.assertEqual(self.q("SELECT marked_by FROM pinakes.placeholders WHERE content_id = %s", (self.content,)),
+                         [(one,)])
+        # her copy gone: the rest are user-1's own, who unmarks without a step-up, unaudited
+        os.remove(self.path("server-1", "store", "people/user-2/photos/IMG_0100.xmp"))
+        self.scan("server-1", "store")
+        self.assertEqual(self.mark("user-1", self.side[0], False), 1)
+        self.assertEqual(self.mark("user-1", self.side[0], True), 1)
+        self.assertEqual(self.q("SELECT count(*) FROM pinakes.audit WHERE action = 'placeholder'"), [(1,)])
+        # a site rule's placeholder isn't a person's to unmark; a reader marks nothing
+        maps = self.file("store", "people/user-1/game/world/data/map_0.dat")
+        self.assertEqual(self.mark("user-1", maps, False), 0)
+        self.write("server-1", "store", "people/user-1/shared-with-2/a.txt", b"shared bytes")
+        self.write("server-1", "store", "people/user-1/shared-with-2/b.txt", b"shared bytes")
+        self.write("server-1", "store", "people/user-1/shared-with-2/c.txt", b"shared bytes")
+        self.scan("server-1", "store")
+        self.assertEqual(self.mark("user-2", self.file("store", "people/user-1/shared-with-2/a.txt")), 0)
+        with self.as_person("user-1") as c:
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "marked .true. or unmarked"):
+                c.execute("SELECT pinakes.mark_placeholder(%s, NULL)", (self.side[0],))
+        c = psycopg.connect(host=PGHOST, user="pinakes_app", dbname=self.db)       # no person
+        try:
+            with self.assertRaisesRegex(psycopg.errors.RaiseException, "no person set"):
+                c.execute("SELECT pinakes.mark_placeholder(%s, true)", (self.side[0],))
+        finally:
+            c.close()
+        with self.as_person("user-1") as c:                                     # the table isn't the web's to write
+            with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+                c.execute("DELETE FROM pinakes.placeholders")
+        with self.as_person("user-2") as c:         # seen through her files (one gone): not the maps
+            self.assertEqual(c.execute("SELECT content_id FROM pinakes.placeholders").fetchall(), [(self.content,)])
+
+    def test_the_config_is_checked(self):
+        for bad, why in (('[placeholders]\nmin_names = 1', "min_names"),
+                         ('[placeholders]\nsiblings_within = 1.5', "siblings_within"),
+                         ('[[placeholders.rule]]\nmax_size = 10', "needs a name"),
+                         ('[[placeholders.rule]]\nname = "a"', "needs max_size"),
+                         ('[[placeholders.rule]]\nname = "a"\nmax_size = 10\nsize = 3', "only name"),
+                         ('[[placeholders.rule]]\nname = "a"\nmax_size = 10\next = "a/b"', "an extension"),
+                         ('[[placeholders.rule]]\nname = "a"\nmax_size = 10\n'
+                          '[[placeholders.rule]]\nname = "a"\nmax_size = 20', "same name")):
+            with self.assertRaisesRegex(server_config.ConfigError, why):
+                server_config.loads(bad)
+        cfg = server_config.loads('[[placeholders.rule]]\nname = "maps"\next = ".DAT"\nmax_size = 10')
+        self.assertEqual(cfg.placeholder_rules, [{"name": "maps", "ext": ".dat", "max_size": 10, "min_names": 3,
+                                                  "min_folders": 1}])
+        self.assertEqual((cfg.placeholder_min_names, cfg.placeholder_max_size, cfg.placeholder_siblings_within),
+                         (3, 65536, 0.2))
+
+    def test_upgrade_file_matches_the_schema(self):
+        defs = ("SELECT pg_get_functiondef('pinakes.mark_placeholder(bigint, boolean)'::regprocedure), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.routine_privileges WHERE routine_schema = 'pinakes' "
+                " AND routine_name = 'mark_placeholder'), "
+                "(SELECT array_agg(column_name || ':' || data_type || ':' || is_nullable || ':' || "
+                "        coalesce(column_default, '') ORDER BY ordinal_position) "
+                " FROM information_schema.columns WHERE table_schema = 'pinakes' AND table_name = 'placeholders'), "
+                "(SELECT array_agg(pg_get_constraintdef(oid) ORDER BY 1) FROM pg_constraint "
+                " WHERE conrelid = 'pinakes.placeholders'::regclass), "
+                "(SELECT array_agg(policyname || ':' || cmd || ':' || qual ORDER BY policyname) FROM pg_policies "
+                " WHERE schemaname = 'pinakes' AND tablename = 'placeholders'), "
+                "(SELECT relrowsecurity FROM pg_class WHERE oid = 'pinakes.placeholders'::regclass), "
+                "(SELECT array_agg(grantee || ':' || privilege_type ORDER BY grantee, privilege_type) "
+                " FROM information_schema.role_table_grants WHERE table_schema = 'pinakes' "
+                " AND table_name = 'placeholders')")
+        with admin_conn(self.db) as c:
+            fresh = c.execute(defs).fetchone()
+            c.execute("DROP FUNCTION pinakes.mark_placeholder(bigint, boolean); DROP TABLE pinakes.placeholders")
+            self.assertFalse(c.execute("SELECT %s" % compat.UPGRADE_PROBES["placeholders.sql"]).fetchone()[0])
+            with open(os.path.join(UPGRADES, "placeholders.sql")) as f:
+                c.execute(f.read())
+            self.assertTrue(c.execute("SELECT %s" % compat.UPGRADE_PROBES["placeholders.sql"]).fetchone()[0])
+            c.execute("RESET search_path")
+            self.assertEqual(c.execute(defs).fetchone(), fresh)
+        self.assertIn("pinakes_app:EXECUTE", fresh[1])
+        self.assertIn("pinakes_app:SELECT", fresh[6])
+
+
 class TestEmptyFiles(ServerCase):
     """Every empty file has the same hash: not a duplicate, and no line of descent."""
 

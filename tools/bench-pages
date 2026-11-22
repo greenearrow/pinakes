@@ -202,6 +202,7 @@ def calls(conn):
         ("safe-to-delete", {"loc": "store:people/user-1/projects/p001"}),
         ("backed-up", {"loc": "store:"}), ("backed-up", {"loc": "store:people/user-1/projects/p001"}),
         ("manifests", {}), ("folder-copies", {"loc": "store:people/user-1/projects/p001"}), ("dupes", {}),
+        ("placeholders", {}), ("placeholders", {"marked": 1}),
         ("changes", {"days": 7}), ("changes", {"days": 7, "loc": "store:people/user-1/moved-p000"}),
         ("changes", {"days": 7, "review": "unreviewed", "what": ["gone", "moved"]}),
         ("meta", {"field": "exif.make", "value": "Maker-1"}), ("restores", {}),

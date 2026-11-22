@@ -313,12 +313,13 @@ class TestApi(ApiCase):
         self.assertNotIn("store:people/user-2/diary.txt", self.paths("find?q=*.txt", his))
         self.assertEqual(self.get("history?file=%d" % diary, his)[0], 404)
         # GET only, but for signing in and out (pinakes --as), the review marks and lineage decisions a token's
-        # review scope allows, the tags its tag scope allows, and undoing either (the database checks the scope again)
+        # review scope allows, the tags its tag scope allows, undoing either, and placeholder marks (review scope;
+        # the database checks the scope again)
         api = [r for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/")]
         self.assertTrue(api)
         posts = {r.rule for r in api if r.methods - {"HEAD", "OPTIONS"} != {"GET"}}
         self.assertEqual(posts, {"/api/v1/session", "/api/v1/session/end", "/api/v1/review", "/api/v1/decide",
-                                 "/api/v1/tag", "/api/v1/undo"})
+                                 "/api/v1/tag", "/api/v1/undo", "/api/v1/placeholder"})
         for rule in api:
             self.assertIn(rule.methods - {"HEAD", "OPTIONS"}, ({"GET"}, {"POST"}), rule.rule)
         # and the database refuses a step-up, or a token, from a token's transaction, whatever the application does
@@ -1295,6 +1296,176 @@ class TestCliRelatives(ServerCase):
         r = c.post("/api/v1/decide", json={"files": ids, "decision": "confirmed"},
                    headers={"Authorization": "Bearer " + mine})
         self.assertEqual((r.status_code, r.get_json()), (200, {"files": ids, "decision": "confirmed", "decided": 1}))
+
+
+@unittest.skipUnless(web is not None, "Flask not installed")
+class TestCliPlaceholders(ServerCase):
+    """pinakes placeholders [FILE] [--marked] and pinakes placeholder FILE [--siblings] [--unmark] (ROADMAP 69): an
+    app's default bytes under many names are candidates, counted under row-level security; once marked, or matched
+    by a site rule, their holders aren't copies of one another: no certain copy in lineage and relatives, and
+    only-here lists them. A sidecar that was copied stays linked. Only a person owning or co-owning every holder
+    marks, with the token's review scope and in its roots."""
+
+    server_toml = SERVER + """
+[[placeholders.rule]]
+name = "game data"
+ext = "dat"
+max_size = 4096
+min_names = 3
+"""
+    SIDECAR = b"<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF/></x:xmpmeta>\n" * 4
+    SIDECAR2 = SIDECAR + b"<!-- 2 -->\n"                    # the same app's default, written by another version
+    SIDECAR3 = SIDECAR + b"<!-- scanner -->\n"              # another app's, which user-2 holds too
+    PHOTOS = "people/user-1/photos/"
+
+    def setUp(self):
+        super().setUp()
+        t0 = time.time() - 86400
+        self.agent("laptop-1", "downloads", kind="drop")
+        for i in range(1, 6):
+            self.write("server-1", "store", self.PHOTOS + "IMG_000%d.JPG" % i, os.urandom(3000 + i), mtime=t0)
+            self.write("server-1", "store", self.PHOTOS + "IMG_000%d.xmp" % i, self.SIDECAR, mtime=t0 + i)
+        for i in (1, 2):
+            self.write("laptop-1", "downloads", "phone/IMG_10%d.xmp" % i, self.SIDECAR, mtime=t0 + 10 + i)
+        for i in range(1, 4):
+            self.write("server-1", "store", "people/user-1/photos-2019/IMG_20%d.xmp" % i, self.SIDECAR2, mtime=t0)
+            self.write("server-1", "store", "people/user-1/scans/S_%d.xmp" % i, self.SIDECAR3, mtime=t0)
+        self.write("server-1", "store", "people/user-2/IMG_9001.xmp", self.SIDECAR3, mtime=t0)
+        self.unique = os.urandom(300)                        # a sidecar with something in it, copied
+        self.write("server-1", "store", self.PHOTOS + "IMG_0009.xmp", self.unique, mtime=t0)
+        self.write("laptop-1", "downloads", "IMG_0009.xmp", self.unique, mtime=t0 + 100)
+        for i in range(4):                                   # a game's empty objects, from two versions
+            self.write("server-1", "store", "people/user-1/game/world/data/map_%d.dat" % i, b"\0" * 210, mtime=t0)
+            self.write("server-1", "store", "people/user-1/game/world2/data/map_%d.dat" % i, b"\1" * 205,
+                       mtime=t0)
+        self.scan("server-1", "store")
+        self.scan("laptop-1", "downloads")
+        self.cli = None
+
+    def as_(self, person, scopes=("read", "review"), roots=None):
+        if self.cli:
+            self.cli.close()
+        self.cli = CliRun(self, person, scopes, roots)
+        self.addCleanup(lambda: self.cli and self.cli.close())
+        with open(self.cli.client_toml, "a") as f:
+            f.write('host = "server-1"\n')
+        return self.cli
+
+    def sha(self, data):
+        return hashlib.sha256(data).hexdigest()
+
+    def by_sha(self, rows):
+        return {r["sha256"]: (r["holders"], r["names"], r["folders"], r["placeholder"]) for r in rows}
+
+    def test_candidates_and_siblings_are_of_what_the_person_sees(self):
+        cli = self.as_("user-1")
+        got = json.loads(cli("placeholders", "--json"))
+        self.assertEqual(self.by_sha(got["rows"]), {self.sha(self.SIDECAR): (7, 7, 2, None),
+                                                    self.sha(self.SIDECAR2): (3, 3, 1, None),
+                                                    self.sha(self.SIDECAR3): (3, 3, 1, None)})  # hers not counted
+        self.assertEqual((got["total"], got["min_names"], got["max_size"]), (3, 3, 65536))
+        self.assertEqual(got["rows"][0]["sha256"], self.sha(self.SIDECAR))             # the most names first
+        self.assertEqual((got["rows"][0]["root"], got["rows"][0]["exts"]), ("store", [".xmp"]))
+        out = cli("placeholders")
+        self.assertIn("placeholder candidates: contents of at most 65.5 KB held under 3 or more names", out)
+        self.assertIn("store:%sIMG_0001.xmp" % self.PHOTOS, out)
+        self.assertEqual(out.splitlines()[-1], "3 of 3")
+        # the game's defaults are a site rule's, both versions: placeholders already, not candidates
+        marked = json.loads(cli("placeholders", "--marked", "--json"))
+        self.assertEqual(self.by_sha(marked["rows"]), {self.sha(b"\0" * 210): (4, 4, 1, "rule game data"),
+                                                       self.sha(b"\1" * 205): (4, 4, 1, "rule game data")})
+        # a file's likely siblings: its extension, a size within 20%
+        sib = json.loads(cli("placeholders", "store:%sIMG_0001.xmp" % self.PHOTOS, "--json"))
+        self.assertEqual(set(self.by_sha(sib["rows"])), {self.sha(self.SIDECAR2), self.sha(self.SIDECAR3)})
+        self.assertEqual((sib["file"]["size"], sib["file"]["placeholder"]), (len(self.SIDECAR), None))
+        self.assertIn("likely siblings of store:%sIMG_0001.xmp" % self.PHOTOS,
+                      cli("placeholders", "IMG_0001.xmp", cwd=self.path("server-1", "store", self.PHOTOS)))
+        # user-2 holds one file of SIDECAR3: no candidate of hers, and nothing of user-1's counted
+        cli = self.as_("user-2")
+        self.assertEqual(json.loads(cli("placeholders", "--json"))["rows"], [])
+        self.assertEqual(json.loads(cli("placeholders", "--marked", "--json"))["rows"], [])
+
+    def test_marked_no_certain_copy_only_here_lists_them_and_a_copied_sidecar_stays_linked(self):
+        cli = self.as_("user-1")
+        second, here = "store:%sIMG_0002.xmp" % self.PHOTOS, "store:" + self.PHOTOS
+        self.assertEqual([(r["evidence"], r["confidence"]) for r in json.loads(cli("lineage", second, "--json"))],
+                         [("same sha256", "certain")])
+        lonely = [r["relpath"] for r in json.loads(cli("only-here", here, "--json"))["rows"]]
+        self.assertEqual([p for p in lonely if p.endswith(".xmp")], [])         # copies on the laptop
+        self.assertIn(len(self.SIDECAR), [d["size"] for d in json.loads(cli("dupes", "--json"))["rows"]])
+        self.assertEqual(cli("placeholder", "store:%sIMG_0001.xmp" % self.PHOTOS).strip(),
+                         "marked 1 of 1 content(s) as placeholders")
+        for i in range(1, 6):
+            loc = "store:%sIMG_000%d.xmp" % (self.PHOTOS, i)
+            self.assertEqual(json.loads(cli("lineage", loc, "--json")), [])
+            self.assertEqual(json.loads(cli("lineage", loc, "--down", "--json")), [])
+            self.assertEqual(json.loads(cli("relatives", loc, "--json"))["rows"], [])
+        self.assertIn("(none)", cli("lineage", second))
+        lonely = [r["relpath"] for r in json.loads(cli("only-here", here, "--json"))["rows"]]
+        self.assertEqual(sorted(p for p in lonely if p.endswith(".xmp")),
+                         [self.PHOTOS + "IMG_000%d.xmp" % i for i in range(1, 6)])   # not IMG_0009: copied
+        self.assertNotIn(len(self.SIDECAR), [d["size"] for d in json.loads(cli("dupes", "--json"))["rows"]])
+        where = json.loads(cli("where", second, "--json"))
+        self.assertEqual([(r["root"], r["relpath"]) for r in where["rows"]], [("store", self.PHOTOS + "IMG_0002.xmp")])
+        self.assertEqual(json.loads(cli("placeholders", "--json"))["total"], 2)    # no longer a candidate
+        # the sidecar that was copied: still linked, certain
+        (r,) = json.loads(cli("relatives", "downloads:IMG_0009.xmp", "--json"))["rows"]
+        self.assertEqual((r["how"], r["evidence"], r["confidence"], r["root"]),
+                         ("copied_from", "same sha256", "certain", "store"))
+        # a version the rule matches, which no one marked: the same
+        variant = "store:people/user-1/game/world2/data/map_1.dat"
+        self.assertEqual([(r["how"], r["evidence"], r["confidence"])                    # other rules still may
+                          for r in json.loads(cli("relatives", variant, "--json"))["rows"]],
+                         [("derived_from", "similar name, similar size", "possible")] * 2)
+        self.assertEqual(len(json.loads(cli("only-here", "store:people/user-1/game/world2", "--json"))["rows"]), 4)
+        # unmarked: the copy links come back, as they were
+        self.assertEqual(cli("placeholder", "store:%sIMG_0003.xmp" % self.PHOTOS, "--unmark").strip(),
+                         "unmarked 1 of 1 content(s)")
+        self.assertEqual([(r["evidence"], r["confidence"]) for r in json.loads(cli("lineage", second, "--json"))],
+                         [("same sha256", "certain")])
+
+    def test_siblings_marked_together_and_what_is_refused(self):
+        cli = self.as_("user-1")
+        first = "store:%sIMG_0001.xmp" % self.PHOTOS
+        self.assertIn("not marked: add --yes", cli("placeholder", first, "--siblings", code=1))
+        self.assertEqual(json.loads(cli("placeholders", "--marked", "--json"))["total"], 2)   # the rule's only
+        out = cli("placeholder", first, "--siblings", "--yes")
+        self.assertIn("2 likely sibling(s) of %s:" % first, out)
+        self.assertIn("marked 2 of 3 content(s) as placeholders", out)
+        self.assertIn("the rest: already a placeholder, or a file holding the same bytes isn't yours", out)
+        marked = self.by_sha(json.loads(cli("placeholders", "--marked", "--json"))["rows"])
+        self.assertEqual({k: v[3] for k, v in marked.items() if v[3] == "marked"},
+                         {self.sha(self.SIDECAR): "marked", self.sha(self.SIDECAR2): "marked"})
+        self.assertNotIn(self.sha(self.SIDECAR3), marked)                      # user-2 holds it too
+        self.assertIn("nothing unmarked: not a placeholder, or a site rule's",
+                      cli("placeholder", "store:people/user-1/game/world/data/map_0.dat", "--unmark"))
+        self.assertIn("one file, not --siblings", cli("placeholder", first, "--unmark", "--siblings", code=1))
+        self.assertIn("needs a file", cli("placeholder", code=1))
+        got = json.loads(cli("placeholder", first, "--unmark", "--json"))
+        self.assertEqual((got["asked"], got["marked"]), (1, 1))
+        # without the review scope, outside the token's roots, a group token, and the API's checks
+        cli = self.as_("user-1", scopes=("read",))
+        self.assertEqual(cli("placeholder", first, code=1), "pinakes: this token doesn't have the review scope")
+        downloads = self.q("SELECT root_id FROM pinakes.roots WHERE label = 'downloads'")[0][0]
+        cli = self.as_("user-1", roots=[downloads])
+        self.assertIn("nothing marked", cli("placeholder", "downloads:phone/IMG_101.xmp"))   # holders in the store
+        self.assertIn("no file you can see", cli("placeholder", first, code=1))
+        c = cli.app.test_client()
+        group = make_kind_token(self, "user-1", scopes=("read", "review"), group="household")
+        mine = make_token(self, "user-1", scopes=("read", "review"))
+        for secret, body, want in (
+                (group, {"files": [first], "placeholder": True}, 403),
+                (mine, {"files": [first], "placeholder": "yes"}, 400),
+                (mine, {"files": [], "placeholder": True}, 400),
+                (mine, {"files": [True], "placeholder": True}, 400),
+                (mine, {"files": "store:x", "placeholder": True}, 400),
+                (mine, {"files": ["store:nothing here"], "placeholder": True}, 404)):
+            r = c.post("/api/v1/placeholder", json=body, headers={"Authorization": "Bearer " + secret})
+            self.assertEqual(r.status_code, want, (body, r.get_json()))
+        fid = self.file("store", self.PHOTOS + "IMG_0001.xmp")
+        r = c.post("/api/v1/placeholder", json={"files": [fid, first], "placeholder": True},
+                   headers={"Authorization": "Bearer " + mine})
+        self.assertEqual((r.status_code, r.get_json()), (200, {"asked": 1, "marked": 1}))     # one file, once
 
 
 def make_kind_token(case, person, scopes=("read",), roots=None, client="laptop-1", group=None):

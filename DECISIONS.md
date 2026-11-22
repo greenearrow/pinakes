@@ -595,3 +595,19 @@ were made while building, to keep going, and are open to change.
   under row-level security, so only copies the person can see. The web's find and a file's copies fold the same way,
   with a link to every copy that paging and sorting keep. A broad find costs more: a name in 378,500 files on the
   generated catalog, 0.36 s before, 0.88 s folded (windows over the whole answer), within 61's 2 s.
+- **Placeholders (ROADMAP 69).** A mark is on a content, not a file: an app's default bytes are the same thing under
+  every name, on every machine, now and later. Candidates are counted by names, not folders: in the first real
+  catalog's sizing, contents held under 2 names were 6,907 and under 3 were 344, and 1,389 of the 1,531 under 3 or
+  more sat in one folder, while one name across many folders was snapshots and real copies. So a candidate is held
+  under `min_names` (3) names or more outside backups, a name compared as lineage compares names (copy markers off),
+  with its extension; and is at most `max_size` bytes (64 KiB), since every placeholder seen was 60 KB or less and the
+  real copies under 3 names or more were large. Folders are shown, and a rule may ask for them. Edges by a
+  placeholder's hash aren't deleted: they are left out of `lineage` and `relatives` (and give a file no source when
+  the ingester works lineage out again), so an unmark brings them back as they were; the ingester writes no new one,
+  and the other rules may still link its files. Its other holders are no copy for only-here, safe-to-delete, `where`,
+  folding and dupes; its own backups (`backup_of`) still are, since a snapshot of the file is tied to its path, not
+  its bytes. Who marks: the owner or a co-owner of every present holder, since one mark changes what others are told
+  of their files; else an administrator in a step-up, audited. A site rule's placeholder is the rule's: a person
+  neither marks nor unmarks it, and tidy drops it when no rule matches. Marks aren't edits (ROADMAP 62): an unmark is
+  the undo, and a step-up mark is in the audit. Rules are applied by the ingester to the contents a scan touched (a
+  holder gone elsewhere is caught by the next scan of that content or by tidy), and by tidy to all.

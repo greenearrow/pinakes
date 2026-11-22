@@ -78,10 +78,48 @@ class ServerConfig:
         # one batch may run this long before it is stopped and rolled back (a backstop: a sender that hangs up
         # stops it sooner)
         self.max_batch_time = seconds(d.get("ingest", {}).get("max_batch_time", "1h"))
+        self._placeholders(d.get("placeholders", {}))
         self.web = d.get("web", {})
         # a folder of the site's own schemas (NAME.toml), enrolled after the project's (METADATA.md "Schemas")
         self.schemas_dir = d.get("metadata", {}).get("schemas")
         self.base_dir = base_dir
+
+    def _placeholders(self, p):
+        """[placeholders] (ROADMAP 69): what `pinakes placeholders` offers as candidates (a content of at most
+        max_size bytes held under at least min_names names outside backup roots), how near in size a likely sibling
+        is, and the site's rules: a content a rule matches is a placeholder without a person's mark."""
+        def count(v, what, least):
+            if isinstance(v, bool) or not isinstance(v, int) or v < least:
+                raise ConfigError("%s must be a whole number of at least %d" % (what, least))
+            return v
+        self.placeholder_min_names = count(p.get("min_names", 3), "placeholders.min_names", 2)
+        self.placeholder_max_size = count(p.get("max_size", 65536), "placeholders.max_size", 1)
+        within = p.get("siblings_within", 0.2)
+        if isinstance(within, bool) or not isinstance(within, (int, float)) or not 0 <= within < 1:
+            raise ConfigError("placeholders.siblings_within is a share of the size, from 0 to under 1")
+        self.placeholder_siblings_within = float(within)
+        self.placeholder_rules = []
+        for r in p.get("rule", []):
+            name = r.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ConfigError("a [[placeholders.rule]] needs a name")
+            if set(r) - {"name", "ext", "max_size", "min_names", "min_folders"}:
+                raise ConfigError("[[placeholders.rule]] %s: only name, ext, max_size, min_names and min_folders"
+                                  % name)
+            if "max_size" not in r:
+                raise ConfigError("[[placeholders.rule]] %s needs max_size (bytes)" % name)
+            ext = r.get("ext")
+            if ext is not None:
+                if not isinstance(ext, str) or not ext.strip(". ") or "/" in ext:
+                    raise ConfigError("[[placeholders.rule]] %s: ext is an extension, e.g. \"dat\"" % name)
+                ext = "." + ext.strip().lstrip(".").lower()
+            self.placeholder_rules.append({
+                "name": name.strip(), "ext": ext,
+                "max_size": count(r["max_size"], "[[placeholders.rule]] %s max_size" % name, 1),
+                "min_names": count(r.get("min_names", 3), "[[placeholders.rule]] %s min_names" % name, 2),
+                "min_folders": count(r.get("min_folders", 1), "[[placeholders.rule]] %s min_folders" % name, 1)})
+        if len({r["name"] for r in self.placeholder_rules}) < len(self.placeholder_rules):
+            raise ConfigError("two [[placeholders.rule]] have the same name")
 
     def connect_kwargs(self):
         kw = {"conninfo": self.dsn}

@@ -158,3 +158,14 @@ min_server_protocol = 0
 upgrade_sql = []
 fingerprint = { batch = "099342d9ac728abd", state = "11155534073777cb", schema = "c7c0a957cf2a2728" }
 note = "The first release with a semantic version (0.13.0: something added). How many of all the files have a backup: backed-up is sorted unbacked first, so page 1 of a folder mostly backed up showed only zeros and read as nothing backed up. The query counts the files with at least one copy over the whole list; GET /api/v1/backed-up answers with_backup and without_backup beside total, pinakes backed-up prints \"N of TOTAL file(s) have a backup; M have none.\" first (against an older server, no line), and the Backed up report says it above the table (no line on an empty page). The server and the CLI: no schema change, no upgrade file."
+
+[[release]]
+id = 14
+version = "0.14.0"
+affects = ["server", "cli"]
+protocol = 7
+min_agent_protocol = 0
+min_server_protocol = 0
+upgrade_sql = ["placeholders.sql"]
+fingerprint = { batch = "099342d9ac728abd", state = "11155534073777cb", schema = "28cf5346a7729152" }
+note = "Placeholders (ROADMAP 69, placeholders.sql): an app's default bytes held under many names (the same minimal sidecar beside every photo, the objects a game writes with nothing stored in them) are no longer copies of one another. pinakes placeholders lists the candidates (contents of at most [placeholders] max_size bytes, 64 KiB, held under min_names names or more, 3, outside backup roots), under row-level security; pinakes placeholders FILE a file's likely siblings (its extension, a size within siblings_within, 20%); --marked the placeholders there are. pinakes placeholder FILE [--siblings] [--unmark] marks a content (POST /api/v1/placeholder), only where every file holding it is the person's own or co-owned, or an administrator in a step-up (audited); a token needs the review scope and every holder in its roots; never a group token. [[placeholders.rule]] in server.toml (name, ext, max_size, min_names, min_folders) makes a matching content a placeholder without a mark, at each scan for the contents it touched and for every content by pinakes-ingest tidy, which also drops what a removed rule made. A placeholder gets no copy link by its hash (other rules may still link its files), the ones made before are left out of lineage and relatives (kept, so an unmark brings them back), and its other holders aren't copies for only-here, safe-to-delete, where, folding or dupes; a backup of the file itself still is. Run placeholders.sql, then pinakes-ingest tidy. Protocol 7 changes the schema only: agents of protocol 0 to 6 work with it unchanged."
