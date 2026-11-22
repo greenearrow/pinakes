@@ -168,7 +168,7 @@ the agent, not by the page; `setup` refuses a config that goes past one:
   itself at its cap, which no setting removes.
 - Requester, approver and subject of an audit are three different people, except in a solo hold, which is allowed
   only once one person on the site has been the only administrator or auditor for a waiting period of at least 7
-  days, whatever the config says.
+  days, whatever the config says (owner's decision, 2026-11-22).
 - A standing view only of a person the config names as viewable so, never extending to step-up powers, and every look
   on the person's page.
 - No token or assistant steps up, audits, or sets, changes or ends a standing view.
@@ -196,10 +196,11 @@ Deduplication can leak: "where are all copies of this file" would reveal that an
 - The same key reaches one more thing, the check-in: when the agent asks for `hello` (sshd's
   `SSH_ORIGINAL_COMMAND`), the ingester reads the agent's release and protocol (numbers only, at most 4 KiB),
   records them for the key's host, and answers this server's release and protocol, whether its schema is
-  applied, and the last batch number applied for that host (with its header's digest). No root, file or person is
-  named either way; anything else asked for is still read as a batch. Planned (ROADMAP 85): the check-in also names
-  each of the host's roots by its label, with one word for where opaque containers fold there, and nothing more; the
-  ingester refuses a label the host isn't enrolled for, as it does in a batch.
+  applied, and the last batch number applied for that host (with its header's digest). No file or person is named
+  either way, and no root, with one exception (owner's decision, 2026-11-22; ROADMAP 85, not built): the agent names
+  each of its host's roots by its label, with one word for where opaque containers fold there, and nothing more. The
+  ingester refuses a label the host isn't enrolled for, as it does in a batch; labels already travel in batches, so
+  nothing new is exposed. Anything else asked for is still read as a batch.
 - A batch from an agent whose protocol this server doesn't work with (`pinakes/compat.py`) is refused before
   anything is applied; the reason goes to the agent and to the server's system log.
 - The ingester rejects any path outside the roots enrolled for that host, and any batch that doesn't continue the
