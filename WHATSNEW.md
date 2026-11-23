@@ -2,6 +2,61 @@
 
 Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are in `DECISIONS.md`.
 
+## Release 14 (0.14.0)
+
+Not cut. Affects the server and the CLI. Protocol 7, a change to the schema only: agents of protocol 0 to 6 work with
+this server unchanged, and the agent itself doesn't change. Update the server first: the new commands and answer
+fields need it, and an older server answers them with an error or without the new lines.
+
+### Before you update
+
+1. As the schema's owner, run `upgrades/placeholders.sql` and `upgrades/metadata-nocase.sql`, in that order
+   (`tools/latest-release --upgrades-after 13` lists them). Then update the server.
+2. Run `pinakes-ingest setup` (it makes the new case-insensitive indexes) and then `pinakes-ingest tidy` once.
+3. Update `pinakes` on every machine that has it, not only the catalog server: this release doesn't affect the
+   agent, so updating the agent alone doesn't bring it.
+
+### Placeholders: an app's default bytes aren't copies
+
+- The same small content held under many names (a minimal sidecar beside every photo, empty objects a game writes)
+  no longer makes those files copies of one another. `pinakes placeholders` lists the candidates (at most
+  `[placeholders] max_size` bytes, 64 KiB, under `min_names` names or more, 3, outside backup roots);
+  `pinakes placeholders FILE` a file's likely siblings; `--marked` the ones marked. `pinakes placeholder FILE
+  [--siblings] [--unmark]` marks a content, only where every file holding it is the person's own or co-owned, or
+  for an administrator in a step-up (audited). `[[placeholders.rule]]` in `server.toml` marks matching contents
+  without a person.
+- A placeholder gets no copy link by its hash, and its other holders aren't copies for only-here, safe-to-delete,
+  where, folding, dupes, folder-copies, at-risk and the totals; a backup of the file itself still is.
+  `pinakes find --hide-placeholders` leaves their files out and counts them. On the web: a Placeholders page, a mark
+  or unmark button on a file's page, and Leave out placeholders in browse and find.
+- `find` of a name with `_` or `%` and no `*` or `?` now finds it anywhere in a name, not only a file of exactly
+  that name.
+
+### `meta` without knowing the exact value
+
+- `pinakes meta SCHEMA.FIELD` lists the field's values and how many files hold each (`GET /api/v1/meta-values`).
+  `SCHEMA.FIELD=VALUE` matches text whatever its case and spacing, and a date by `YYYY`, `YYYY-MM` or `YYYY-MM-DD`;
+  several `FIELD=VALUE` list the files meeting every one.
+- Under a `meta` answer, a line says how many other image files the person sees aren't searched, as EXIF and XMP are
+  read from JPEG only (`not_searched` in `--json` and the API; the web's find by a date or a maker says it too).
+
+### Plainer answers
+
+- `only-here` with nothing to list says why: every file under the folder has a copy on another disk, or the person
+  sees no file there, with the root's last complete scan.
+- `pinakes find` of a name says how many other files are under folders so named (`under_folders` in the API).
+- A person's home page, `pinakes roots` and `pinakes stale` show only the roots and hosts holding a file the person
+  sees, under row-level security (every host for an ops token and an operator on the web). The API's `stale` adds
+  `age_s`, `expected_every_s` and `of`; plain output and the page give ages in words (4 days ago, every day).
+
+### Not yet
+
+Tested on `30f140e`: `tools/test`, 541 tests on Python 3.12.3 with PostgreSQL 16.15 (Linux x86-64), OK;
+`tools/test --wheel`, the installed wheel, 541 tests on Python 3.12.3, OK (one skipped by design, as it needs git).
+`tools/test --matrix` ran Python 3.12 only (541 tests, OK, on `b9e9c12`): Python 3.10, 3.11, 3.13, 3.14 and 3.15
+not run, their environments missing. PostgreSQL 15, 17 and 18 not run; aarch64 not run. Not run against a real
+catalog; not deployed. No package is published.
+
 ## Release 13 (0.13.0)
 
 Cut 2026-11-21 (tags `release-13` and `v0.13.0`). Affects the server and the CLI. Protocol 6, as release 12: no change to the schema, the batches or the
