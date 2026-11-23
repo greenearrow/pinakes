@@ -4,7 +4,7 @@ Newest first. Each release's full entry is in `RELEASES.toml`; the reasons are i
 
 ## Release 14 (0.14.0)
 
-Not cut. Affects the server and the CLI. Protocol 7, a change to the schema only: agents of protocol 0 to 6 work with
+Cut 2026-11-22 (tags `release-14` and `v0.14.0`). Affects the server and the CLI. Protocol 7, a change to the schema only: agents of protocol 0 to 6 work with
 this server unchanged, and the agent itself doesn't change. Update the server first: the new commands and answer
 fields need it, and an older server answers them with an error or without the new lines.
 
