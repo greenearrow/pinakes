@@ -449,7 +449,8 @@ were made while building, to keep going, and are open to change.
   `pinakes.__version__` and the package's version (read from it by `pyproject.toml`) follow, and a `vVERSION` tag
   beside `release-N`. MAJOR when something that worked stops working until a person does more than update (an
   oldest protocol raised, a command, call, page or setting changed or removed); MINOR when anything is added;
-  PATCH for fixes only. Before 1.0.0, while publishing isn't decided, what would raise MAJOR raises MINOR. Release
+  PATCH for fixes only. Before 1.0.0, while no package is published, what would raise MAJOR raises MINOR (the source went
+  public on GitHub at release 14, 0.14.0, and stayed 0.x: the owner, 2026-11-22). Release
   13 is 0.13.0 so the first version reads next to the release it is; after that the two move apart (a release of
   fixes only is the next PATCH). Releases 1 to 12 have none: a version given afterwards would claim a rule they
   weren't cut under.

@@ -20,7 +20,7 @@
 #                        min_server_protocol raised, or a command, API call, page or setting changed or removed (a
 #                        --json shape too). MINOR when anything is added: a command, option, API call or answer
 #                        field, a page, a compatible protocol, an upgrade file. PATCH for fixes only. While MAJOR is 0
-#                        (until publishing is decided), what would raise MAJOR raises MINOR. The id stays what agents,
+#                        (until a package is published), what would raise MAJOR raises MINOR. The id stays what agents,
 #                        servers and tools compare; the version is for people and packages. A cut release has a
 #                        second tag, vVERSION, on the same commit as release-ID.
 #   note                 what it is

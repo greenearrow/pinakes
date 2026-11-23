@@ -387,7 +387,7 @@ Python and PostgreSQL; not run on a real tree; not deployed.
 **Built:** `tools/test` starts and removes its own PostgreSQL and fails a run that skipped tests for want of a database
 or a dependency; `--matrix` (each Python on the newest PostgreSQL, each PostgreSQL on one Python; `full`: every pair,
 side by side with `--jobs`); `--wheel` builds the sdist and wheel from a clean copy of the tree, installs the wheel in a
-new environment and runs every test against it. No release is published (not decided); the package's version is
+new environment and runs every test against it. No package is published (the source is public on GitHub from release 14); the package's version is
 the newest release's semantic version (from release 13, 0.13.0; before it, 0.1.0.dev0).
 
 **State:** Every pair of Python 3.10.22, 3.11.18, 3.12.3, 3.13.18, 3.14.9, 3.15.2 and PostgreSQL 15.19, 16.15, 17.11,

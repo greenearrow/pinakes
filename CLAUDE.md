@@ -4,7 +4,7 @@ A cross-machine file catalog for a home lab, with owners, metadata and a web UI:
 `SECURITY.md` and `METADATA.md`. Status: design only.
 
 Decided: Python 3.11+; the standard library first, and where a dependency is needed, Flask and waitress for the
-web. Not decided yet: publishing. A wish, not a requirement: an MCP server over the queries, review marks and tags.
+web. Publishing: the source is public on GitHub (owner, 2026-11-22); no package is published yet. A wish, not a requirement: an MCP server over the queries, review marks and tags.
 
 ## Rules for Claude in this repo
 
